@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - Compact status telemetry now switches to a dense form on narrow terminals so more count, timing, speed, cache, token, and context groups remain visible without clipping.
 
+### Fixed
+
+- Prompt selectors now accept both terminal Enter encodings and submit the highlighted choice when a multi-select prompt has no checked options.
+
 ## [0.8.0] - 2026-08-20
 
 ### Changed

@@ -328,6 +328,37 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('accepts a line-feed Enter event in a prompt selector', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const answer = tui.prompt({
+      title: 'Choice',
+      question: 'Choose one',
+      options: [{ label: 'Alpha' }, { label: 'Beta' }],
+    })
+
+    press(term, '\x1b[B\n')
+
+    expect(await answer).toBe('Beta')
+    tui.dispose()
+  })
+
+  it('submits the current multi-select option when none are checked', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const answer = tui.prompt({
+      title: 'Update mode',
+      question: 'How should updates be applied?',
+      options: [{ label: 'Recommended' }, { label: 'Manual' }],
+      multiSelect: true,
+    })
+
+    press(term, '\r')
+
+    expect(await answer).toBe('Recommended')
+    tui.dispose()
+  })
+
   it('filters a full-screen prompt and returns the hidden option value', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
@@ -392,7 +423,7 @@ describe('LocalTui (tty)', () => {
     press(term, secret)
     expect(stripAnsi(term.captured)).not.toContain(secret)
     expect(stripAnsi(term.captured)).toContain('•'.repeat(secret.length))
-    press(term, '\r')
+    press(term, '\n')
     expect(await answer).toBe(secret)
     expect(stripAnsi(term.captured)).not.toContain(secret)
     tui.dispose()

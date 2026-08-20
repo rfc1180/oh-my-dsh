@@ -298,7 +298,7 @@ export function renderPromptSelector(
   const navigation = options.length === 0
     ? `enter ${submit} · esc cancel`
     : state.request.multiSelect === true
-      ? `↑↓ navigate · space toggle · enter ${submit} · esc cancel`
+      ? `↑↓ navigate · space toggle · enter ${submit} (current if none) · esc cancel`
       : `↑↓ navigate · enter ${submit} · esc cancel`
   body.push('', theme.fg('dim', navigation))
 

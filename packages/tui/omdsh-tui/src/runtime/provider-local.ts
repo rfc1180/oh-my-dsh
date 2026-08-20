@@ -1331,6 +1331,7 @@ export class LocalTui implements TuiService {
     }
     if (event.type === 'text' && prompt.request.allowCustom === false) return true
     if (event.type !== 'key') return false
+    const submit = event.id === 'enter' || event.id === 'ctrl+j'
     const filtered = filteredPromptOptions(prompt.request, this.#editor.text)
     const count = filtered.length
     if (event.id === 'escape' || event.id === 'ctrl+c') {
@@ -1340,8 +1341,14 @@ export class LocalTui implements TuiService {
       return true
     }
     if (count === 0) {
-      if (prompt.request.filterable !== true) return false
-      if (event.id === 'enter') return true
+      if (prompt.request.filterable !== true) {
+        if (submit) {
+          this.#submit(this.#editor.text)
+          return true
+        }
+        return false
+      }
+      if (submit) return true
       const command = this.#editor.handle(event)
       if (command.kind === 'changed') {
         this.#prompt = { ...prompt, selected: 0 }
@@ -1361,14 +1368,17 @@ export class LocalTui implements TuiService {
       this.#render()
       return true
     }
-    if (event.id === 'enter' && this.#editor.text === '') {
-      const answer = selectedPromptAnswer(prompt)
-      if (prompt.request.multiSelect === true && answer === null) return true
+    if (submit && this.#editor.text === '') {
+      let answer = selectedPromptAnswer(prompt)
+      if (prompt.request.multiSelect === true && answer === null) {
+        const current = prompt.request.options?.[prompt.selected]
+        answer = current?.value ?? current?.label ?? null
+      }
       this.#finishPrompt(answer)
       this.#render()
       return true
     }
-    if (event.id === 'enter' && prompt.request.filterable === true) {
+    if (submit && prompt.request.filterable === true) {
       this.#finishPrompt(selectedFilteredPromptAnswer(prompt, this.#editor.text))
       this.#editor.setText('')
       this.#render()
@@ -1380,6 +1390,10 @@ export class LocalTui implements TuiService {
         this.#prompt = { ...prompt, selected: 0 }
         this.#render()
       }
+      return true
+    }
+    if (submit) {
+      this.#submit(this.#editor.text)
       return true
     }
     return false
@@ -1445,7 +1459,7 @@ export class LocalTui implements TuiService {
       this.#render()
       return true
     }
-    if (event.id === 'enter') {
+    if (event.id === 'enter' || event.id === 'ctrl+j') {
       const answer = selectedPromptAnswer(prompt)
       if (answer === null) return true
       const approve = prompt.request.approveValue ?? prompt.request.options?.[0]?.value
