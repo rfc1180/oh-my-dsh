@@ -200,8 +200,8 @@ describe('renderSettings', () => {
     expect(status).toContain('~/project')
     const wide = renderSettings(createSettings(prefs, 'statusItem:git'), theme, 120, 20).lines.join('\n')
     expect(wide).toMatch(/deepseek · max\s+~\/project · main \*1/)
-    expect(wide).toContain('Tools 3m33s')
-    expect(wide).not.toMatch(/main \*1…|Tools…/u)
+    expect(wide).toContain('L16:51/Tl3:33')
+    expect(wide).not.toContain('…')
   })
 
   it('renders status rows in their effective order and marks a grabbed row', () => {

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- Compact status telemetry now switches to a dense form on narrow terminals so more count, timing, speed, cache, token, and context groups remain visible without clipping.
+
 ## [0.8.0] - 2026-08-20
 
 ### Changed

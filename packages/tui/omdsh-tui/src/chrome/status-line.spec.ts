@@ -59,6 +59,10 @@ describe('session status line', () => {
     expect(renderSessionStatusLabel(initial, statusBar({ labels: 'full' }), createTheme(false), 80)).toContain('Context 0% · 0/1M')
   })
 
+  it('preserves fixed footer geometry at zero display width', () => {
+    expect(renderStatusFooter({ model: 'm', stats, config: statusBar(), width: 0 }, createTheme(false))).toEqual(['', ''])
+  })
+
   it('formats concise English metric groups', () => {
     expect(sessionStatusGroups(stats)).toEqual([
       'Cache 99%',
@@ -74,17 +78,20 @@ describe('session status line', () => {
       '517', '12.2K', '517K', '1.2M',
     ])
     expect([formatDuration(45_240), formatDuration(162_000)]).toEqual(['45.2s', '2m42s'])
+    const speedOnly = statusBar({ groups: ['speed'], order: ['speed'] })
+    const dense = renderSessionStatusLabel({ ...stats, ttftMs: 1_011_000, ttftSteps: 1 }, speedOnly, createTheme(false), 20)
+    expect(dense).toContain('F16:51/R80')
   })
 
-  it('keeps complete high-priority groups on a narrow terminal', () => {
+  it('switches to dense copy and keeps every group on a narrow terminal', () => {
     const line = renderSessionStatusLabel(stats, statusBar(), createTheme(false), 76)
-    expect(line).toContain('Cache 99%')
-    expect(line).toContain('5.9M in · 73.8K out')
-    expect(line).toContain('TTFT 1.2s · 80 tok/s')
-    expect(line).not.toContain('LLM 16m51s')
-    expect(line).not.toContain('1 turn · 74 steps')
+    expect(line).toContain('C99%')
+    expect(line).toContain('I5.9M/O73.8K')
+    expect(line).toContain('F1.2s/R80')
+    expect(line).toContain('L16:51/Tl3:33')
+    expect(line).toContain('T1/S74')
     expect(stripAnsi(line)).not.toContain('…')
-    expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+    expect(visibleWidth(line)).toBeLessThanOrEqual(76)
   })
 
   it('uses a continuous border label and includes every group when space allows', () => {
@@ -96,8 +103,15 @@ describe('session status line', () => {
     expect(line).not.toContain('缓存')
   })
 
-  it('uses English singular labels', () => {
+  it('keeps readable count labels until dense layout is required', () => {
     expect(sessionStatusGroups({ ...stats, turns: 1, steps: 1 })).toContain('1 turn · 1 step')
+    const full = statusBar({ labels: 'full' })
+    expect(sessionStatusGroups({ ...stats, turns: 1, steps: 1 }, full)).toContain('1 turn · 1 step')
+    expect(sessionStatusGroups({ ...stats, turns: 2, steps: 74 }, full)).toContain('2 turns · 74 steps')
+    const rendered = renderSessionStatusLabel(stats, full, createTheme(false), 80)
+    expect(rendered).toContain('Cache 99%')
+    expect(rendered).toContain('1 turn · 74 steps')
+    expect(rendered).not.toContain('C99%')
   })
 
   it('keeps minimal mode as an explicit telemetry opt-out', () => {
@@ -126,17 +140,33 @@ describe('session status line', () => {
     })
   })
 
-  it('honors configured visibility and order', () => {
-    const custom = statusBar({ groups: ['tokens', 'cache', 'counts'] })
+  it('honors configured visibility and order independently', () => {
+    const custom = statusBar({
+      groups: ['tokens', 'cache', 'counts'],
+      order: ['tokens', 'cache', 'counts'],
+    })
     expect(sessionStatusGroups(stats, custom)).toEqual([
       '5.9M in · 73.8K out',
       'Cache 99%',
       '1 turn · 74 steps',
     ])
+
+    const webOrder = statusBar({
+      order: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
+    })
+    expect(sessionStatusGroups(stats, webOrder)).toEqual([
+      '1 turn · 74 steps',
+      'LLM 16m51s · Tools 3m33s',
+      'TTFT 1.2s · 80 tok/s',
+      'Cache 99%',
+      '5.9M in · 73.8K out',
+    ])
   })
 
-  it('hides telemetry when no complete metric group fits', () => {
-    expect(renderSessionStatusLabel(stats, statusBar(), createTheme(false), 10)).toBe('')
+  it('skips oversized groups and hides telemetry only when nothing fits', () => {
+    const tokensFirst = statusBar({ groups: ['tokens', 'cache'], order: ['tokens', 'cache'] })
+    expect(renderSessionStatusLabel(stats, tokensFirst, createTheme(false), 8)).toContain('C99%')
+    expect(renderSessionStatusLabel(stats, statusBar(), createTheme(false), 5)).toBe('')
   })
 
   it('renders model/workspace and telemetry as two split footer rows', () => {
@@ -260,6 +290,113 @@ describe('session status line', () => {
     expect(completed[0]).toContain('LOOP DONE · 3 REPEATS')
   })
 
+  it('fits five of six Web-style groups at 46 columns', () => {
+    const webOrder = statusBar({
+      groups: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
+      order: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
+      sides: {
+        counts: 'left',
+        durations: 'left',
+        speed: 'left',
+        cache: 'left',
+        tokens: 'left',
+        context: 'left',
+      },
+    })
+    const contextual = { ...stats, contextTokens: 96_000, contextWindow: 6_000_000 }
+    const lines = renderStatusFooter({
+      model: 'm',
+      stats: contextual,
+      config: webOrder,
+      width: 46,
+    }, createTheme(false))
+    const telemetry = stripAnsi(lines[1] ?? '')
+    expect(lines).toHaveLength(2)
+    expect(lines.every(line => visibleWidth(line) === 46)).toBe(true)
+    expect(telemetry).toContain('T1/S74')
+    expect(telemetry).toContain('L16:51/Tl3:33')
+    expect(telemetry).toContain('F1.2s/R80')
+    expect(telemetry).toContain('C99%')
+    expect(telemetry).toContain('X1.6%')
+    expect(telemetry).not.toContain('I5.9M')
+
+    const large = renderStatusFooter({
+      model: 'm',
+      stats: { ...stats, turns: 10, steps: 1_234, llmMs: 60_000_000, toolMs: 60_000_000 },
+      config: webOrder,
+      width: 46,
+    }, createTheme(false))
+    const largeTelemetry = stripAnsi(large[1] ?? '')
+    expect(largeTelemetry).toContain('T10/S1234')
+    expect(largeTelemetry).toContain('L16h40m/Tl16h40m')
+    expect(largeTelemetry).toContain('F1.2s/R80')
+  })
+
+  it('reflows monotonically across common terminal widths without clipping', () => {
+    const order = ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'] as const
+    const responsive = statusBar({
+      groups: [...order],
+      order: [...order],
+      sides: {
+        counts: 'left',
+        durations: 'left',
+        speed: 'left',
+        cache: 'left',
+        tokens: 'left',
+        context: 'left',
+      },
+    })
+    const contextual = { ...stats, turns: 3, steps: 158, contextTokens: 96_000, contextWindow: 6_000_000 }
+    const markers = ['T3/S158', 'L16:51/Tl3:33', 'F1.2s/R80', 'C99%', 'I5.9M/O73.8K', 'X1.6%']
+    let previousVisible = 0
+    for (const width of [20, 32, 40, 46, 58, 60]) {
+      const lines = renderStatusFooter({ model: 'm', stats: contextual, config: responsive, width }, createTheme(false))
+      const telemetry = stripAnsi(lines[1] ?? '')
+      const visible = markers.filter(marker => telemetry.includes(marker)).length
+      expect(lines).toHaveLength(2)
+      expect(lines.every(line => visibleWidth(line) === width)).toBe(true)
+      expect(lines.join('\n')).not.toContain('…')
+      expect(visible).toBeGreaterThanOrEqual(previousVisible)
+      if (width === 46) expect(visible).toBe(5)
+      previousVisible = visible
+    }
+    const all = stripAnsi(renderStatusFooter({
+      model: 'm',
+      stats: contextual,
+      config: responsive,
+      width: 60,
+    }, createTheme(false))[1] ?? '')
+    for (const marker of markers) expect(all).toContain(marker)
+
+    const wide = stripAnsi(renderStatusFooter({
+      model: 'm',
+      stats: contextual,
+      config: responsive,
+      width: 120,
+    }, createTheme(false))[1] ?? '')
+    expect(wide).toContain('3 turns · 158 steps')
+    expect(wide).toContain('LLM 16m51s · Tools 3m33s')
+    expect(wide).not.toContain('T3/S158')
+  })
+
+  it('never reduces complete-group coverage when the terminal grows', () => {
+    const order = ['tokens', 'cache', 'counts', 'context', 'speed', 'durations'] as const
+    const config = statusBar({ groups: [...order], order: [...order] })
+    const contextual = { ...stats, contextTokens: 96_000, contextWindow: 6_000_000 }
+    const markers = ['I5.9M/O73.8K', 'C99%', 'T1/S74', 'X1.6%', 'F1.2s/R80', 'L16:51/Tl3:33']
+    let previousVisible = 0
+    for (let width = 1; width <= 80; width += 1) {
+      const line = stripAnsi(renderSessionStatusLabel(contextual, config, createTheme(false), width))
+      const visible = markers.filter(marker => line.includes(marker)).length
+      expect(visible).toBeGreaterThanOrEqual(previousVisible)
+      previousVisible = visible
+    }
+    for (const width of [15, 16]) {
+      const line = stripAnsi(renderSessionStatusLabel(contextual, config, createTheme(false), width))
+      expect(markers.filter(marker => line.includes(marker))).toHaveLength(2)
+    }
+  })
+
   it('keeps complete high-priority footer groups and only disables customizable telemetry', () => {
     const narrow = renderStatusFooter({
       model: 'deepseek-v4-pro',
@@ -273,9 +410,11 @@ describe('session status line', () => {
     const telemetry = stripAnsi(narrow[1] ?? '')
     expect(narrow).toHaveLength(2)
     expect(narrow.every(line => visibleWidth(line) === 76)).toBe(true)
-    expect(telemetry).toContain('Cache 99%')
-    expect(telemetry).toContain('5.9M in · 73.8K out')
-    expect(telemetry).not.toContain('LLM 16m51s')
+    expect(telemetry).toContain('C99%')
+    expect(telemetry).toContain('I5.9M/O73.8K')
+    expect(telemetry).toContain('F1.2s/R80')
+    expect(telemetry).toContain('L16:51/Tl3:33')
+    expect(telemetry).toContain('T1/S74')
     const minimal = renderStatusFooter({
       model: 'm',
       controls: {

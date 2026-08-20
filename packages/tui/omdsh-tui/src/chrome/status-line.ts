@@ -33,12 +33,21 @@ interface StatusPart {
 interface StatusGroup {
   id: StatusGroupId
   parts: StatusPart[]
+  /** Shortest loss-aware form used only by the compact responsive layout. */
+  denseParts?: StatusPart[]
+}
+
+interface StatusGroupSelection {
+  groups: StatusGroup[]
+  separator: string
 }
 
 const LABEL_PADDING = 2
 const GROUP_SEPARATOR = ' • '
+const DENSE_GROUP_SEPARATOR = '·'
 const FOOTER_PADDING = 2
 const COLUMN_GAP = 3
+const TELEMETRY_COLUMN_GAP = 1
 /** Context needed to render the fixed session footer. */
 export interface StatusFooterOptions {
   model: string
@@ -70,6 +79,15 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(whole / 60)}m${whole % 60}s`
 }
 
+/** Dense clock form: 45.2s, 16:51, then 16h40m for long sessions. */
+function formatDenseDuration(ms: number): string {
+  const wholeSeconds = Math.round(ms / 1_000)
+  if (wholeSeconds < 60) return `${Math.round(ms / 100) / 10}s`
+  const wholeMinutes = Math.floor(wholeSeconds / 60)
+  if (wholeMinutes < 60) return `${wholeMinutes}:${String(wholeSeconds % 60).padStart(2, '0')}`
+  return `${Math.floor(wholeMinutes / 60)}h${wholeMinutes % 60}m`
+}
+
 /** Human-readable model throughput with the same precision as dsh web. */
 export function formatTokensPerSecond(value: number): string {
   return value >= 10 ? String(Math.round(value)) : String(Math.round(value * 10) / 10)
@@ -89,7 +107,11 @@ function metric(label: string, value: string, tone: StatusTone = 'value'): Statu
   return [part(label + ' ', 'label'), part(value, tone)]
 }
 
-/** English semantic groups; language selection will replace copy here. */
+/**
+ * English semantic groups; language selection will replace copy here. Dense
+ * prefixes are T/S (turns/steps), L/Tl (LLM/tools), F/R (first token/rate),
+ * C (cache), I/O (tokens), and X (context).
+ */
 function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): StatusGroup[] {
   const groups: StatusGroup[] = []
   if (stats.contextWindow !== undefined && stats.contextWindow > 0) {
@@ -101,39 +123,64 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         part(' · ', 'separator'),
         part(`${formatTokens(used)}/${formatTokens(stats.contextWindow)}`, 'token'),
       ],
+      denseParts: [part(`X${formatContextPercent(used, stats.contextWindow)}%`, 'token')],
     })
   }
+  const countParts = [
+    part(String(stats.turns), 'value'),
+    part(stats.turns === 1 ? ' turn' : ' turns', 'label'),
+    part(' · ', 'separator'),
+    part(String(stats.steps), 'value'),
+    part(stats.steps === 1 ? ' step' : ' steps', 'label'),
+  ]
   groups.push({
     id: 'counts',
-    parts: [
-      part(String(stats.turns), 'value'),
-      part(stats.turns === 1 ? ' turn' : ' turns', 'label'),
-      part(' · ', 'separator'),
-      part(String(stats.steps), 'value'),
-      part(stats.steps === 1 ? ' step' : ' steps', 'label'),
-    ],
+    parts: countParts,
+    denseParts: [part(`T${stats.turns}/S${stats.steps}`, 'value')],
   })
   if (stats.steps > 0) {
     const durations: StatusPart[] = []
-    if (stats.llmMs > 0) durations.push(...metric('LLM', formatDuration(stats.llmMs)))
-    if (stats.llmMs > 0 && stats.toolMs > 0) durations.push(part(' · ', 'separator'))
-    if (stats.toolMs > 0) durations.push(...metric('Tools', formatDuration(stats.toolMs)))
-    if (durations.length > 0) groups.push({ id: 'durations', parts: durations })
+    const denseDurations: StatusPart[] = []
+    if (stats.llmMs > 0) {
+      durations.push(...metric('LLM', formatDuration(stats.llmMs)))
+      denseDurations.push(part(`L${formatDenseDuration(stats.llmMs)}`, 'value'))
+    }
+    if (stats.llmMs > 0 && stats.toolMs > 0) {
+      durations.push(part(' · ', 'separator'))
+      denseDurations.push(part('/', 'separator'))
+    }
+    if (stats.toolMs > 0) {
+      durations.push(...metric('Tools', formatDuration(stats.toolMs)))
+      denseDurations.push(part(`Tl${formatDenseDuration(stats.toolMs)}`, 'value'))
+    }
+    if (durations.length > 0) groups.push({ id: 'durations', parts: durations, denseParts: denseDurations })
 
     const speed: StatusPart[] = []
-    if (stats.ttftSteps > 0) speed.push(...metric('TTFT', formatDuration(stats.ttftMs / stats.ttftSteps)))
-    if (stats.ttftSteps > 0 && stats.decodeMs > 0) speed.push(part(' · ', 'separator'))
-    if (stats.decodeMs > 0) {
-      speed.push(part(`${formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000))} tok/s`, 'value'))
+    const denseSpeed: StatusPart[] = []
+    if (stats.ttftSteps > 0) {
+      const ttft = stats.ttftMs / stats.ttftSteps
+      speed.push(...metric('TTFT', formatDuration(ttft)))
+      denseSpeed.push(part(`F${formatDenseDuration(ttft)}`, 'value'))
     }
-    if (speed.length > 0) groups.push({ id: 'speed', parts: speed })
+    if (stats.ttftSteps > 0 && stats.decodeMs > 0) {
+      speed.push(part(' · ', 'separator'))
+      denseSpeed.push(part('/', 'separator'))
+    }
+    if (stats.decodeMs > 0) {
+      const rate = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000))
+      speed.push(part(`${rate} tok/s`, 'value'))
+      denseSpeed.push(part(`R${rate}`, 'value'))
+    }
+    if (speed.length > 0) groups.push({ id: 'speed', parts: speed, denseParts: denseSpeed })
   }
 
   if (stats.inputTokens > 0 || stats.outputTokens > 0) {
     if (stats.inputTokens > 0) {
+      const cachePercent = `${Math.round(stats.cacheReadTokens / stats.inputTokens * 100)}%`
       groups.push({
         id: 'cache',
-        parts: metric('Cache', `${Math.round(stats.cacheReadTokens / stats.inputTokens * 100)}%`, 'positive'),
+        parts: metric('Cache', cachePercent, 'positive'),
+        denseParts: [part(`C${cachePercent}`, 'positive')],
       })
     }
     groups.push({
@@ -145,13 +192,25 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         part(formatTokens(stats.outputTokens), 'token'),
         part(' out', 'label'),
       ],
+      denseParts: [
+        part(`I${formatTokens(stats.inputTokens)}`, 'token'),
+        part('/', 'separator'),
+        part(`O${formatTokens(stats.outputTokens)}`, 'token'),
+      ],
     })
   }
-  return config.groups.flatMap(id => groups.filter(group => group.id === id))
+  const visible = new Set(config.groups)
+  return (config.order ?? config.groups)
+    .filter(id => visible.has(id))
+    .flatMap(id => groups.filter(group => group.id === id))
 }
 
 function groupText(group: StatusGroup): string {
   return group.parts.map(item => item.text).join('')
+}
+
+function denseGroup(group: StatusGroup): StatusGroup {
+  return group.denseParts === undefined ? group : { ...group, parts: group.denseParts }
 }
 
 /** Build the unpainted English groups for diagnostics and tests. */
@@ -164,28 +223,91 @@ export function sessionStatusGroups(
   return buildStatusGroups(stats, normalized).map(groupText)
 }
 
-function groupsWidth(groups: readonly StatusGroup[]): number {
+function groupsWidth(groups: readonly StatusGroup[], separator = GROUP_SEPARATOR): number {
   if (groups.length === 0) return 0
   return groups.reduce((total, group) => total + visibleWidth(groupText(group)), 0)
-    + GROUP_SEPARATOR.length * (groups.length - 1)
+    + visibleWidth(separator) * (groups.length - 1)
 }
 
-function layoutWidth(groups: readonly StatusGroup[]): number {
-  return LABEL_PADDING + groupsWidth(groups)
+function layoutWidth(groups: readonly StatusGroup[], separator = GROUP_SEPARATOR): number {
+  return LABEL_PADDING + groupsWidth(groups, separator)
+}
+
+/** Maximize complete groups, using configured order to break equal-size ties. */
+function selectBestGroups(
+  groups: readonly StatusGroup[],
+  fits: (selection: readonly StatusGroup[]) => boolean,
+): StatusGroup[] {
+  let best: StatusGroup[] = []
+  const bestIds = (): Set<StatusGroupId> => new Set(best.map(group => group.id))
+  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
+    const selection = groups.filter((_, index) => (mask & (1 << index)) !== 0)
+    if (!fits(selection) || selection.length < best.length) continue
+    if (selection.length > best.length) {
+      best = selection
+      continue
+    }
+    const selected = new Set(selection.map(group => group.id))
+    const previous = bestIds()
+    const firstDifference = groups.find(group => selected.has(group.id) !== previous.has(group.id))
+    if (firstDifference !== undefined && selected.has(firstDifference.id)) best = selection
+  }
+  return best
 }
 
 /**
- * Keep complete metric groups instead of truncating the sentence. Cache and
- * token usage survive first, followed by latency/rate, timings, then counts.
+ * Follow configured priority greedily, but retain the previous high-water group
+ * count when a newly fitting wide group would otherwise evict several metrics.
  */
-function selectGroups(groups: readonly StatusGroup[], width: number): StatusGroup[] {
-  const selected: StatusGroup[] = []
-  for (const group of groups) {
-    const candidate = [...selected, group]
-    if (layoutWidth(candidate) > width) break
-    selected.push(group)
+function selectStableGroups(
+  groups: readonly StatusGroup[],
+  capacity: number,
+  measure: (selection: readonly StatusGroup[]) => number,
+): StatusGroup[] {
+  const greedyAt = (width: number): StatusGroup[] => {
+    const selected: StatusGroup[] = []
+    for (const group of groups) {
+      const candidate = [...selected, group]
+      if (measure(candidate) <= width) selected.push(group)
+    }
+    return selected
   }
-  return selected
+  const greedy = greedyAt(capacity)
+  let highWaterCount = greedy.length
+  const thresholds = new Set<number>()
+  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
+    const selection = groups.filter((_, index) => (mask & (1 << index)) !== 0)
+    const threshold = measure(selection)
+    if (threshold <= capacity) thresholds.add(threshold)
+  }
+  for (const threshold of thresholds) {
+    highWaterCount = Math.max(highWaterCount, greedyAt(threshold).length)
+  }
+  if (greedy.length === highWaterCount) return greedy
+  return selectBestGroups(groups, selection =>
+    selection.length <= highWaterCount && measure(selection) <= capacity)
+}
+
+/**
+ * Preserve normal copy when every requested group fits, tightening only the
+ * separators when that avoids abbreviation. Otherwise compact mode switches
+ * the whole row to a dense, stable vocabulary and skips only groups that still
+ * cannot fit, allowing smaller later groups to use the remaining cells.
+ */
+function selectGroups(
+  groups: readonly StatusGroup[],
+  width: number,
+  config: StatusBarConfig,
+): StatusGroupSelection {
+  if (layoutWidth(groups) <= width) return { groups: [...groups], separator: GROUP_SEPARATOR }
+  const dense = config.labels === 'compact'
+  if (dense && layoutWidth(groups, DENSE_GROUP_SEPARATOR) <= width) {
+    return { groups: [...groups], separator: DENSE_GROUP_SEPARATOR }
+  }
+  const candidates = dense ? groups.map(denseGroup) : [...groups]
+  const separator = dense ? DENSE_GROUP_SEPARATOR : GROUP_SEPARATOR
+  const selected = selectStableGroups(candidates, width, candidate => layoutWidth(candidate, separator))
+  return { groups: selected, separator }
 }
 
 function tokenThemeColor(token: StatusColorToken | undefined, fallback: ThemeColor): ThemeColor {
@@ -218,16 +340,21 @@ function paintColumn(
   groups: readonly StatusGroup[],
   theme: Theme,
   config: StatusBarConfig,
+  separatorText = GROUP_SEPARATOR,
   focus?: StatusItemId,
 ): string {
-  const separator = theme.fg('dim', GROUP_SEPARATOR)
+  const separator = theme.fg('dim', separatorText)
   return groups.map(group => paintGroup(group, theme, config, focus)).join(separator)
 }
 
-function splitWidth(left: readonly StatusGroup[], right: readonly StatusGroup[]): number {
-  const leftWidth = groupsWidth(left)
-  const rightWidth = groupsWidth(right)
-  return leftWidth + rightWidth + (leftWidth > 0 && rightWidth > 0 ? COLUMN_GAP : 0)
+function splitWidth(
+  left: readonly StatusGroup[],
+  right: readonly StatusGroup[],
+  separator = GROUP_SEPARATOR,
+): number {
+  const leftWidth = groupsWidth(left, separator)
+  const rightWidth = groupsWidth(right, separator)
+  return leftWidth + rightWidth + (leftWidth > 0 && rightWidth > 0 ? TELEMETRY_COLUMN_GAP : 0)
 }
 
 /** Select whole groups in user order, then place each on its configured column. */
@@ -235,18 +362,26 @@ function selectFooterGroups(
   groups: readonly StatusGroup[],
   width: number,
   config: StatusBarConfig,
-): { left: StatusGroup[]; right: StatusGroup[] } {
-  const left: StatusGroup[] = []
-  const right: StatusGroup[] = []
-  for (const group of groups) {
-    const rightSide = itemSide(config, group.id) === 'right'
-    const candidateLeft = rightSide ? left : [...left, group]
-    const candidateRight = rightSide ? [...right, group] : right
-    if (splitWidth(candidateLeft, candidateRight) > width) break
-    if (rightSide) right.push(group)
-    else left.push(group)
+): { left: StatusGroup[]; right: StatusGroup[]; separator: string } {
+  const distribute = (candidates: readonly StatusGroup[], separator: string) => {
+    const left = candidates.filter(group => itemSide(config, group.id) === 'left')
+    const right = candidates.filter(group => itemSide(config, group.id) === 'right')
+    return { left, right, separator }
   }
-  return { left, right }
+  const natural = distribute(groups, GROUP_SEPARATOR)
+  if (splitWidth(natural.left, natural.right) <= width) return natural
+  const dense = config.labels === 'compact'
+  if (dense) {
+    const tight = distribute(groups, DENSE_GROUP_SEPARATOR)
+    if (splitWidth(tight.left, tight.right, DENSE_GROUP_SEPARATOR) <= width) return tight
+  }
+  const candidates = dense ? groups.map(denseGroup) : [...groups]
+  const separator = dense ? DENSE_GROUP_SEPARATOR : GROUP_SEPARATOR
+  const selected = selectStableGroups(candidates, width, selection => {
+    const columns = distribute(selection, separator)
+    return splitWidth(columns.left, columns.right, separator)
+  })
+  return distribute(selected, separator)
 }
 
 function renderSplitRow(left: string, right: string, width: number): string {
@@ -414,17 +549,17 @@ function metadataColumns(
 export function renderStatusFooter(options: StatusFooterOptions, theme: Theme): string[] {
   const normalized = resolveStatusBarConfig(options.config)
   const width = Math.max(0, options.width)
-  if (width === 0) return []
+  if (width === 0) return ['', '']
   const innerWidth = Math.max(0, width - FOOTER_PADDING * 2)
   const metadata = metadataColumns({ ...options, config: normalized }, theme, innerWidth, normalized, options.focus)
   const telemetryGroups = options.stats === undefined || !normalized.enabled
-    ? { left: [], right: [] }
+    ? { left: [], right: [], separator: GROUP_SEPARATOR }
     : selectFooterGroups(buildStatusGroups(options.stats, normalized), innerWidth, normalized)
   return [
     renderSplitRow(metadata.left, metadata.right, width),
     renderSplitRow(
-      paintColumn(telemetryGroups.left, theme, normalized, options.focus),
-      paintColumn(telemetryGroups.right, theme, normalized, options.focus),
+      paintColumn(telemetryGroups.left, theme, normalized, telemetryGroups.separator, options.focus),
+      paintColumn(telemetryGroups.right, theme, normalized, telemetryGroups.separator, options.focus),
       width,
     ),
   ]
@@ -483,7 +618,7 @@ export function renderStatusPreviewLines(
 ): string[] {
   const normalized = resolveStatusBarConfig(options.config)
   const width = Math.max(0, options.width)
-  if (width === 0) return []
+  if (width === 0) return ['', '']
   return renderStatusFooter({
     model: options.model,
     ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
@@ -508,8 +643,8 @@ export function renderSessionStatusLabel(
 ): string {
   const normalized = resolveStatusBarConfig(config)
   if (stats === undefined || !normalized.enabled || width <= LABEL_PADDING) return ''
-  const groups = selectGroups(buildStatusGroups(stats, normalized), width)
-  if (groups.length === 0) return ''
-  const line = ' ' + paintColumn(groups, theme, normalized) + ' '
+  const selection = selectGroups(buildStatusGroups(stats, normalized), width, normalized)
+  if (selection.groups.length === 0) return ''
+  const line = ' ' + paintColumn(selection.groups, theme, normalized, selection.separator) + ' '
   return truncateToWidth(line, width)
 }
