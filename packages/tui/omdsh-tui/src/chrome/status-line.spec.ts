@@ -290,7 +290,7 @@ describe('session status line', () => {
     expect(completed[0]).toContain('LOOP DONE · 3 REPEATS')
   })
 
-  it('fits five of six Web-style groups at 46 columns', () => {
+  it('keeps every Web-style metric at 46 columns with unit-aware nano copy', () => {
     const webOrder = statusBar({
       groups: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
       order: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
@@ -313,12 +313,13 @@ describe('session status line', () => {
     const telemetry = stripAnsi(lines[1] ?? '')
     expect(lines).toHaveLength(2)
     expect(lines.every(line => visibleWidth(line) === 46)).toBe(true)
-    expect(telemetry).toContain('T1/S74')
-    expect(telemetry).toContain('L16:51/Tl3:33')
-    expect(telemetry).toContain('F1.2s/R80')
+    expect(telemetry).toContain('1/74')
+    expect(telemetry).toContain('L17m/T4')
+    expect(telemetry).toContain('F1.2/R80')
     expect(telemetry).toContain('C99%')
+    expect(telemetry).toContain('↓5.9M/↑74K')
     expect(telemetry).toContain('X1.6%')
-    expect(telemetry).not.toContain('I5.9M')
+    expect(telemetry).not.toContain('…')
 
     const large = renderStatusFooter({
       model: 'm',
@@ -327,9 +328,11 @@ describe('session status line', () => {
       width: 46,
     }, createTheme(false))
     const largeTelemetry = stripAnsi(large[1] ?? '')
-    expect(largeTelemetry).toContain('T10/S1234')
-    expect(largeTelemetry).toContain('L16h40m/Tl16h40m')
-    expect(largeTelemetry).toContain('F1.2s/R80')
+    expect(largeTelemetry).toContain('L16.7h/T16.7')
+    expect(largeTelemetry).toContain('F1.2/R80')
+    expect(largeTelemetry).toContain('C99%')
+    expect(largeTelemetry).toContain('↓5.9M/↑74K')
+    expect(largeTelemetry).not.toContain('10/1234')
   })
 
   it('reflows monotonically across common terminal widths without clipping', () => {
@@ -347,17 +350,24 @@ describe('session status line', () => {
       },
     })
     const contextual = { ...stats, turns: 3, steps: 158, contextTokens: 96_000, contextWindow: 6_000_000 }
-    const markers = ['T3/S158', 'L16:51/Tl3:33', 'F1.2s/R80', 'C99%', 'I5.9M/O73.8K', 'X1.6%']
+    const markerVariants = [
+      ['T3/S158', '3/158'],
+      ['L16:51/Tl3:33', 'L17m/T4'],
+      ['F1.2s/R80', 'F1.2/R80'],
+      ['C99%'],
+      ['I5.9M/O73.8K', '↓5.9M/↑74K'],
+      ['X1.6%'],
+    ]
     let previousVisible = 0
     for (const width of [20, 32, 40, 46, 58, 60]) {
       const lines = renderStatusFooter({ model: 'm', stats: contextual, config: responsive, width }, createTheme(false))
       const telemetry = stripAnsi(lines[1] ?? '')
-      const visible = markers.filter(marker => telemetry.includes(marker)).length
+      const visible = markerVariants.filter(variants => variants.some(marker => telemetry.includes(marker))).length
       expect(lines).toHaveLength(2)
       expect(lines.every(line => visibleWidth(line) === width)).toBe(true)
       expect(lines.join('\n')).not.toContain('…')
       expect(visible).toBeGreaterThanOrEqual(previousVisible)
-      if (width === 46) expect(visible).toBe(5)
+      if (width === 46) expect(visible).toBe(6)
       previousVisible = visible
     }
     const all = stripAnsi(renderStatusFooter({
@@ -366,7 +376,9 @@ describe('session status line', () => {
       config: responsive,
       width: 60,
     }, createTheme(false))[1] ?? '')
-    for (const marker of markers) expect(all).toContain(marker)
+    for (const variants of markerVariants) {
+      expect(variants.some(marker => all.includes(marker))).toBe(true)
+    }
 
     const wide = stripAnsi(renderStatusFooter({
       model: 'm',
@@ -383,17 +395,25 @@ describe('session status line', () => {
     const order = ['tokens', 'cache', 'counts', 'context', 'speed', 'durations'] as const
     const config = statusBar({ groups: [...order], order: [...order] })
     const contextual = { ...stats, contextTokens: 96_000, contextWindow: 6_000_000 }
-    const markers = ['I5.9M/O73.8K', 'C99%', 'T1/S74', 'X1.6%', 'F1.2s/R80', 'L16:51/Tl3:33']
+    const markerVariants = [
+      ['I5.9M/O73.8K', '↓5.9M/↑74K'],
+      ['C99%'],
+      ['T1/S74', '1/74'],
+      ['X1.6%'],
+      ['F1.2s/R80', 'F1.2/R80'],
+      ['L16:51/Tl3:33', 'L17m/T4'],
+    ]
     let previousVisible = 0
     for (let width = 1; width <= 80; width += 1) {
       const line = stripAnsi(renderSessionStatusLabel(contextual, config, createTheme(false), width))
-      const visible = markers.filter(marker => line.includes(marker)).length
+      const visible = markerVariants.filter(variants => variants.some(marker => line.includes(marker))).length
       expect(visible).toBeGreaterThanOrEqual(previousVisible)
       previousVisible = visible
     }
     for (const width of [15, 16]) {
       const line = stripAnsi(renderSessionStatusLabel(contextual, config, createTheme(false), width))
-      expect(markers.filter(marker => line.includes(marker))).toHaveLength(2)
+      const visible = markerVariants.filter(variants => variants.some(marker => line.includes(marker))).length
+      expect(visible).toBe(2)
     }
   })
 

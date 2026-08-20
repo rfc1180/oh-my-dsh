@@ -33,8 +33,10 @@ interface StatusPart {
 interface StatusGroup {
   id: StatusGroupId
   parts: StatusPart[]
-  /** Shortest loss-aware form used only by the compact responsive layout. */
+  /** Abbreviated form used when readable labels no longer fit. */
   denseParts?: StatusPart[]
+  /** Unit-aware minimum form used before any complete metric is omitted. */
+  nanoParts?: StatusPart[]
 }
 
 interface StatusGroupSelection {
@@ -48,6 +50,14 @@ const DENSE_GROUP_SEPARATOR = '·'
 const FOOTER_PADDING = 2
 const COLUMN_GAP = 3
 const TELEMETRY_COLUMN_GAP = 1
+const NARROW_TELEMETRY_PRIORITY: readonly StatusGroupId[] = [
+  'cache',
+  'tokens',
+  'speed',
+  'durations',
+  'context',
+  'counts',
+]
 /** Context needed to render the fixed session footer. */
 export interface StatusFooterOptions {
   model: string
@@ -71,6 +81,14 @@ export function formatTokens(value: number): string {
   return `${scaled(value / 1_000_000)}M`
 }
 
+function formatNanoTokens(value: number): string {
+  if (value < 1_000) return String(value)
+  const divisor = value < 1_000_000 ? 1_000 : 1_000_000
+  const suffix = value < 1_000_000 ? 'K' : 'M'
+  const scaled = value / divisor
+  return `${scaled < 10 ? Math.round(scaled * 10) / 10 : Math.round(scaled)}${suffix}`
+}
+
 /** Compact duration: 45.2s under a minute, 2m42s from there on. */
 export function formatDuration(ms: number): string {
   const seconds = ms / 1_000
@@ -86,6 +104,21 @@ function formatDenseDuration(ms: number): string {
   const wholeMinutes = Math.floor(wholeSeconds / 60)
   if (wholeMinutes < 60) return `${wholeMinutes}:${String(wholeSeconds % 60).padStart(2, '0')}`
   return `${Math.floor(wholeMinutes / 60)}h${wholeMinutes % 60}m`
+}
+
+/** Coarsest duration that keeps its unit in very narrow telemetry rows. */
+function formatNanoDuration(ms: number): string {
+  const seconds = ms / 1_000
+  if (seconds < 60) return `${Math.round(seconds * 10) / 10}s`
+  const minutes = seconds / 60
+  if (minutes < 60) return `${Math.round(minutes)}m`
+  const hours = minutes / 60
+  return `${Math.round(hours * 10) / 10}h`
+}
+
+function sharedDurationValue(value: string, previous: string): string {
+  const suffix = /(?:s|m|h)$/u.exec(value)?.[0]
+  return suffix !== undefined && previous.endsWith(suffix) ? value.slice(0, -suffix.length) : value
 }
 
 /** Human-readable model throughput with the same precision as dsh web. */
@@ -124,6 +157,7 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         part(`${formatTokens(used)}/${formatTokens(stats.contextWindow)}`, 'token'),
       ],
       denseParts: [part(`X${formatContextPercent(used, stats.contextWindow)}%`, 'token')],
+      nanoParts: [part(`X${formatContextPercent(used, stats.contextWindow)}%`, 'token')],
     })
   }
   const countParts = [
@@ -137,41 +171,54 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
     id: 'counts',
     parts: countParts,
     denseParts: [part(`T${stats.turns}/S${stats.steps}`, 'value')],
+    nanoParts: [part(`${stats.turns}/${stats.steps}`, 'value')],
   })
   if (stats.steps > 0) {
     const durations: StatusPart[] = []
     const denseDurations: StatusPart[] = []
+    const nanoDurations: StatusPart[] = []
+    const nanoLlm = stats.llmMs > 0 ? formatNanoDuration(stats.llmMs) : ''
     if (stats.llmMs > 0) {
       durations.push(...metric('LLM', formatDuration(stats.llmMs)))
       denseDurations.push(part(`L${formatDenseDuration(stats.llmMs)}`, 'value'))
+      nanoDurations.push(part(`L${nanoLlm}`, 'value'))
     }
     if (stats.llmMs > 0 && stats.toolMs > 0) {
       durations.push(part(' · ', 'separator'))
       denseDurations.push(part('/', 'separator'))
+      nanoDurations.push(part('/', 'separator'))
     }
     if (stats.toolMs > 0) {
+      const nanoTool = formatNanoDuration(stats.toolMs)
       durations.push(...metric('Tools', formatDuration(stats.toolMs)))
       denseDurations.push(part(`Tl${formatDenseDuration(stats.toolMs)}`, 'value'))
+      nanoDurations.push(part(`T${sharedDurationValue(nanoTool, nanoLlm)}`, 'value'))
     }
-    if (durations.length > 0) groups.push({ id: 'durations', parts: durations, denseParts: denseDurations })
+    if (durations.length > 0) {
+      groups.push({ id: 'durations', parts: durations, denseParts: denseDurations, nanoParts: nanoDurations })
+    }
 
     const speed: StatusPart[] = []
     const denseSpeed: StatusPart[] = []
+    const nanoSpeed: StatusPart[] = []
     if (stats.ttftSteps > 0) {
       const ttft = stats.ttftMs / stats.ttftSteps
       speed.push(...metric('TTFT', formatDuration(ttft)))
       denseSpeed.push(part(`F${formatDenseDuration(ttft)}`, 'value'))
+      nanoSpeed.push(part(`F${formatNanoDuration(ttft).replace(/s$/u, '')}`, 'value'))
     }
     if (stats.ttftSteps > 0 && stats.decodeMs > 0) {
       speed.push(part(' · ', 'separator'))
       denseSpeed.push(part('/', 'separator'))
+      nanoSpeed.push(part('/', 'separator'))
     }
     if (stats.decodeMs > 0) {
       const rate = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000))
       speed.push(part(`${rate} tok/s`, 'value'))
       denseSpeed.push(part(`R${rate}`, 'value'))
+      nanoSpeed.push(part(`R${rate}`, 'value'))
     }
-    if (speed.length > 0) groups.push({ id: 'speed', parts: speed, denseParts: denseSpeed })
+    if (speed.length > 0) groups.push({ id: 'speed', parts: speed, denseParts: denseSpeed, nanoParts: nanoSpeed })
   }
 
   if (stats.inputTokens > 0 || stats.outputTokens > 0) {
@@ -181,6 +228,7 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         id: 'cache',
         parts: metric('Cache', cachePercent, 'positive'),
         denseParts: [part(`C${cachePercent}`, 'positive')],
+        nanoParts: [part(`C${cachePercent}`, 'positive')],
       })
     }
     groups.push({
@@ -197,6 +245,11 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         part('/', 'separator'),
         part(`O${formatTokens(stats.outputTokens)}`, 'token'),
       ],
+      nanoParts: [
+        part(`↓${formatNanoTokens(stats.inputTokens)}`, 'token'),
+        part('/', 'separator'),
+        part(`↑${formatNanoTokens(stats.outputTokens)}`, 'token'),
+      ],
     })
   }
   const visible = new Set(config.groups)
@@ -211,6 +264,10 @@ function groupText(group: StatusGroup): string {
 
 function denseGroup(group: StatusGroup): StatusGroup {
   return group.denseParts === undefined ? group : { ...group, parts: group.denseParts }
+}
+
+function nanoGroup(group: StatusGroup): StatusGroup {
+  return group.nanoParts === undefined ? denseGroup(group) : { ...group, parts: group.nanoParts }
 }
 
 /** Build the unpainted English groups for diagnostics and tests. */
@@ -288,11 +345,27 @@ function selectStableGroups(
     selection.length <= highWaterCount && measure(selection) <= capacity)
 }
 
+/** Keep the product telemetry priority while retaining the user's visual order. */
+function selectPriorityGroups(
+  groups: readonly StatusGroup[],
+  capacity: number,
+  measure: (selection: readonly StatusGroup[]) => number,
+): StatusGroup[] {
+  const selected = new Set<StatusGroupId>()
+  for (const id of NARROW_TELEMETRY_PRIORITY) {
+    if (!groups.some(group => group.id === id)) continue
+    const candidateIds = new Set(selected).add(id)
+    const candidate = groups.filter(group => candidateIds.has(group.id))
+    if (measure(candidate) <= capacity) selected.add(id)
+  }
+  return groups.filter(group => selected.has(group.id))
+}
+
 /**
  * Preserve normal copy when every requested group fits, tightening only the
- * separators when that avoids abbreviation. Otherwise compact mode switches
- * the whole row to a dense, stable vocabulary and skips only groups that still
- * cannot fit, allowing smaller later groups to use the remaining cells.
+ * separators when that avoids abbreviation. Compact mode then tries dense and
+ * unit-aware nano vocabularies for the complete row; only after that does it
+ * omit whole groups in product telemetry priority while preserving visual order.
  */
 function selectGroups(
   groups: readonly StatusGroup[],
@@ -300,14 +373,28 @@ function selectGroups(
   config: StatusBarConfig,
 ): StatusGroupSelection {
   if (layoutWidth(groups) <= width) return { groups: [...groups], separator: GROUP_SEPARATOR }
-  const dense = config.labels === 'compact'
-  if (dense && layoutWidth(groups, DENSE_GROUP_SEPARATOR) <= width) {
+  const compact = config.labels === 'compact'
+  if (compact && layoutWidth(groups, DENSE_GROUP_SEPARATOR) <= width) {
     return { groups: [...groups], separator: DENSE_GROUP_SEPARATOR }
   }
-  const candidates = dense ? groups.map(denseGroup) : [...groups]
-  const separator = dense ? DENSE_GROUP_SEPARATOR : GROUP_SEPARATOR
-  const selected = selectStableGroups(candidates, width, candidate => layoutWidth(candidate, separator))
-  return { groups: selected, separator }
+  if (compact) {
+    const dense = groups.map(denseGroup)
+    if (layoutWidth(dense, DENSE_GROUP_SEPARATOR) <= width) {
+      return { groups: dense, separator: DENSE_GROUP_SEPARATOR }
+    }
+    const nano = groups.map(nanoGroup)
+    if (layoutWidth(nano, DENSE_GROUP_SEPARATOR) <= width) {
+      return { groups: nano, separator: DENSE_GROUP_SEPARATOR }
+    }
+    return {
+      groups: selectPriorityGroups(nano, width, candidate => layoutWidth(candidate, DENSE_GROUP_SEPARATOR)),
+      separator: DENSE_GROUP_SEPARATOR,
+    }
+  }
+  return {
+    groups: selectStableGroups(groups, width, candidate => layoutWidth(candidate, GROUP_SEPARATOR)),
+    separator: GROUP_SEPARATOR,
+  }
 }
 
 function tokenThemeColor(token: StatusColorToken | undefined, fallback: ThemeColor): ThemeColor {
@@ -370,23 +457,38 @@ function selectFooterGroups(
   }
   const natural = distribute(groups, GROUP_SEPARATOR)
   if (splitWidth(natural.left, natural.right) <= width) return natural
-  const dense = config.labels === 'compact'
-  if (dense) {
+  const compact = config.labels === 'compact'
+  if (compact) {
     const tight = distribute(groups, DENSE_GROUP_SEPARATOR)
     if (splitWidth(tight.left, tight.right, DENSE_GROUP_SEPARATOR) <= width) return tight
+    const dense = groups.map(denseGroup)
+    const denseColumns = distribute(dense, DENSE_GROUP_SEPARATOR)
+    if (splitWidth(denseColumns.left, denseColumns.right, DENSE_GROUP_SEPARATOR) <= width) return denseColumns
+    const nano = groups.map(nanoGroup)
+    const nanoColumns = distribute(nano, DENSE_GROUP_SEPARATOR)
+    if (splitWidth(nanoColumns.left, nanoColumns.right, DENSE_GROUP_SEPARATOR) <= width) return nanoColumns
+    const selected = selectPriorityGroups(nano, width, selection => {
+      const columns = distribute(selection, DENSE_GROUP_SEPARATOR)
+      return splitWidth(columns.left, columns.right, DENSE_GROUP_SEPARATOR)
+    })
+    return distribute(selected, DENSE_GROUP_SEPARATOR)
   }
-  const candidates = dense ? groups.map(denseGroup) : [...groups]
-  const separator = dense ? DENSE_GROUP_SEPARATOR : GROUP_SEPARATOR
-  const selected = selectStableGroups(candidates, width, selection => {
-    const columns = distribute(selection, separator)
-    return splitWidth(columns.left, columns.right, separator)
+  const selected = selectStableGroups(groups, width, selection => {
+    const columns = distribute(selection, GROUP_SEPARATOR)
+    return splitWidth(columns.left, columns.right, GROUP_SEPARATOR)
   })
-  return distribute(selected, separator)
+  return distribute(selected, GROUP_SEPARATOR)
+}
+
+function responsiveFooterPadding(width: number): number {
+  if (width >= 72) return FOOTER_PADDING
+  if (width >= 46) return 1
+  return 0
 }
 
 function renderSplitRow(left: string, right: string, width: number): string {
   if (width <= 0) return ''
-  const padding = width >= FOOTER_PADDING * 2 ? FOOTER_PADDING : 0
+  const padding = responsiveFooterPadding(width)
   const innerWidth = Math.max(0, width - padding * 2)
   const leftWidth = visibleWidth(left)
   const rightWidth = visibleWidth(right)
@@ -550,7 +652,8 @@ export function renderStatusFooter(options: StatusFooterOptions, theme: Theme): 
   const normalized = resolveStatusBarConfig(options.config)
   const width = Math.max(0, options.width)
   if (width === 0) return ['', '']
-  const innerWidth = Math.max(0, width - FOOTER_PADDING * 2)
+  const padding = responsiveFooterPadding(width)
+  const innerWidth = Math.max(0, width - padding * 2)
   const metadata = metadataColumns({ ...options, config: normalized }, theme, innerWidth, normalized, options.focus)
   const telemetryGroups = options.stats === undefined || !normalized.enabled
     ? { left: [], right: [], separator: GROUP_SEPARATOR }

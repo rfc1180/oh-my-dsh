@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
-- Compact status telemetry now switches to a dense form on narrow terminals so more count, timing, speed, cache, token, and context groups remain visible without clipping.
+- Compact status telemetry now switches through dense and unit-aware nano forms on narrow terminals, preserving cache, token, TTFT/rate, LLM/tool timing, context, and activity data before omitting lower-priority groups.
 
 ### Fixed
 
