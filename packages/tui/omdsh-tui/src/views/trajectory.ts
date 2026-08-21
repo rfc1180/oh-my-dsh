@@ -772,7 +772,8 @@ export function renderTrajectory(
     ]
     while (timeline.length < timelineHeight) timeline.push('')
     timeline.push(theme.fg('borderMuted', BOX.horizontal.repeat(rightWidth)))
-    timeline.push(...detailRows(state, theme, rightWidth, detailHeight))
+    timeline.push(panelHeader('Details', state.focus === 'details', '', theme, rightWidth))
+    timeline.push(...detailRows(state, theme, rightWidth, Math.max(0, detailHeight - 1)))
     content = combineColumns(sessions, leftWidth, timeline, rightWidth, theme, contentHeight)
   } else if (state.focus === 'sessions') {
     content = [
@@ -788,7 +789,8 @@ export function renderTrajectory(
     ]
     while (content.length < timelineHeight) content.push('')
     content.push(theme.fg('borderMuted', BOX.horizontal.repeat(innerWidth)))
-    content.push(...detailRows(state, theme, innerWidth, detailHeight))
+    content.push(panelHeader('Details', state.focus === 'details', '', theme, innerWidth))
+    content.push(...detailRows(state, theme, innerWidth, Math.max(0, detailHeight - 1)))
   }
   content = content.slice(0, contentHeight)
   while (content.length < contentHeight) content.push('')

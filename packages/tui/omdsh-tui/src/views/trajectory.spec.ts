@@ -116,6 +116,7 @@ describe('renderTrajectory', () => {
     expect(output).toContain('Sessions')
     expect(output).toContain('Review child')
     expect(output).toContain('Timeline')
+    expect(output).toContain('Details')
     expect(output).toContain('Ship the terminal trajectory')
     expect(output).toContain('Tab panes')
   })
