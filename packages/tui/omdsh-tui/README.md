@@ -21,8 +21,8 @@ See the [oh-my-dsh project overview](https://github.com/agi-fans/oh-my-dsh#readm
 
 The package contains three main roles:
 
-- **Service definition:** the transport-neutral `tui` context service and its event, status, model, input, interrupt, rewind, and disposal contracts.
-- **Local provider:** exclusive ownership of raw terminal input, editing, history, completion, scrolling, image paste, resize handling, and differential rendering.
+- **Service definition:** the transport-neutral `tui` context service and its event, status, model, input, interrupt, rewind, Trajectory-source, and disposal contracts.
+- **Local provider:** exclusive ownership of raw terminal input, editing, history, completion, scrolling, image paste, resize handling, the live Trajectory workspace, and differential rendering.
 - **Interactive runner:** creation of an Agent through the Harness registry and coordination of session events with the input loop.
 
 The rendering pipeline is pure and exported for testing and alternative providers. Additional exports expose session integration, human-interaction adapters, tool presentation, startup notices, and the command plugins used by omdsh.

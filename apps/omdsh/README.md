@@ -30,6 +30,7 @@ Run `/login` once inside omdsh to validate and save your DeepSeek API key, then 
 ## Highlights
 
 - **Durable conversations:** resume sessions, rewind to a human turn, retry, compact, and export complete transcripts as Markdown.
+- **Live Trajectory workspace:** press Alt+T or run `/trajectory` without waiting for the active turn to finish, then navigate durable root/child sessions, grouped activity, event payloads, filters, search, live follow, refresh, and copy inside a transcript-safe alternate screen.
 - **Four real session controls:** choose a Harness Agent preset (Standard, PTC, Minimal, or Cordis), Workflow (Default or Plan), tool presentation (Native, Code, or Both), and Access (Read only, Workspace write, or Full access).
 - **Rich terminal input:** mention project files and other sessions with `@`, paste clipboard images, reuse persistent prompt history, edit multiline prompts externally, and retrieve queued follow-ups.
 - **Readable tool activity:** follow streaming calls and live subagent progress, press Down on an empty composer then Enter (or use Alt+A directly) to select a child in the keyboard-driven Agent Hub, steer a continuable child from its transcript, inspect distinct Input and Output sections, expand long results, and keep domain-specific presentation owned by tool plugins.

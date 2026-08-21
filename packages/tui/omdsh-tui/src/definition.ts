@@ -143,6 +143,44 @@ export interface TuiRecentSession {
   status?: 'done' | 'interrupted' | 'blocked' | 'failed'
 }
 
+/** Event filter offered by the terminal Trajectory workspace. */
+export type TuiTrajectoryMode = 'summary' | 'all' | 'tools' | 'errors'
+
+/** One durable root or child session in the Trajectory workspace. */
+export interface TuiTrajectorySessionSummary {
+  readonly id: string
+  readonly title: string
+  readonly preview?: string
+  readonly cwd?: string
+  readonly createdAt?: number
+  readonly updatedAt?: number
+  readonly eventCount?: number
+  readonly status?: string
+  readonly origin?: string
+  readonly parentSession?: string
+  readonly delegationDepth?: number
+}
+
+/** Inspected session snapshot returned by a Trajectory source. */
+export interface TuiTrajectorySession extends TuiTrajectorySessionSummary {
+  readonly events: readonly SessionEvent[]
+}
+
+/** Read-only source owned by the command/plugin that opens Trajectory. */
+export interface TuiTrajectorySource {
+  readonly activeSessionId: string
+  list(signal?: AbortSignal): Promise<readonly TuiTrajectorySessionSummary[]>
+  inspect(id: string, signal?: AbortSignal): Promise<TuiTrajectorySession>
+  /** Snapshot refresh cadence. Active-session events still update immediately. */
+  readonly pollIntervalMs?: number
+}
+
+/** Initial presentation settings for one Trajectory workspace. */
+export interface TuiTrajectoryOptions {
+  readonly mode?: TuiTrajectoryMode
+  readonly limit?: number
+}
+
 /** Optional whole-session figures shown below the editor. */
 export interface TuiSessionStats {
   turns: number
@@ -211,6 +249,10 @@ export interface TuiService {
   commandOutput(command: string, text: string): void
   /** Temporarily own the composer and collect one human answer. */
   prompt(request: TuiPrompt): Promise<string | null>
+  /** Replace the optional source used by `/trajectory` and the Trajectory hotkey. */
+  setTrajectorySource(source?: TuiTrajectorySource): void
+  /** Open the read-only live Trajectory workspace until the human closes it. */
+  openTrajectory(source: TuiTrajectorySource, options?: TuiTrajectoryOptions): Promise<void>
   /** Replace the transcript when a new or resumed session becomes active. */
   replaceSession(
     events: readonly SessionEvent[],

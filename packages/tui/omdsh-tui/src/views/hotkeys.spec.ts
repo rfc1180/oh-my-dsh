@@ -23,6 +23,8 @@ describe('formatHotkeysText', () => {
     expect(text).toContain('Ctrl+O')
     expect(text).toContain('Alt+A')
     expect(text).toContain('subagent transcript')
+    expect(text).toContain('Alt+T')
+    expect(text).toContain('Trajectory workspace')
     expect(text).not.toContain('thinking')
     expect(text).not.toContain('Speech-to-text')
   })
@@ -34,8 +36,9 @@ describe('formatHotkeysText', () => {
 
   it('keeps the default help subset compact and honors the paste binding', () => {
     const text = formatEssentialHotkeysText({ ...DEFAULT_KEYBINDINGS, 'ctrl+g': 'paste-clipboard' })
-    expect(text.split('\n')).toHaveLength(8)
+    expect(text.split('\n')).toHaveLength(9)
     expect(text).toContain('Ctrl+V / Ctrl+G')
+    expect(text).toContain('Alt+T')
     expect(text).toContain('Esc twice')
     expect(text).not.toContain('Ctrl+A')
   })

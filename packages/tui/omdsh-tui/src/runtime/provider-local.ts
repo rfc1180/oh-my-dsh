@@ -2,7 +2,7 @@
  * TUI capability seam — local terminal provider.
 
  * Owns the tty: raw-mode key input (editing, history, slash/tab
- * autocomplete, /settings overlay, /copy picker, Ctrl-R history search, PgUp/PgDn
+ * autocomplete, /settings overlay, /copy picker, live Trajectory workspace, Ctrl-R history search, PgUp/PgDn
  * and Shift+Up/Down transcript scroll, Ctrl-O tool
  * expand, bracketed paste, double-Escape conversation rewind, double Ctrl-C exit, Ctrl-D quit),
  * SIGWINCH reflow, and the differential renderer. In non-tty mode
@@ -31,6 +31,8 @@ import {
   type TuiLoopStatus,
   type TuiSubagentRoster,
   type TuiSubmission,
+  type TuiTrajectoryOptions,
+  type TuiTrajectorySource,
 } from '../definition.ts'
 import {
   applySlashCompletion,
@@ -98,6 +100,17 @@ import type { TuiToolPresentation } from '../chrome/tool-renderers.ts'
 import { TUI_SETTINGS_NAMESPACE, TuiSettingsSchema } from '../session/tui-settings.ts'
 import { defaultStatusBarConfig, resolveStatusBarConfig, type StatusBarConfig } from '../chrome/status-config.ts'
 import { HistoryStore } from '../views/history-store.ts'
+import {
+  appendTrajectoryEvent,
+  applyTrajectoryEvent,
+  createTrajectoryState,
+  parseTrajectoryOptions,
+  renderTrajectory,
+  setTrajectoryLoading,
+  setTrajectorySessions,
+  setTrajectorySnapshot,
+  type TrajectoryState,
+} from '../views/trajectory.ts'
 import { loadKeybindings, type TuiAction } from '../input/keybindings-config.ts'
 import { editExternally } from '../input/external-editor.ts'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -208,6 +221,12 @@ export class LocalTui implements TuiService {
   #search: HistorySearchState | null = null
   #settings: SettingsState | null = null
   #copySelector: CopySelectorState | null = null
+  #trajectory: TrajectoryState | null = null
+  #trajectorySource: TuiTrajectorySource | null = null
+  #trajectoryResolve: (() => void) | null = null
+  #trajectoryAbort: AbortController | null = null
+  #trajectoryRequestId = 0
+  #trajectoryPoll: ReturnType<typeof setInterval> | null = null
   #pending: PendingRead | null = null
   #queuedSubmissions: TuiSubmission[] = []
   /** Newer queue entries temporarily detached while Up browses backward. */
@@ -393,6 +412,9 @@ export class LocalTui implements TuiService {
 
   event(event: SessionEvent, presentation?: TuiToolPresentation): void {
     this.#state = applyEvent(this.#state, event, presentation)
+    if (this.#trajectory !== null && this.#sessionId !== undefined) {
+      this.#trajectory = appendTrajectoryEvent(this.#trajectory, this.#sessionId, event)
+    }
     this.#syncTick()
     if (this.#tty) {
       if (event.type === 'assistant/chunk' && this.#streamRenderMs > 0) {
@@ -502,6 +524,7 @@ export class LocalTui implements TuiService {
   }
 
   prompt(request: TuiPrompt): Promise<string | null> {
+    if (this.#trajectory !== null) return Promise.reject(new Error('omdsh-tui: Trajectory owns the terminal'))
     if (this.#prompt !== null) return Promise.reject(new Error('omdsh-tui: prompt already in flight'))
     if (this.#disposed || request.signal?.aborted === true) return Promise.resolve(null)
     this.#editor.setText('')
@@ -533,6 +556,30 @@ export class LocalTui implements TuiService {
         this.notice(`${request.title}\n${lines.join('\n')}`)
       }
     })
+  }
+
+  setTrajectorySource(source?: TuiTrajectorySource): void {
+    this.#trajectorySource = source ?? null
+    if (source === undefined && this.#trajectory !== null) this.#closeTrajectory()
+  }
+
+  openTrajectory(source: TuiTrajectorySource, options: TuiTrajectoryOptions = {}): Promise<void> {
+    if (!this.#tty) return Promise.reject(new Error('Trajectory requires an interactive terminal'))
+    if (this.#disposed) return Promise.resolve()
+    if (this.#trajectory !== null) return Promise.reject(new Error('Trajectory is already open'))
+    if (this.#prompt !== null || this.#settings !== null || this.#copySelector !== null) {
+      return Promise.reject(new Error('Close the current terminal overlay before opening Trajectory'))
+    }
+    this.#search = null
+    this.#ac = null
+    this.#trajectorySource = source
+    this.#trajectory = createTrajectoryState(source.activeSessionId, options)
+    this.#render()
+    void this.#refreshTrajectory(true, source.activeSessionId)
+    const pollMs = Math.max(500, Math.min(30_000, source.pollIntervalMs ?? 1_500))
+    this.#trajectoryPoll = setInterval(() => { void this.#refreshTrajectory(true) }, pollMs)
+    this.#trajectoryPoll.unref?.()
+    return new Promise((resolve) => { this.#trajectoryResolve = resolve })
   }
 
   replaceSession(
@@ -647,6 +694,97 @@ export class LocalTui implements TuiService {
     this.#replaceInput(submission)
   }
 
+  async #refreshTrajectory(reloadList: boolean, requestedId?: string): Promise<void> {
+    const source = this.#trajectorySource
+    const current = this.#trajectory
+    if (source === null || current === null || this.#disposed) return
+    const requestId = ++this.#trajectoryRequestId
+    this.#trajectoryAbort?.abort()
+    const controller = new AbortController()
+    this.#trajectoryAbort = controller
+    this.#trajectory = setTrajectoryLoading(current, true)
+    this.#render()
+    try {
+      let next = this.#trajectory
+      if (next === null) return
+      if (reloadList) {
+        next = setTrajectorySessions(next, await source.list(controller.signal))
+        if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
+      }
+      const id = requestedId ?? next.snapshot?.id ?? next.sessions[next.selectedSession]?.id ?? source.activeSessionId
+      const selectedSession = next.sessions.findIndex(session => session.id === id)
+      next = {
+        ...next,
+        ...(selectedSession < 0 ? {} : { selectedSession }),
+        loading: true,
+        error: undefined,
+      }
+      this.#trajectory = next
+      const snapshot = await source.inspect(id, controller.signal)
+      if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
+      this.#trajectory = setTrajectorySnapshot(this.#trajectory, snapshot)
+      this.#trajectoryAbort = null
+      this.#render()
+    } catch (error: unknown) {
+      if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
+      const message = error instanceof Error ? error.message : String(error)
+      this.#trajectory = setTrajectoryLoading(this.#trajectory, false, message)
+      this.#trajectoryAbort = null
+      this.#render()
+    }
+  }
+
+  #applyTrajectory(event: KeyEvent): void {
+    const state = this.#trajectory
+    if (state === null) return
+    const command = applyTrajectoryEvent(state, event)
+    if (command.kind === 'update') {
+      this.#trajectory = command.state
+      this.#render()
+      return
+    }
+    if (command.kind === 'inspect') {
+      this.#trajectory = command.state
+      this.#render()
+      void this.#refreshTrajectory(false, command.id)
+      return
+    }
+    if (command.kind === 'refresh') {
+      this.#trajectory = command.state
+      this.#render()
+      void this.#refreshTrajectory(true)
+      return
+    }
+    if (command.kind === 'copy') {
+      this.#trajectory = command.state
+      void this.#copy(command.text).catch((error: unknown) => {
+        if (this.#trajectory === null) return
+        this.#trajectory = setTrajectoryLoading(
+          this.#trajectory,
+          false,
+          'Copy failed: ' + (error instanceof Error ? error.message : String(error)),
+        )
+        this.#render()
+      })
+      return
+    }
+    if (command.kind === 'close') this.#closeTrajectory()
+  }
+
+  #closeTrajectory(render = true): void {
+    if (this.#trajectory === null && this.#trajectoryResolve === null) return
+    this.#trajectoryRequestId += 1
+    this.#trajectoryAbort?.abort()
+    this.#trajectoryAbort = null
+    if (this.#trajectoryPoll !== null) clearInterval(this.#trajectoryPoll)
+    this.#trajectoryPoll = null
+    this.#trajectory = null
+    const resolve = this.#trajectoryResolve
+    this.#trajectoryResolve = null
+    resolve?.()
+    if (render && !this.#disposed) this.#render()
+  }
+
   #currentSubmission(): TuiSubmission {
     return {
       text: this.#editor.text,
@@ -711,6 +849,8 @@ export class LocalTui implements TuiService {
       clearInterval(this.#loopTick)
       this.#loopTick = null
     }
+    this.#closeTrajectory(false)
+    this.#trajectorySource = null
     if (this.#tty) {
       this.#offData?.()
       this.#offResize?.()
@@ -841,7 +981,16 @@ export class LocalTui implements TuiService {
     if (this.#deferInitialRender) return
     const width = this.#term.width()
     const frame = this.#tty
-      ? renderView(this.#state, {
+      ? this.#trajectory !== null
+        ? renderTrajectory(
+          this.#trajectory,
+          createTheme(this.#colors, this.#trueColor, this.#themeName),
+          width,
+          this.#term.height(),
+          APP_NAME,
+          this.#spinner,
+        )
+        : renderView(this.#state, {
         width,
         height: this.#term.height(),
         model: this.#model,
@@ -1145,6 +1294,10 @@ export class LocalTui implements TuiService {
         return
       }
       if (event.type !== 'key' || event.id !== 'ctrl+c') return
+    }
+    if (this.#trajectory !== null) {
+      this.#applyTrajectory(event)
+      return
     }
     // Clipboard image inspection is asynchronous. Preserve the exact key
     // order so a fast Ctrl+V, Enter submits the finished image draft rather
@@ -2010,6 +2163,21 @@ export class LocalTui implements TuiService {
       this.#render()
       return
     }
+    if (command.name === 'trajectory' && this.#trajectorySource !== null) {
+      let options: TuiTrajectoryOptions
+      try {
+        options = parseTrajectoryOptions(args)
+      } catch (error: unknown) {
+        this.#notice(error instanceof Error ? error.message : String(error))
+        this.#render()
+        return
+      }
+      void this.openTrajectory(this.#trajectorySource, options).catch((error: unknown) => {
+        this.#notice(error instanceof Error ? error.message : String(error))
+        this.#render()
+      })
+      return
+    }
     if (command.name === 'settings') {
       this.#runSettings(args)
       return
@@ -2153,6 +2321,18 @@ export class LocalTui implements TuiService {
 
   #runAction(action: TuiAction): void {
     if (this.#prompt !== null || this.#settings !== null || this.#copySelector !== null) return
+    if (action === 'trajectory') {
+      if (this.#trajectorySource === null) {
+        this.#notice('Trajectory source is not available in this session.')
+        this.#render()
+      } else {
+        void this.openTrajectory(this.#trajectorySource).catch((error: unknown) => {
+          this.#notice(error instanceof Error ? error.message : String(error))
+          this.#render()
+        })
+      }
+      return
+    }
     if (action === 'inspect-subagent') {
       void this.#pickSubagent()
       return

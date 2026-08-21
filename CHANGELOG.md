@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- Open a live multi-session Trajectory workspace with `/trajectory` or Alt+T. The alternate-screen view keeps the transcript intact while providing a durable root/child session tree, readable event timeline, raw event details, filtering, search, follow mode, refresh, and clipboard copy.
+
 ### Changed
 
 - Compact status telemetry now switches through dense and unit-aware nano forms on narrow terminals, preserving cache, token, TTFT/rate, LLM/tool timing, context, and activity data before omitting lower-priority groups.

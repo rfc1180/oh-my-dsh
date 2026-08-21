@@ -119,6 +119,67 @@ function shortenedWorkspaceRoot(): string {
 }
 
 describe('LocalTui (tty)', () => {
+  it('opens Trajectory in the alternate screen and restores the transcript on close', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 32
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { alternateScreenOverlays: true })
+    tui.setSession({ id: 'session-root', recent: [] })
+    tui.replaceSession([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'preserved transcript' }] }, 1),
+      ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2),
+    ])
+    const before = term.captured.length
+    const closed = tui.openTrajectory({
+      activeSessionId: 'session-root',
+      pollIntervalMs: 30_000,
+      list: async () => [{ id: 'session-root', title: 'Current work', eventCount: 2 }],
+      inspect: async () => ({
+        id: 'session-root',
+        title: 'Current work',
+        eventCount: 2,
+        events: [
+          ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'preserved transcript' }] }, 1),
+          ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2),
+        ],
+      }),
+    })
+    await flushAsyncPaste()
+    const opened = term.captured.slice(before)
+    expect(opened).toContain('\x1b[?1049h')
+    expect(emulatedScreenRows(opened).map(stripAnsi).join('\n')).toContain('Trajectory')
+
+    press(term, 'q')
+    await closed
+    expect(term.captured.slice(before)).toContain('\x1b[?1049l')
+    tui.dispose()
+  })
+
+  it('opens the configured Trajectory source while an agent turn is running', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 30
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { alternateScreenOverlays: true })
+    tui.setSession({ id: 'session-live', recent: [] })
+    tui.setTrajectorySource({
+      activeSessionId: 'session-live',
+      pollIntervalMs: 30_000,
+      list: async () => [{ id: 'session-live', title: 'Live task' }],
+      inspect: async () => ({ id: 'session-live', title: 'Live task', events: [] }),
+    })
+    tui.setStatus('running')
+    const before = term.captured.length
+    press(term, '\x1bt')
+    await flushAsyncPaste()
+    expect(term.captured.slice(before)).toContain('\x1b[?1049h')
+    expect(emulatedScreenRows(term.captured.slice(before)).map(stripAnsi).join('\n')).toContain('Live task')
+    tui.event(ev('tool/call', { callId: 'call-live', name: 'bash', arguments: '{"command":"pnpm test"}' }, 1))
+    expect(emulatedScreenRows(term.captured.slice(before)).map(stripAnsi).join('\n')).toContain('pnpm test')
+    press(term, 'q')
+    await flushAsyncPaste()
+    tui.dispose()
+  })
+
   it('repaints the footer when live Agent and tool controls change', () => {
     const term = new FakeTerminal()
     term.columns = 100
