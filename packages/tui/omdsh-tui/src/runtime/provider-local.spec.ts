@@ -1217,12 +1217,13 @@ describe('LocalTui (tty)', () => {
     press(term, '/')
     expect(term.captured).toContain('/help')
     expect(term.captured).toContain('/settings')
+    expect(term.captured).toContain('/detail')
     expect(term.captured).not.toContain('/theme')
     expect(term.captured).not.toContain('/hotkeys')
     expect(term.captured).not.toContain('/pwd')
     expect(term.captured).not.toContain('/dirs')
     expect(term.captured).toContain('/copy')
-    expect(term.captured).toContain('1/6')
+    expect(term.captured).toContain('1/7')
     tui.dispose()
   })
 
@@ -1477,7 +1478,7 @@ describe('LocalTui (tty)', () => {
     const cases = [
       {
         command: '/help\r',
-        heading: 'Commands · 30 core',
+        heading: 'Commands · 31 core',
         prepare: (tui: LocalTui): void => {
           tui.setCommands(Array.from({ length: 24 }, (_, index) => ({
             name: `runtime-${index}`,
@@ -1641,6 +1642,34 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('opens and persists lighter activity detail modes', async () => {
+    const persisted: string[] = []
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    tui.setPrefsPersist((prefs) => { persisted.push(prefs.activityDetail ?? 'standard') })
+    const pending = tui.readline()
+
+    press(term, '/detail\r')
+    expect(term.captured).toContain('Activity detail')
+    expect(term.captured).toContain('standard')
+    press(term, '\x1b[C')
+    expect(persisted).toEqual(['compact'])
+    expect(term.captured).toContain('One-line reasoning, tools, and todo progress')
+    press(term, '\x03')
+
+    const beforeSwitch = term.captured.length
+    press(term, '/detail minimal\r')
+    expect(term.captured.slice(beforeSwitch)).toContain('\x1b[3J')
+    expect(persisted).toEqual(['compact', 'minimal'])
+    expect(term.captured).toContain('Activity detail: minimal')
+
+    press(term, '/detail noisy\r')
+    expect(term.captured).toContain('Usage: /detail [standard|compact|minimal|quiet]')
+    press(term, 'ok\r')
+    expect(await pending).toBe('ok')
+    tui.dispose()
+  })
+
   it('persists theme changes made in the settings overlay', async () => {
     const persisted: Array<{ theme: string; colors: boolean }> = []
     const term = new FakeTerminal()
@@ -1653,6 +1682,7 @@ describe('LocalTui (tty)', () => {
       theme: 'light',
       colors: false,
       expandTools: false,
+      activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
       statusBar: {
@@ -1854,6 +1884,27 @@ describe('LocalTui (tty)', () => {
     press(term, '\x0f')
     expect(term.captured.slice(afterExpand)).toContain('Ctrl+O: Expand')
     expect(term.captured.slice(afterExpand)).not.toContain('tool-line-13')
+    tui.dispose()
+  })
+
+  it('restarts lighter projections before ctrl+o reveals a hidden tool', () => {
+    const term = new FakeTerminal()
+    term.height = () => 80
+    const tui = new LocalTui(term, 'm', false)
+    tui.applyStoredPrefs({ theme: 'dark', colors: false, expandTools: false, activityDetail: 'quiet' })
+    tui.event(ev('tool/call', { callId: 'call-hidden', name: 'bash', arguments: '{}' }, 1))
+    tui.event(ev('tool/result', {
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-hidden', content: [{ type: 'text', text: 'HIDDEN-OUTPUT' }],
+      }] },
+    }, 2))
+    expect(term.captured).not.toContain('HIDDEN-OUTPUT')
+
+    const beforeExpand = term.captured.length
+    press(term, '\x0f')
+    const expanded = term.captured.slice(beforeExpand)
+    expect(expanded).toContain('\x1b[3J')
+    expect(expanded).toContain('HIDDEN-OUTPUT')
     tui.dispose()
   })
 

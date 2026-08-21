@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest'
 import { MainScreenRenderer } from './main-screen-renderer.ts'
 import type { Frame } from './renderer.ts'
+import { applyEvent, initialTranscript, renderView } from '../views/event-views.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /**
  * Minimal VT-style emulator with a fixed-height screen and a scrollback buffer.
@@ -127,6 +129,10 @@ function frame(
 
 function joined(lines: readonly string[]): string {
   return lines.join('\n')
+}
+
+function ev(type: string, data: unknown, seq: number): SessionEvent {
+  return { type, seq, time: seq, data } as unknown as SessionEvent
 }
 
 describe('MainScreenRenderer', () => {
@@ -415,7 +421,85 @@ describe('MainScreenRenderer', () => {
     expect(emu.visible()).toEqual(more.slice(more.length - 5))
   })
 
-  it('scrolls an append-only live assistant head while following its tail', () => {
+  it('does not duplicate a partial Markdown stream when the final reply settles', () => {
+    const width = 42
+    const height = 8
+    const emu = new Emulator(height)
+    const renderer = new MainScreenRenderer(emu, { width, height, synchronized: false })
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'request' }],
+    }, 1))
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: {
+        type: 'text-delta',
+        text: 'partial opening\n```text\nPARTIAL-ONLY\n' + Array.from({ length: 20 }, (_, index) => `draft-${index}`).join('\n'),
+      },
+    }, 2))
+    const options = { width, height, model: 'm', input: '', inputCursor: 0, colors: false } as const
+    const partial = renderView(state, options)
+    expect(partial.livePinned).toBe(true)
+    renderer.render(partial)
+    expect(joined(emu.scrollback)).not.toContain('PARTIAL-ONLY')
+
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{
+        type: 'text',
+        text: 'FINAL-START\n\n```text\nfinal code\n```\n\nFINAL-MIDDLE\n\nFINAL-END',
+      }] },
+    }, 3))
+    renderer.render(renderView(state, options))
+    const tape = joined([...emu.scrollback, ...emu.visible()])
+    expect(tape).not.toContain('PARTIAL-ONLY')
+    expect(tape.match(/FINAL-START/gu)).toHaveLength(1)
+    expect(tape.match(/FINAL-MIDDLE/gu)).toHaveLength(1)
+    expect(tape.match(/FINAL-END/gu)).toHaveLength(1)
+  })
+
+  it('keeps out-of-order quiet tool errors behind the earliest hidden pending call', () => {
+    const width = 48
+    const height = 6
+    const emu = new Emulator(height)
+    const renderer = new MainScreenRenderer(emu, { width, height, synchronized: false })
+    const options = {
+      width, height, model: 'm', input: '', inputCursor: 0, colors: false, activityDetail: 'quiet' as const,
+    }
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' }, content: [{ type: 'text', text: 'parallel request' }],
+    }, 1))
+    state = applyEvent(state, ev('tool/call', { callId: 'call-a', name: 'bash', arguments: '{}' }, 2))
+    state = applyEvent(state, ev('tool/call', { callId: 'call-b', name: 'read', arguments: '{}' }, 3))
+    renderer.render(renderView(state, options))
+
+    state = applyEvent(state, ev('tool/result', {
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-b', isError: true, content: [{ type: 'text', text: 'ERROR-B' }],
+      }] },
+    }, 4))
+    const onePending = renderView(state, options)
+    expect(onePending.livePinned).toBe(true)
+    renderer.render(onePending)
+    expect(joined(emu.scrollback)).not.toContain('ERROR-B')
+
+    state = applyEvent(state, ev('tool/result', {
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-a', isError: true, content: [{ type: 'text', text: 'ERROR-A' }],
+      }] },
+    }, 5))
+    renderer.render(renderView(state, options))
+    const tape = joined([...emu.scrollback, ...emu.visible()])
+    expect(tape.match(/ERROR-A/gu)).toHaveLength(1)
+    expect(tape.match(/ERROR-B/gu)).toHaveLength(1)
+    expect(tape.indexOf('ERROR-A')).toBeLessThan(tape.indexOf('ERROR-B'))
+  })
+
+  it('scrolls an explicitly unpinned live region while following its tail', () => {
     const emu = new Emulator(5)
     const renderer = new MainScreenRenderer(emu, { width: 80, height: 5, synchronized: false })
 
@@ -801,6 +885,32 @@ describe('MainScreenRenderer', () => {
     renderer.render(frame(live, live.length))
     expect(emu.scrollback).toEqual(live.slice(0, 15))
     expect(emu.visible()).toEqual(live.slice(15))
+  })
+
+  it('starts a tail-only projection without replaying preserved host scrollback', () => {
+    const emu = new Emulator(5, ['shell-history'])
+    const renderer = new MainScreenRenderer(emu, {
+      width: 80,
+      height: 5,
+      synchronized: false,
+      clearScrollback: false,
+    })
+    const detailed = Array.from({ length: 10 }, (_, index) => `detailed-${index}`)
+    renderer.render(frame(detailed, detailed.length))
+    const preserved = [...emu.scrollback]
+
+    const compact = Array.from({ length: 6 }, (_, index) => `compact-${index}`)
+    const mark = emu.captured.length
+    renderer.startEpoch({ replay: 'tail' })
+    renderer.render(frame(compact, compact.length))
+    expect(emu.outputAfter(mark)).not.toContain('\x1b[3J')
+    expect(emu.scrollback).toEqual(preserved)
+    expect(emu.visible()).toEqual(compact.slice(-5))
+
+    const grown = [...compact, 'compact-6']
+    renderer.render(frame(grown, grown.length))
+    expect(emu.scrollback).toEqual([...preserved, 'compact-1'])
+    expect(emu.visible()).toEqual(grown.slice(-5))
   })
 
   it('does not emit ED3 when the terminal profile cannot clear scrollback', () => {

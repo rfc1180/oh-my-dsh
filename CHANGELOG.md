@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
 - Open the current conversation's live Trajectory as a read-only companion block with `/trajectory`, keeping the main Surfterm conversation visible. `/trajectory screen` and Alt+T retain the alternate-screen view, while both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 
 ### Changed
@@ -16,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep streaming assistant rows mutable until the authoritative reply settles, preventing partial Markdown layouts from entering native scrollback and appearing again before the complete answer.
 - Prompt selectors now accept both terminal Enter encodings and submit the highlighted choice when a multi-select prompt has no checked options.
 
 ## [0.8.0] - 2026-08-20

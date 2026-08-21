@@ -15,6 +15,7 @@ import type { CallId, ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, ToolResultMessage } from '@deepseek-ai/dsh-session'
 import type { FileDiff } from '@deepseek-ai/dsh-tools'
 import type { AutocompleteItem, SlashCommand } from './autocomplete.ts'
+import type { ActivityDetailMode } from '../session/activity-detail.ts'
 import { leadingSlashCommandNameRange, renderAutocomplete, slashInlineHint } from './autocomplete.ts'
 import { HISTORY_SEARCH_MAX_VISIBLE, type HistorySearchState, renderHistorySearch } from './history-search.ts'
 import { renderEditor, renderFramedBlock, renderWelcome, renderWorking } from '../chrome/box.ts'
@@ -493,6 +494,8 @@ export interface ViewOptions {
   scrollStart?: number
   /** Open one transcript block at its first row instead of following the tail. */
   focusBlock?: number
+  /** Progressive disclosure for reasoning and tool activity. */
+  activityDetail?: ActivityDetailMode
   /**
    * When true, tool blocks paint their full output (OMP `ctrl+o`). Default
    * is the collapsed preview of {@link TOOL_COLLAPSED_LINES} rows.
@@ -592,6 +595,51 @@ function toolIcon(status: ToolBlockStatus, theme: Theme, spinnerFrame: number): 
   return theme.fg('error', SYMBOL.error)
 }
 
+function compactReasoningLines(source: string, theme: Theme, width: number): string[] {
+  const summary = source
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .at(-1)
+    ?.replace(/\s+/gu, ' ')
+  if (summary === undefined) return []
+  const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
+  const contentWidth = Math.max(1, width - paddingX * 2)
+  const line = truncateToWidth(theme.italic(theme.fg('thinkingText', '… ' + summary)), contentWidth)
+  return assistantContentLines([line], width, paddingX)
+}
+
+/** Render a tool as one status row for lighter activity modes. */
+function toolSummaryLines(
+  block: Extract<Block, { kind: 'tool' }>,
+  theme: Theme,
+  width: number,
+  spinnerFrame: number,
+): string[] {
+  const icon = toolIcon(block.status, theme, spinnerFrame)
+  const presentation = renderTool({
+    name: block.name,
+    arguments: prettyArgs(block.args),
+    output: block.output,
+    status: block.status,
+    expanded: false,
+    ...(block.presentation === undefined ? {} : { presentation: block.presentation }),
+  })
+  const diffs = exclusiveDiffs(block.presentation)
+  const statsLabel = diffs === undefined
+    ? ''
+    : (() => {
+        const stats = countDiffStats(alignFileDiffs(diffs))
+        return paintDiffStats(stats.added, stats.removed, theme)
+      })()
+  const summary = presentation.summary === undefined || presentation.summary === ''
+    ? ''
+    : theme.fg('dim', ' · ' + presentation.summary)
+  const stats = statsLabel === '' ? '' : ' ' + statsLabel
+  const row = '  ' + icon + ' ' + theme.bold(presentation.title ?? block.name) + stats + summary
+  return [truncateToWidth(row, width)]
+}
+
 /** Render one tool block as an OMP framed output box. */
 function toolBlockLines(
   block: Extract<Block, { kind: 'tool' }>,
@@ -666,6 +714,7 @@ function toolBlockLines(
  * @param width - terminal width in columns.
  * @param spinnerFrame - activity spinner phase for running tools.
  * @param toolsExpanded - paint full tool output instead of the collapsed preview.
+ * @param activityDetail - progressive disclosure for reasoning and tool activity.
  * @returns display lines (already width-fitted).
  */
 export function blockLines(
@@ -674,17 +723,24 @@ export function blockLines(
   width: number,
   spinnerFrame = 0,
   toolsExpanded = false,
+  activityDetail: ActivityDetailMode = 'standard',
 ): string[] {
   if (block.kind === 'user') return userBubble(block.text, theme, width)
   if (block.kind === 'assistant') {
     const lines: string[] = []
     if (block.reasoning !== '') {
-      lines.push(...assistantMarkdown(block.reasoning, theme, width, { color: 'thinkingText', italic: true }))
-      if (block.text !== '') lines.push('')
+      if (activityDetail === 'standard') {
+        lines.push(...assistantMarkdown(block.reasoning, theme, width, { color: 'thinkingText', italic: true }))
+      } else if (activityDetail === 'compact') {
+        lines.push(...compactReasoningLines(block.reasoning, theme, width))
+      }
+      if (lines.length > 0 && block.text !== '') lines.push('')
     }
-    if (block.text === '' && block.streaming) {
-      const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
-      lines.push(...assistantContentLines([theme.fg('dim', '…')], width, paddingX))
+    if (block.text === '' && block.streaming && (activityDetail === 'standard' || activityDetail === 'compact')) {
+      if (activityDetail === 'standard' || lines.length === 0) {
+        const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
+        lines.push(...assistantContentLines([theme.fg('dim', '…')], width, paddingX))
+      }
     } else if (block.text !== '') {
       lines.push(...assistantMarkdown(block.text, theme, width, hasExplicitTextColor(theme) ? { color: 'text' } : undefined))
     }
@@ -694,7 +750,13 @@ export function blockLines(
     }
     return lines
   }
-  if (block.kind === 'tool') return toolBlockLines(block, theme, width, spinnerFrame, toolsExpanded)
+  if (block.kind === 'tool') {
+    if (toolsExpanded || activityDetail === 'standard' || block.status === 'error') {
+      return toolBlockLines(block, theme, width, spinnerFrame, toolsExpanded)
+    }
+    if (activityDetail === 'quiet' || (activityDetail === 'minimal' && block.status === 'ok')) return []
+    return toolSummaryLines(block, theme, width, spinnerFrame)
+  }
   if (block.kind === 'toolCatalog') return renderToolsPanel(block.tools, theme, width, toolsExpanded)
   if (block.kind === 'commandOutput') return renderCommandOutput(block.command, block.text, theme, width)
   if (block.framed !== true) {
@@ -735,10 +797,12 @@ interface TranscriptBodyCache {
   trueColor: boolean
   themeName: ThemeName
   spinnerFrame: number
+  activityDetail: ActivityDetailMode
   toolsExpanded: boolean
   expandedTools: string
   lines: readonly string[]
   blockStarts: readonly number[]
+  pendingStart?: number
 }
 
 /**
@@ -755,6 +819,7 @@ interface BlockLinesCache {
   trueColor: boolean
   themeName: ThemeName
   spinnerFrame: number
+  activityDetail: ActivityDetailMode
   expanded: boolean
   lines: readonly string[]
 }
@@ -769,9 +834,13 @@ function cachedBlockLines(
   themeName: ThemeName,
   trueColor: boolean,
   spinnerFrame: number,
+  activityDetail: ActivityDetailMode,
   expanded: boolean,
 ): readonly string[] {
-  const animatedSpinnerFrame = block.kind === 'tool' && block.status === 'running' ? spinnerFrame : -1
+  const animatedSpinnerFrame = block.kind === 'tool' && block.status === 'running'
+    && (activityDetail !== 'quiet' || expanded)
+    ? spinnerFrame
+    : -1
   const cached = blockLinesCache.get(block)
   if (cached !== undefined
     && cached.width === options.width
@@ -779,14 +848,16 @@ function cachedBlockLines(
     && cached.trueColor === trueColor
     && cached.themeName === themeName
     && cached.spinnerFrame === animatedSpinnerFrame
+    && cached.activityDetail === activityDetail
     && cached.expanded === expanded) return cached.lines
-  const lines = blockLines(block, theme, options.width, spinnerFrame, expanded)
+  const lines = blockLines(block, theme, options.width, spinnerFrame, expanded, activityDetail)
   blockLinesCache.set(block, {
     width: options.width,
     colors: options.colors,
     trueColor,
     themeName,
     spinnerFrame: animatedSpinnerFrame,
+    activityDetail,
     expanded,
     lines,
   })
@@ -798,12 +869,15 @@ function renderTranscriptBody(
   options: ViewOptions,
   theme: Theme,
   spinnerFrame: number,
-): { lines: readonly string[]; blockStarts: readonly number[] } {
+): { lines: readonly string[]; blockStarts: readonly number[]; pendingStart?: number } {
+  const activityDetail = options.activityDetail ?? 'standard'
   const toolsExpanded = options.toolsExpanded === true
   const expandedTools = [...(options.expandedTools ?? [])].sort().join('\0')
   const themeName = options.themeName ?? 'dark'
   const trueColor = options.trueColor === true
-  const animatedSpinnerFrame = state.blocks.some(block => block.kind === 'tool' && block.status === 'running')
+  const animatedSpinnerFrame = state.blocks.some(block => block.kind === 'tool'
+    && block.status === 'running'
+    && (activityDetail !== 'quiet' || toolsExpanded || options.expandedTools?.has(block.callId) === true))
     ? spinnerFrame
     : -1
   const cached = transcriptBodyCache.get(state.blocks)
@@ -813,15 +887,28 @@ function renderTranscriptBody(
     && cached.trueColor === trueColor
     && cached.themeName === themeName
     && cached.spinnerFrame === animatedSpinnerFrame
+    && cached.activityDetail === activityDetail
     && cached.toolsExpanded === toolsExpanded
     && cached.expandedTools === expandedTools) {
-    return { lines: cached.lines, blockStarts: cached.blockStarts }
+    return {
+      lines: cached.lines,
+      blockStarts: cached.blockStarts,
+      ...(cached.pendingStart === undefined ? {} : { pendingStart: cached.pendingStart }),
+    }
   }
 
   const lines: string[] = []
   const blockStarts: number[] = []
+  let pendingStart: number | undefined
   let previous: Block | undefined
   for (const block of state.blocks) {
+    if (pendingStart === undefined && isBlockPending(block)) pendingStart = lines.length
+    const expanded = toolsExpanded || (block.kind === 'tool' && options.expandedTools?.has(block.callId) === true)
+    const rendered = cachedBlockLines(block, options, theme, themeName, trueColor, spinnerFrame, activityDetail, expanded)
+    if (rendered.length === 0) {
+      blockStarts.push(lines.length)
+      continue
+    }
     if (lines.length > 0) {
       const previousCommand = commandSurfaceName(previous)
       const currentCommand = commandSurfaceName(block)
@@ -832,8 +919,7 @@ function renderTranscriptBody(
       }
     }
     blockStarts.push(lines.length)
-    const expanded = toolsExpanded || (block.kind === 'tool' && options.expandedTools?.has(block.callId) === true)
-    lines.push(...cachedBlockLines(block, options, theme, themeName, trueColor, spinnerFrame, expanded))
+    lines.push(...rendered)
     previous = block
   }
   transcriptBodyCache.set(state.blocks, {
@@ -842,12 +928,14 @@ function renderTranscriptBody(
     trueColor,
     themeName,
     spinnerFrame: animatedSpinnerFrame,
+    activityDetail,
     toolsExpanded,
     expandedTools,
     lines,
     blockStarts,
+    ...(pendingStart === undefined ? {} : { pendingStart }),
   })
-  return { lines, blockStarts }
+  return { lines, blockStarts, ...(pendingStart === undefined ? {} : { pendingStart }) }
 }
 
 function commandSurfaceName(block: Block | undefined): string | undefined {
@@ -1032,12 +1120,26 @@ function todoPreviewStart(todos: readonly TodoItem[]): number {
   return pending >= 0 ? pending : Math.max(0, todos.length - TODO_PREVIEW)
 }
 
-/** Compact, unframed Todo tree placed above queued messages. */
-export function renderTodos(todos: readonly TodoItem[], theme: Theme, width: number): string[] {
-  if (todos.length === 0 || width <= 0) return []
+/** Compact, unframed Todo progress placed above queued messages. */
+export function renderTodos(
+  todos: readonly TodoItem[],
+  theme: Theme,
+  width: number,
+  activityDetail: ActivityDetailMode = 'standard',
+): string[] {
+  if (todos.length === 0 || width <= 0 || activityDetail === 'quiet') return []
   const completed = todos.filter(todo => todo.status === 'completed').length
   const header = '  ' + theme.bold(theme.fg('accent', 'Todos'))
     + theme.fg('dim', ` · ${completed}/${todos.length}`)
+  if (activityDetail !== 'standard') {
+    const active = todos.find(todo => todo.status === 'in_progress')
+      ?? todos.find(todo => todo.status === 'pending')
+    if (activityDetail === 'minimal' && active === undefined) return []
+    const progress = active === undefined
+      ? ' · ' + theme.fg('success', SYMBOL.success + ' complete')
+      : ' · ' + theme.fg(active.status === 'in_progress' ? 'accent' : 'dim', SYMBOL.pending + ' ' + active.content)
+    return [truncateToWidth(header + progress, width)]
+  }
   const start = todoPreviewStart(todos)
   const end = Math.min(todos.length, start + TODO_PREVIEW)
   const rows: Array<TodoItem | string> = [
@@ -1359,7 +1461,9 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
   const queuedSubmissions = editor === undefined || options.inspected !== undefined
     ? []
     : renderQueuedSubmissions(options.queuedSubmissions ?? [], theme, width, state.nextTurnInbox)
-  const todos = editor === undefined || options.inspected !== undefined ? [] : renderTodos(state.todos, theme, width)
+  const todos = editor === undefined || options.inspected !== undefined
+    ? []
+    : renderTodos(state.todos, theme, width, options.activityDetail ?? 'standard')
   const inspect = editor === undefined ? [] : renderInspectBanner(options.inspected, theme, width, spinnerFrame)
   const subagents = editor === undefined
     ? []
@@ -1381,7 +1485,7 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
     : transcriptStart + focusStart
   const hasOverlay = promptSelector !== undefined || settings !== undefined || copySelector !== undefined || search !== undefined
   const isFollowing = requestedStart === Number.POSITIVE_INFINITY && !hasOverlay
-  const livePinned = state.blocks.some(block => block.kind === 'tool' && block.status === 'running')
+  const livePinned = transcript.pendingStart !== undefined
   const windowed = isFollowing
     ? undefined
     : windowTranscript(body, budget, requestedStart, theme)
@@ -1404,9 +1508,8 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
 
   let liveStart: number
   if (isFollowing) {
-    const firstPending = state.blocks.findIndex(isBlockPending)
-    if (firstPending >= 0) {
-      liveStart = transcriptStart + transcript.blockStarts[firstPending]!
+    if (transcript.pendingStart !== undefined) {
+      liveStart = transcriptStart + transcript.pendingStart
     } else {
       liveStart = lines.length - bottomRows
     }

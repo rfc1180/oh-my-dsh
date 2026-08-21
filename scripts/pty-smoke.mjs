@@ -56,6 +56,11 @@ if (!(await waitFor(() => hasReasoningEffort(out), 'effective reasoning effort')
   term.kill()
   process.exit(1)
 }
+if (!(await waitFor(() => cleanOutput(out).includes('full access'), 'interactive session readiness'))) {
+  console.error(cleanOutput(out).slice(-2000))
+  term.kill()
+  process.exit(1)
+}
 let mark = out.length
 term.write('/agent\r')
 if (!(await waitFor(() => cleanOutput(out.slice(mark)).includes('Choose the Agent composition for this blank session'), 'Agent selector'))) {

@@ -3,8 +3,9 @@
  *
  * The terminal owns native scrollback. This renderer owns only the current
  * screen and a logical boundary for rows already frozen above it. Routine
- * updates treat native history as append-only. Explicit transcript epochs
- * clear it once and replay the replacement frame from a clean origin.
+ * updates treat native history as append-only. Explicit replacement epochs
+ * clear it when the host permits; tail epochs keep unerasable host history and
+ * begin the new projection from its visible tail.
  *
  * Finalized rows cross the boundary by being painted at the top of the screen
  * immediately before a newline scrolls them into history. Pending rows remain
@@ -53,8 +54,8 @@ export interface MainScreenRendererOptions {
 }
 
 export interface EpochOptions {
-  /** Full freezes the restored snapshot; pinned preserves its mutable suffix. */
-  replay?: 'full' | 'pinned'
+  /** Full rebuilds history, pinned preserves a mutable suffix, tail keeps external history untouched. */
+  replay?: 'full' | 'pinned' | 'tail'
 }
 
 interface ResizeTransition {
@@ -86,6 +87,7 @@ export class MainScreenRenderer {
   #reanchor = false
   #newEpoch = false
   #fullReplayOnNextEpoch = true
+  #tailReplayOnNextEpoch = false
   #clearScrollbackOnNextRender = false
   #adoptPhysicalAfterTransient = false
   /** First logical row not frozen above the screen in the current epoch. */
@@ -126,11 +128,13 @@ export class MainScreenRenderer {
     this.#reanchor = true
   }
 
-  /** Replace native history with a new logical transcript on the next paint. */
+  /** Begin a new logical transcript projection on the next paint. */
   startEpoch(options: EpochOptions = {}): void {
+    const replay = options.replay ?? 'full'
     this.#newEpoch = true
-    this.#fullReplayOnNextEpoch = options.replay !== 'pinned'
-    this.#clearScrollbackOnNextRender = true
+    this.#fullReplayOnNextEpoch = replay === 'full'
+    this.#tailReplayOnNextEpoch = replay === 'tail'
+    this.#clearScrollbackOnNextRender = replay !== 'tail'
     this.#reanchor = true
     this.#adoptPhysicalAfterTransient = false
   }
@@ -209,15 +213,23 @@ export class MainScreenRenderer {
     let body = ''
 
     if (!this.#hasFrame || this.#newEpoch) {
-      // An explicit replacement follows ED3, so it must rebuild the complete
-      // logical frame. Durable logs can end with an orphaned streaming/tool
-      // block; applying the ordinary pending seam here would silently omit its
-      // off-screen middle from the restored transcript.
-      const replayPhysical = this.#newEpoch && this.#fullReplayOnNextEpoch ? viewStart : candidatePhysical
-      body = this.#paintFlush(next, 0, replayPhysical, viewStart, true)
-      this.#physical = replayPhysical
+      if (this.#newEpoch && this.#tailReplayOnNextEpoch) {
+        // Hosts that cannot erase native history start the new projection at
+        // the visible tail instead of replaying it over the preserved rows.
+        body = this.#paintScreen(target.rows, this.#screen, true)
+        this.#physical = candidatePhysical
+      } else {
+        // An explicit replacement follows ED3, so it must rebuild the complete
+        // logical frame. Durable logs can end with an orphaned streaming/tool
+        // block; applying the ordinary pending seam here would silently omit its
+        // off-screen middle from the restored transcript.
+        const replayPhysical = this.#newEpoch && this.#fullReplayOnNextEpoch ? viewStart : candidatePhysical
+        body = this.#paintFlush(next, 0, replayPhysical, viewStart, true)
+        this.#physical = replayPhysical
+      }
       this.#newEpoch = false
       this.#fullReplayOnNextEpoch = true
+      this.#tailReplayOnNextEpoch = false
       this.#resize = undefined
     } else if (this.#resize !== undefined) {
       const transition = this.#resize

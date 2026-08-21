@@ -205,6 +205,79 @@ describe('applyEvent', () => {
     expect(frame.lines.some((line) => line.includes('╭───'))).toBe(true)
   })
 
+  it('progressively reduces activity while preserving replies and errors', () => {
+    let state = initialTranscript()
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [
+        { type: 'reasoning', text: 'first reasoning line\nlatest reasoning line' },
+        { type: 'text', text: 'FINAL-ANSWER' },
+      ] },
+    }, 1))
+    state = applyEvent(state, ev('tool/call', { callId: 'call-ok', name: 'read', arguments: '{}' }, 2))
+    state = applyEvent(state, ev('tool/result', {
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-ok', content: [{ type: 'text', text: 'SUCCESS-BODY' }],
+      }] },
+    }, 3))
+    state = applyEvent(state, ev('tool/call', { callId: 'call-error', name: 'bash', arguments: '{}' }, 4))
+    state = applyEvent(state, ev('tool/result', {
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-error', isError: true, content: [{ type: 'text', text: 'ERROR-BODY' }],
+      }] },
+    }, 5))
+    state = applyEvent(state, ev('todo/write', {
+      todos: [
+        { content: 'finished item', status: 'completed' },
+        { content: 'active item', status: 'in_progress' },
+      ],
+    }, 6))
+    const render = (activityDetail: 'standard' | 'compact' | 'minimal' | 'quiet'): string => renderView(state, {
+      width: 60, height: 80, model: 'm', input: '', inputCursor: 0, colors: false, activityDetail,
+    }).lines.join('\n')
+
+    const standard = render('standard')
+    expect(standard).toContain('first reasoning line')
+    expect(standard).toContain('SUCCESS-BODY')
+    expect(standard).toContain('active item')
+
+    const compact = render('compact')
+    expect(compact).not.toContain('first reasoning line')
+    expect(compact).toContain('latest reasoning line')
+    expect(compact).toContain('read')
+    expect(compact).not.toContain('SUCCESS-BODY')
+    expect(compact).toContain('ERROR-BODY')
+    expect(compact).toContain('active item')
+    expect(compact).not.toContain('finished item')
+
+    const minimal = render('minimal')
+    expect(minimal).not.toContain('reasoning line')
+    expect(minimal).not.toContain('SUCCESS-BODY')
+    expect(minimal).not.toContain('read')
+    expect(minimal).toContain('ERROR-BODY')
+    expect(minimal).toContain('active item')
+
+    const quiet = render('quiet')
+    expect(quiet).toContain('FINAL-ANSWER')
+    expect(quiet).not.toContain('reasoning line')
+    expect(quiet).not.toContain('SUCCESS-BODY')
+    expect(quiet).not.toContain('active item')
+    expect(quiet).toContain('ERROR-BODY')
+
+    const revealed = renderView(state, {
+      width: 60,
+      height: 80,
+      model: 'm',
+      input: '',
+      inputCursor: 0,
+      colors: false,
+      activityDetail: 'quiet',
+      expandedTools: new Set(['call-ok']),
+    }).lines.join('\n')
+    expect(revealed).toContain('SUCCESS-BODY')
+  })
+
   it('collapses long tool output and expands it with toolsExpanded', () => {
     const lines = Array.from({ length: TOOL_COLLAPSED_LINES + 4 }, (_, i) => 'out-' + i)
     let state = initialTranscript()
@@ -529,9 +602,18 @@ describe('blockLines', () => {
       reasoning: '',
       streaming: true,
     }, theme, 12)
+    const reasoningStream = blockLines({
+      kind: 'assistant',
+      turn: 1,
+      step: 1,
+      text: '',
+      reasoning: 'thought',
+      streaming: true,
+    }, theme, 12)
 
     expect(reasoning).toEqual([' thought    ', '', ' answer     '])
     expect(streaming).toEqual([' …          '])
+    expect(reasoningStream).toEqual([' thought    ', ' …          '])
   })
 
   it('paints reasoning in thinkingText italic without a rail, and keeps prose off default ink', () => {
@@ -894,18 +976,27 @@ describe('renderView', () => {
     expect(frame.transcript?.hiddenBelow).toBe(0)
   })
 
-  it('pins running tools but lets an append-only assistant stream scroll naturally', () => {
+  it('pins every visible pending block until its authoritative settlement', () => {
     const assistant = applyEvent(
       initialTranscript(),
       ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'reasoning-delta', text: 'thinking' } }, 1),
     )
-    expect(view(assistant).livePinned).toBe(false)
+    expect(view(assistant).livePinned).toBe(true)
 
     const tool = applyEvent(
       initialTranscript(),
       ev('tool/call', { callId: 'call-1', name: 'bash', arguments: '{}' }, 1),
     )
     expect(view(tool).livePinned).toBe(true)
+    const minimal = renderView(tool, {
+      width: 60, height: 24, model: 'm', input: '', inputCursor: 0, colors: false, activityDetail: 'minimal',
+    })
+    expect(minimal.livePinned).toBe(true)
+    expect(minimal.lines.join('\n')).toContain('bash')
+    const quiet = renderView(tool, {
+      width: 60, height: 24, model: 'm', input: '', inputCursor: 0, colors: false, activityDetail: 'quiet',
+    })
+    expect(quiet.livePinned).toBe(true)
   })
 
   it('keeps a windowed transcript inside the terminal height with a scroll indicator', () => {
