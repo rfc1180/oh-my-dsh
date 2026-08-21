@@ -141,8 +141,11 @@ if (!(await waitFor(() => cleanOutput(out).includes('Choose how omdsh may access
   process.exit(1)
 }
 term.write('\x1b[A')
+term.write('\x1b[A')
 term.write('\r')
 if (!(await waitFor(() => cleanOutput(out).includes('Access: Read only'), 'access switch'))) {
+  console.error('--- pty output at access failure ---')
+  console.error(cleanOutput(out).slice(-3000))
   term.kill()
   process.exit(1)
 }
