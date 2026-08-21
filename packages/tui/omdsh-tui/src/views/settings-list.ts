@@ -5,6 +5,7 @@
  */
 
 import type { KeyEvent } from '../input/keys.ts'
+import { ACTIVITY_DETAIL_DESCRIPTIONS, ACTIVITY_DETAIL_MODES, isActivityDetailMode, type ActivityDetailMode } from '../session/activity-detail.ts'
 import { STARTUP_CHANGELOG_MODES, type StartupChangelogMode } from '../session/release-notes.ts'
 import {
   STATUS_COLOR_TOKENS,
@@ -45,6 +46,7 @@ export interface TuiPrefs {
   theme: ThemeName
   colors: boolean
   expandTools: boolean
+  activityDetail?: ActivityDetailMode
   checkUpdates?: boolean
   startupChangelog?: StartupChangelogMode
   statusBar?: StatusBarConfig
@@ -130,9 +132,16 @@ export function tuiSettingItems(prefs: TuiPrefs): SettingItem[] {
       values: COLOR_VALUES,
     },
     {
+      id: 'activityDetail',
+      label: 'Activity detail',
+      description: ACTIVITY_DETAIL_DESCRIPTIONS[prefs.activityDetail ?? 'standard'],
+      value: prefs.activityDetail ?? 'standard',
+      values: ACTIVITY_DETAIL_MODES,
+    },
+    {
       id: 'expandTools',
       label: 'Tool details',
-      description: 'Expand tool output and catalog details (Ctrl+O)',
+      description: 'Expand tool output and override lighter activity modes (Ctrl+O)',
       value: prefs.expandTools ? 'expanded' : 'compact',
       values: TOOL_DETAIL_VALUES,
     },
@@ -225,6 +234,7 @@ function reorderVisible<T extends string>(visible: readonly T[], order: readonly
 export function applySettingValue(prefs: TuiPrefs, id: string, value: string): TuiPrefs {
   if (id === 'theme' && isThemeName(value)) return { ...prefs, theme: value }
   if (id === 'colors') return { ...prefs, colors: value === 'on' }
+  if (id === 'activityDetail' && isActivityDetailMode(value)) return { ...prefs, activityDetail: value }
   if (id === 'expandTools') return { ...prefs, expandTools: value === 'expanded' || value === 'on' }
   if (id === 'checkUpdates') return { ...prefs, checkUpdates: value === 'on' }
   if (id === 'startupChangelog' && STARTUP_CHANGELOG_MODES.includes(value as StartupChangelogMode)) {
@@ -343,7 +353,7 @@ function toggleSelectedVisibility(state: SettingsState): SettingsState {
   return { selected: state.selected, prefs: { ...state.prefs, statusBar: toggleStatusItem(resolveStatusBarConfig(state.prefs.statusBar, state.prefs.statusPreset), item) } }
 }
 
-const GENERAL_SETTING_COUNT = 5
+const GENERAL_SETTING_COUNT = 6
 
 function moveSelected(state: SettingsState, next: number): SettingsState {
   const n = tuiSettingItems(state.prefs).length

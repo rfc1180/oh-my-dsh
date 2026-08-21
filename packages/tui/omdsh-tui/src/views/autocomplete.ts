@@ -6,6 +6,7 @@
 
 import { SYMBOL, type Theme } from '../chrome/theme.ts'
 import { truncateToWidth } from '../chrome/width.ts'
+import { ACTIVITY_DETAIL_DESCRIPTIONS, ACTIVITY_DETAIL_MODES } from '../session/activity-detail.ts'
 
 /** One argument token a slash command can complete. */
 export interface SlashArgument {
@@ -43,10 +44,16 @@ const HELP_ARGUMENTS: readonly SlashArgument[] = [
   { value: 'full', description: 'Include every keyboard shortcut' },
 ]
 
+const DETAIL_ARGUMENTS: readonly SlashArgument[] = ACTIVITY_DETAIL_MODES.map(value => ({
+  value,
+  description: ACTIVITY_DETAIL_DESCRIPTIONS[value],
+}))
+
 /** Built-in session-surface commands (no extra backend required). */
 export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'help', aliases: ['h', '?'], description: 'Show commands and essential shortcuts', arguments: HELP_ARGUMENTS },
   { name: 'settings', aliases: ['set'], description: 'Open settings' },
+  { name: 'detail', description: 'Choose how much reasoning and tool activity to show', arguments: DETAIL_ARGUMENTS },
   { name: 'copy', description: 'Pick text, code, or a command to copy', arguments: COPY_ARGUMENTS },
   { name: 'tools', description: 'Show tools visible to the agent' },
   { name: 'clear', description: 'Clear the transcript display' },

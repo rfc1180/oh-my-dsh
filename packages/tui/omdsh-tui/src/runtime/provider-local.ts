@@ -139,6 +139,7 @@ import {
   type ImagePathReader,
 } from '../input/image-paste.ts'
 import { APP_NAME, APP_VERSION } from '../session/package-metadata.ts'
+import { ACTIVITY_DETAIL_MODES, isActivityDetailMode, type ActivityDetailMode } from '../session/activity-detail.ts'
 import type { StartupChangelogMode } from '../session/release-notes.ts'
 
 const DOUBLE_CTRL_C_MS = 500
@@ -270,6 +271,7 @@ export class LocalTui implements TuiService {
   #follow = true
   #focusBlock: number | undefined
   #expandTools = false
+  #activityDetail: ActivityDetailMode = 'standard'
   #checkUpdates = true
   #startupChangelog: StartupChangelogMode = 'summary'
   #statusBar: StatusBarConfig = defaultStatusBarConfig()
@@ -617,14 +619,19 @@ export class LocalTui implements TuiService {
 
   /** Apply prefs loaded from the settings document (does not persist). */
   applyStoredPrefs(prefs: TuiPrefs): void {
+    const activityDetail = prefs.activityDetail ?? 'standard'
+    const activityChanged = activityDetail !== this.#activityDetail
+    const expandChanged = prefs.expandTools !== this.#expandTools
     this.#themeName = prefs.theme
     this.#colors = prefs.colors
     this.#expandTools = prefs.expandTools
+    this.#activityDetail = activityDetail
     this.#checkUpdates = prefs.checkUpdates ?? true
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#toolsExpanded = prefs.expandTools
     if (this.#settings !== null) this.#settings = { ...this.#settings, prefs }
+    if (this.#tty && (activityChanged || expandChanged)) this.#renderer.startEpoch({ replay: 'pinned' })
     if (this.#tty) this.#render()
   }
 
@@ -1011,6 +1018,7 @@ export class LocalTui implements TuiService {
         themeName: this.#themeName,
         scrollStart: this.#follow ? Number.POSITIVE_INFINITY : this.#scrollStart,
         ...(this.#focusBlock === undefined ? {} : { focusBlock: this.#focusBlock }),
+        activityDetail: this.#activityDetail,
         toolsExpanded: this.#toolsExpanded,
         expandedTools: this.#expandedToolCalls,
         commands: this.#commands(),
@@ -1458,6 +1466,7 @@ export class LocalTui implements TuiService {
         } else {
           this.#toolsExpanded = !this.#toolsExpanded
         }
+        if (this.#activityDetail !== 'standard') this.#renderer.startEpoch({ replay: 'pinned' })
         this.#render()
         return
       }
@@ -1698,6 +1707,7 @@ export class LocalTui implements TuiService {
       theme: this.#themeName,
       colors: this.#colors,
       expandTools: this.#expandTools,
+      activityDetail: this.#activityDetail,
       checkUpdates: this.#checkUpdates,
       startupChangelog: this.#startupChangelog,
       statusBar: {
@@ -1714,13 +1724,17 @@ export class LocalTui implements TuiService {
 
   #applyPrefs(prefs: TuiPrefs): void {
     const expandChanged = prefs.expandTools !== this.#expandTools
+    const activityDetail = prefs.activityDetail ?? 'standard'
+    const activityChanged = activityDetail !== this.#activityDetail
     this.#themeName = prefs.theme
     this.#colors = prefs.colors
     this.#expandTools = prefs.expandTools
+    this.#activityDetail = activityDetail
     this.#checkUpdates = prefs.checkUpdates ?? true
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     if (expandChanged) this.#toolsExpanded = prefs.expandTools
+    if (this.#tty && (activityChanged || expandChanged)) this.#renderer.startEpoch({ replay: 'pinned' })
     this.#persistPrefs?.(prefs)
   }
 
@@ -2190,6 +2204,10 @@ export class LocalTui implements TuiService {
       this.#runSettings(args)
       return
     }
+    if (command.name === 'detail') {
+      this.#runDetail(args)
+      return
+    }
     if (command.name === 'copy') {
       void this.#runCopy(args)
       return
@@ -2293,6 +2311,25 @@ export class LocalTui implements TuiService {
       return
     }
     await this.#copyPicked(target.text, target.label)
+  }
+
+  #runDetail(args: string): void {
+    const value = args.trim().toLowerCase()
+    if (value === '') {
+      this.#search = null
+      this.#ac = null
+      this.#settings = createSettings(this.#prefs(), 'activityDetail')
+      this.#render()
+      return
+    }
+    if (!isActivityDetailMode(value)) {
+      this.#notice(`Usage: /detail [${ACTIVITY_DETAIL_MODES.join('|')}]`)
+      this.#render()
+      return
+    }
+    this.#applyPrefs({ ...this.#prefs(), activityDetail: value })
+    this.#notice('Activity detail: ' + value)
+    this.#render()
   }
 
   #runSettings(args: string): void {
@@ -2419,7 +2456,7 @@ export function apply(ctx: Context, config: Config): void {
     const scope = settingsCtx.settings.register(
       settingsNamespace(TUI_SETTINGS_NAMESPACE),
       TuiSettingsSchema,
-      { base: { theme: parseThemeName(config.theme), colors: config.colors ?? term.output.isTTY === true, expandTools: false } },
+      { base: { theme: parseThemeName(config.theme), colors: config.colors ?? term.output.isTTY === true, expandTools: false, activityDetail: 'standard' } },
     )
     tui.applyStoredPrefs(scope.get())
     tui.setPrefsPersist((prefs) => { void scope.update(prefs) })

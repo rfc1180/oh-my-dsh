@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest'
 import { MainScreenRenderer } from './main-screen-renderer.ts'
 import type { Frame } from './renderer.ts'
+import { applyEvent, initialTranscript, renderView } from '../views/event-views.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /**
  * Minimal VT-style emulator with a fixed-height screen and a scrollback buffer.
@@ -127,6 +129,10 @@ function frame(
 
 function joined(lines: readonly string[]): string {
   return lines.join('\n')
+}
+
+function ev(type: string, data: unknown, seq: number): SessionEvent {
+  return { type, seq, time: seq, data } as unknown as SessionEvent
 }
 
 describe('MainScreenRenderer', () => {
@@ -415,7 +421,47 @@ describe('MainScreenRenderer', () => {
     expect(emu.visible()).toEqual(more.slice(more.length - 5))
   })
 
-  it('scrolls an append-only live assistant head while following its tail', () => {
+  it('does not duplicate a partial Markdown stream when the final reply settles', () => {
+    const width = 42
+    const height = 8
+    const emu = new Emulator(height)
+    const renderer = new MainScreenRenderer(emu, { width, height, synchronized: false })
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'request' }],
+    }, 1))
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: {
+        type: 'text-delta',
+        text: 'partial opening\n```text\nPARTIAL-ONLY\n' + Array.from({ length: 20 }, (_, index) => `draft-${index}`).join('\n'),
+      },
+    }, 2))
+    const options = { width, height, model: 'm', input: '', inputCursor: 0, colors: false } as const
+    const partial = renderView(state, options)
+    expect(partial.livePinned).toBe(true)
+    renderer.render(partial)
+    expect(joined(emu.scrollback)).not.toContain('PARTIAL-ONLY')
+
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{
+        type: 'text',
+        text: 'FINAL-START\n\n```text\nfinal code\n```\n\nFINAL-MIDDLE\n\nFINAL-END',
+      }] },
+    }, 3))
+    renderer.render(renderView(state, options))
+    const tape = joined([...emu.scrollback, ...emu.visible()])
+    expect(tape).not.toContain('PARTIAL-ONLY')
+    expect(tape.match(/FINAL-START/gu)).toHaveLength(1)
+    expect(tape.match(/FINAL-MIDDLE/gu)).toHaveLength(1)
+    expect(tape.match(/FINAL-END/gu)).toHaveLength(1)
+  })
+
+  it('scrolls an explicitly unpinned live region while following its tail', () => {
     const emu = new Emulator(5)
     const renderer = new MainScreenRenderer(emu, { width: 80, height: 5, synchronized: false })
 

@@ -4,6 +4,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { ACTIVITY_DETAIL_MODES, type ActivityDetailMode } from './activity-detail.ts'
 import { STARTUP_CHANGELOG_MODES, type StartupChangelogMode } from './release-notes.ts'
 import {
   STATUS_COLOR_TOKENS,
@@ -26,6 +27,7 @@ export interface TuiSettings {
   theme: ThemeName
   colors: boolean
   expandTools: boolean
+  activityDetail: ActivityDetailMode
   checkUpdates: boolean
   startupChangelog: StartupChangelogMode
   statusBar?: StatusBarConfig
@@ -33,11 +35,12 @@ export interface TuiSettings {
   statusPreset?: StatusPreset
 }
 
-/** Schema: palette, SGR, tool expansion, and status-line detail. */
+/** Schema: palette, SGR, activity disclosure, tool expansion, and status-line detail. */
 export const TuiSettingsSchema: z<TuiSettings> = z.object({
   theme: z.union([...THEME_NAMES]).default('dark'),
   colors: z.boolean().default(true),
   expandTools: z.boolean().default(false),
+  activityDetail: z.union([...ACTIVITY_DETAIL_MODES]).default('standard'),
   checkUpdates: z.boolean().default(true),
   startupChangelog: z.union([...STARTUP_CHANGELOG_MODES]).default('summary'),
   statusBar: z.union([z.object({

@@ -57,7 +57,7 @@ describe('buildSlashCommandCompletions', () => {
   it('keeps registry order for an empty prefix', () => {
     const items = buildSlashCommandCompletions(BUILTIN_SLASH_COMMANDS, '')
     expect(items.map((item) => item.value)).toEqual([
-      'help', 'settings', 'copy', 'tools', 'clear', 'quit',
+      'help', 'settings', 'detail', 'copy', 'tools', 'clear', 'quit',
     ])
   })
 
@@ -82,9 +82,10 @@ describe('slashSuggestions', () => {
     expect(slashSuggestions('/he\nmore', 3)).toBe(null)
   })
 
-  it('suggests /copy arguments after a space', () => {
+  it('suggests /copy and /detail arguments after a space', () => {
     const copy = slashSuggestions('/copy c', 7)
     expect(copy?.items.map((item) => item.value)).toEqual(['code', 'cmd'])
+    expect(slashSuggestions('/detail mi', 10)?.items.map(item => item.value)).toEqual(['minimal'])
     expect(slashSuggestions('/settings ', 10)).toBe(null)
   })
 
@@ -106,6 +107,7 @@ describe('slashInlineHint', () => {
   it('shows the catalog after /name and remaining chars of a prefix', () => {
     expect(slashInlineHint('/copy ', 6)).toBe('text|code|cmd')
     expect(slashInlineHint('/copy com', 9)).toBe('mand')
+    expect(slashInlineHint('/detail ', 8)).toBe('standard|compact|minimal|quiet')
     expect(slashInlineHint('/settings ', 10)).toBe(null)
     expect(slashInlineHint('/help ', 6)).toBe('full')
   })
@@ -170,6 +172,7 @@ describe('formatHelpText / renderAutocomplete', () => {
     expect(text).toContain('/help')
     expect(text).toContain('/settings')
     expect(text).toContain('/set')
+    expect(text).toContain('/detail [standard|compact|minimal|quiet]')
     expect(text).not.toContain('/theme')
     expect(text).not.toContain('/hotkeys')
     expect(text).toContain('/help [full]')
@@ -195,15 +198,15 @@ describe('formatHelpText / renderAutocomplete', () => {
       { name: 'skill:research', description: 'Investigate a question against high-trust primary sources' },
     ])
     const lines = text.split('\n')
-    expect(lines[0]).toBe('Commands · 7 core · 2 skills')
-    expect(text).toContain('**Terminal Commands · 6**')
+    expect(lines[0]).toBe('Commands · 8 core · 2 skills')
+    expect(text).toContain('**Terminal Commands · 7**')
     expect(text).toContain('**Agent Commands · 1**')
     expect(text).not.toContain('| Command | Description |')
     expect(text).toContain('/resume [session-id]')
     expect(text).toContain('**Skills · 2**')
     expect(text).toContain('Type `/skill:` to browse and filter skills')
     expect(text).not.toContain('/skill:code-review')
-    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(7)
+    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(8)
   })
 
   it('paints the selected row with a cursor and windows long lists', () => {

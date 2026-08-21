@@ -22,6 +22,7 @@ describe('tuiSettingItems / applySettingValue', () => {
     expect(items.map((item) => item.id)).toEqual([
       'theme',
       'colors',
+      'activityDetail',
       'expandTools',
       'checkUpdates',
       'startupChangelog',
@@ -40,16 +41,18 @@ describe('tuiSettingItems / applySettingValue', () => {
     ])
     expect(items[0]?.value).toBe('dark')
     expect(items[1]?.value).toBe('on')
-    expect(items[2]).toMatchObject({ label: 'Tool details', value: 'compact' })
-    expect(items[3]).toMatchObject({ label: 'Update checks', value: 'on' })
-    expect(items[4]).toMatchObject({ label: 'Release notes', value: 'summary' })
-    expect(items[5]?.value).toBe('on')
-    expect(items[5]?.label).toBe('Status line')
-    expect(items[6]?.value).toBe('compact')
-    expect(items[7]).toMatchObject({ label: '← Model', value: 'default', sample: 'deepseek' })
-    expect(items[11]).toMatchObject({ label: '← Context', value: 'default', sample: 'Ctx 1.6%' })
+    expect(items[2]).toMatchObject({ label: 'Activity detail', value: 'standard' })
+    expect(items[3]).toMatchObject({ label: 'Tool details', value: 'compact' })
+    expect(items[4]).toMatchObject({ label: 'Update checks', value: 'on' })
+    expect(items[5]).toMatchObject({ label: 'Release notes', value: 'summary' })
+    expect(items[6]?.value).toBe('on')
+    expect(items[6]?.label).toBe('Status line')
+    expect(items[7]?.value).toBe('compact')
+    expect(items[8]).toMatchObject({ label: '← Model', value: 'default', sample: 'deepseek' })
+    expect(items[12]).toMatchObject({ label: '← Context', value: 'default', sample: 'Ctx 1.6%' })
     expect(applySettingValue(prefs, 'theme', 'light')).toEqual({ theme: 'light', colors: true, expandTools: false })
     expect(applySettingValue(prefs, 'colors', 'off')).toEqual({ theme: 'dark', colors: false, expandTools: false })
+    expect(applySettingValue(prefs, 'activityDetail', 'compact')).toEqual({ ...prefs, activityDetail: 'compact' })
     expect(applySettingValue(prefs, 'expandTools', 'expanded')).toEqual({ theme: 'dark', colors: true, expandTools: true })
     expect(applySettingValue(prefs, 'statusEnabled', 'off').statusBar?.enabled).toBe(false)
     expect(applySettingValue(prefs, 'statusLabels', 'full').statusBar?.labels).toBe('full')
@@ -112,13 +115,13 @@ describe('applySettingsEvent', () => {
     const end = applySettingsEvent(firstStatus, key('end'))
     expect(end.kind === 'update' && end.state.selected).toBe(tuiSettingItems(prefs).length - 1)
     const home = applySettingsEvent(end.kind === 'update' ? end.state : firstStatus, key('home'))
-    expect(home.kind === 'update' && home.state.selected).toBe(5)
+    expect(home.kind === 'update' && home.state.selected).toBe(6)
   })
 
   it('uses tab to jump between General and Status line sections', () => {
     const open = createSettings(prefs, 'theme')
     const status = applySettingsEvent(open, key('tab'))
-    expect(status.kind === 'update' && status.state.selected).toBe(5)
+    expect(status.kind === 'update' && status.state.selected).toBe(6)
     const general = applySettingsEvent(status.kind === 'update' ? status.state : open, key('tab'))
     expect(general.kind === 'update' && general.state.selected).toBe(0)
   })
@@ -159,12 +162,12 @@ describe('applySettingsEvent', () => {
     expect(hidden.kind === 'apply' && hidden.state.prefs.statusBar?.groups).toEqual([
       'context', 'tokens', 'speed', 'durations', 'counts',
     ])
-    expect(hidden.kind === 'apply' && tuiSettingItems(hidden.state.prefs)[12]?.id).toBe('statusItem:cache')
+    expect(hidden.kind === 'apply' && tuiSettingItems(hidden.state.prefs)[13]?.id).toBe('statusItem:cache')
     const shown = applySettingsEvent(hidden.kind === 'apply' ? hidden.state : open, { type: 'text', value: ' ' })
     expect(shown.kind === 'apply' && shown.state.prefs.statusBar?.groups).toEqual([
       'context', 'cache', 'tokens', 'speed', 'durations', 'counts',
     ])
-    expect(shown.kind === 'apply' && shown.state.selected).toBe(12)
+    expect(shown.kind === 'apply' && shown.state.selected).toBe(13)
   })
 
   it('ignores unrelated keys and non-space text', () => {
@@ -182,6 +185,8 @@ describe('renderSettings', () => {
     expect(lines).toContain('dark')
     expect(lines).toContain('Color')
     expect(lines).toContain('on')
+    expect(lines).toContain('Activity detail')
+    expect(lines).toContain('standard')
     expect(lines).toContain('←→ change')
     expect(lines).toContain('Color palette')
     expect(lines).toContain('Tool details')

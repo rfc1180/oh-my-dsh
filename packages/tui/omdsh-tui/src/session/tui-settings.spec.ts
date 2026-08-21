@@ -7,6 +7,7 @@ describe('TuiSettingsSchema', () => {
       theme: string
       colors: boolean
       expandTools: boolean
+      activityDetail: string
       statusBar?: { enabled: boolean; labels: string; groups: string[]; order?: string[] }
       statusPreset?: string
     }
@@ -14,6 +15,7 @@ describe('TuiSettingsSchema', () => {
       theme: 'dark',
       colors: true,
       expandTools: false,
+      activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
     })
@@ -21,6 +23,7 @@ describe('TuiSettingsSchema', () => {
       theme: 'light',
       colors: false,
       expandTools: true,
+      activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
     })
@@ -41,6 +44,12 @@ describe('TuiSettingsSchema', () => {
         colors: { model: 'accent', metrics: 'warning' },
       },
     })
+  })
+
+  it('validates activity detail modes and rejects unknown values', () => {
+    const validate = TuiSettingsSchema as unknown as (input: object) => { activityDetail: string }
+    expect(validate({ activityDetail: 'minimal' })).toMatchObject({ activityDetail: 'minimal' })
+    expect(() => validate({ activityDetail: 'noisy' })).toThrow()
   })
 
   it('validates startup update and release-note preferences', () => {
