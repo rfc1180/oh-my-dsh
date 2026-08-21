@@ -76,7 +76,7 @@ function sections(bindings: HotkeyBindings): readonly HotkeySection[] {
         { keys: 'PgUp / PgDn', action: 'Scroll one page' },
         { keys: 'Shift+Up / Shift+Down', action: 'Scroll quickly' },
         { keys: 'Ctrl+O', action: 'Expand tool output or catalog descriptions' },
-        { keys: keysForAction(bindings, 'trajectory'), action: 'Open the live multi-session Trajectory workspace' },
+        { keys: keysForAction(bindings, 'trajectory'), action: "Open this conversation's Trajectory screen" },
         { keys: keysForAction(bindings, 'inspect-subagent'), action: 'Open a subagent transcript; continuable children can be steered' },
       ],
     },
@@ -118,7 +118,7 @@ export function formatEssentialHotkeysText(bindings: HotkeyBindings = DEFAULT_KE
     { keys: 'Ctrl+R', action: 'Search prompt history' },
     { keys: 'PgUp / PgDn', action: 'Scroll the transcript' },
     { keys: 'Ctrl+O', action: 'Expand tool output or catalog descriptions' },
-    { keys: keysForAction(bindings, 'trajectory'), action: 'Open the live Trajectory workspace' },
+    { keys: keysForAction(bindings, 'trajectory'), action: "Open this conversation's Trajectory screen" },
     { keys: keysForAction(bindings, 'paste-clipboard'), action: 'Paste clipboard text or an image' },
   ]
   return rows.map(row => `- \`${tableCell(row.keys)}\` — ${tableCell(row.action)}`).join('\n')

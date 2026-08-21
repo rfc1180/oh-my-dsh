@@ -155,6 +155,40 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('opens /trajectory as a companion while keeping screen and text modes explicit', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 30
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { alternateScreenOverlays: true })
+    const openCompanion = vi.fn(async () => {})
+    tui.setSession({ id: 'session-live', recent: [] })
+    tui.setCommands([{ name: 'trajectory', description: 'Open Trajectory' }])
+    tui.setTrajectorySource({
+      activeSessionId: 'session-live',
+      pollIntervalMs: 30_000,
+      openCompanion,
+      list: async () => [{ id: 'session-live', title: 'Live task' }],
+      inspect: async () => ({ id: 'session-live', title: 'Live task', events: [] }),
+    })
+    const pending = tui.readInput()
+    const before = term.captured.length
+
+    press(term, '/trajectory tools 40\r')
+    await flushAsyncPaste()
+    expect(openCompanion).toHaveBeenCalledWith({ mode: 'tools', limit: 40 })
+    expect(term.captured.slice(before)).not.toContain('\x1b[?1049h')
+
+    press(term, '/trajectory screen errors\r')
+    await flushAsyncPaste()
+    expect(term.captured.slice(before)).toContain('\x1b[?1049h')
+    press(term, 'q')
+    await flushAsyncPaste()
+
+    press(term, '/trajectory text summary 20\r')
+    await expect(pending).resolves.toEqual({ text: '/trajectory text summary 20', images: [] })
+    tui.dispose()
+  })
+
   it('opens the configured Trajectory source while an agent turn is running', async () => {
     const term = new FakeTerminal()
     term.columns = 120

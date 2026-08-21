@@ -24,7 +24,7 @@ describe('formatHotkeysText', () => {
     expect(text).toContain('Alt+A')
     expect(text).toContain('subagent transcript')
     expect(text).toContain('Alt+T')
-    expect(text).toContain('Trajectory workspace')
+    expect(text).toContain("this conversation's Trajectory screen")
     expect(text).not.toContain('thinking')
     expect(text).not.toContain('Speech-to-text')
   })

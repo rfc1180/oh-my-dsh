@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- Open the current conversation's live Trajectory workspace with `/trajectory` or Alt+T. The alternate-screen view keeps the transcript intact, scopes the run tree to the active root and its descendants, and exposes numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
+- Open the current conversation's live Trajectory as a read-only companion block with `/trajectory`, keeping the main Surfterm conversation visible. `/trajectory screen` and Alt+T retain the alternate-screen view, while both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 
 ### Changed
 

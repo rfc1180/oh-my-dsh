@@ -2164,19 +2164,27 @@ export class LocalTui implements TuiService {
       return
     }
     if (command.name === 'trajectory' && this.#trajectorySource !== null) {
-      let options: TuiTrajectoryOptions
-      try {
-        options = parseTrajectoryOptions(args)
-      } catch (error: unknown) {
-        this.#notice(error instanceof Error ? error.message : String(error))
-        this.#render()
+      const firstArgument = args.trim().split(/\s+/u)[0] ?? ''
+      const textMode = firstArgument === 'text' || firstArgument === 'ledger'
+      if (!textMode) {
+        let options: TuiTrajectoryOptions
+        try {
+          options = parseTrajectoryOptions(args)
+        } catch (error: unknown) {
+          this.#notice(error instanceof Error ? error.message : String(error))
+          this.#render()
+          return
+        }
+        const screenMode = firstArgument === 'screen' || firstArgument === 'browse'
+        const opened = !screenMode && this.#trajectorySource.openCompanion !== undefined
+          ? this.#trajectorySource.openCompanion(options)
+          : this.openTrajectory(this.#trajectorySource, options)
+        void opened.catch((error: unknown) => {
+          this.#notice(error instanceof Error ? error.message : String(error))
+          this.#render()
+        })
         return
       }
-      void this.openTrajectory(this.#trajectorySource, options).catch((error: unknown) => {
-        this.#notice(error instanceof Error ? error.message : String(error))
-        this.#render()
-      })
-      return
     }
     if (command.name === 'settings') {
       this.#runSettings(args)

@@ -171,6 +171,8 @@ export interface TuiTrajectorySource {
   readonly activeSessionId: string
   list(signal?: AbortSignal): Promise<readonly TuiTrajectorySessionSummary[]>
   inspect(id: string, signal?: AbortSignal): Promise<TuiTrajectorySession>
+  /** Open this conversation in a host-owned companion surface instead of replacing the terminal. */
+  readonly openCompanion?: (options: TuiTrajectoryOptions) => Promise<void>
   /** Snapshot refresh cadence. Active-session events still update immediately. */
   readonly pollIntervalMs?: number
 }
