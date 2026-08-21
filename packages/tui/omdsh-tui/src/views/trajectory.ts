@@ -75,7 +75,7 @@ const MODES: readonly TuiTrajectoryMode[] = ['summary', 'all', 'tools', 'errors'
 const DEFAULT_LIMIT = 2_000
 const MAX_LIMIT = 10_000
 
-/** Parse the local `/trajectory [screen] [mode] [limit]` vocabulary. */
+/** Parse the current-conversation `/trajectory [mode] [limit]` vocabulary. */
 export function parseTrajectoryOptions(rawInput = ''): TuiTrajectoryOptions {
   const words = rawInput.trim().split(/\s+/u).filter(Boolean)
   if (words[0] === 'screen' || words[0] === 'browse') words.shift()
@@ -94,7 +94,7 @@ export function parseTrajectoryOptions(rawInput = ''): TuiTrajectoryOptions {
       limit = parsed
       continue
     }
-    throw new Error('Usage: /trajectory [screen] [summary|all|tools|errors] [limit]')
+    throw new Error('Usage: /trajectory [summary|all|tools|errors] [limit]')
   }
   return { mode, ...(limit === undefined ? {} : { limit }) }
 }
@@ -521,6 +521,10 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent): T
   if (event.type === 'text') {
     if (event.value === '/') return { kind: 'update', state: { ...state, searchActive: true, query: '', focus: 'timeline' } }
     if (event.value === 'q') return { kind: 'close' }
+    if (/^[1-4]$/u.test(event.value)) {
+      const mode = MODES[Number(event.value) - 1] ?? 'summary'
+      return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
+    }
     if (event.value === 'f') {
       const index = MODES.indexOf(state.mode)
       const mode = MODES[(index + 1) % MODES.length] ?? 'summary'
@@ -763,7 +767,7 @@ export function renderTrajectory(
     const timelineHeight = Math.max(5, Math.floor(contentHeight * 0.58))
     const detailHeight = Math.max(1, contentHeight - timelineHeight - 1)
     const sessions = [
-      panelHeader('Sessions', state.focus === 'sessions', `${state.sessions.length}`, theme, leftWidth),
+      panelHeader('Conversation', state.focus === 'sessions', `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, leftWidth),
       ...sessionRows(state, theme, leftWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
     const timeline = [
@@ -777,7 +781,7 @@ export function renderTrajectory(
     content = combineColumns(sessions, leftWidth, timeline, rightWidth, theme, contentHeight)
   } else if (state.focus === 'sessions') {
     content = [
-      panelHeader('Sessions', true, `${state.sessions.length} durable`, theme, innerWidth),
+      panelHeader('Conversation', true, `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, innerWidth),
       ...sessionRows(state, theme, innerWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
   } else {
@@ -798,7 +802,9 @@ export function renderTrajectory(
   lines.push(divider(theme, pageWidth))
   const hints = state.searchActive
     ? 'Type to filter · Enter apply · Esc leave search · Ctrl+C close'
-    : 'Tab panes · ↑↓ navigate · / search · f filter · l follow · r refresh · c copy event · q/Esc close'
+    : pageWidth >= 112
+      ? 'Tab · ↑↓ move · 1 summary · 2 all · 3 tools · 4 errors · / search · f next · l follow · r refresh · c copy · q close'
+      : '1 summary · 2 all · 3 tools · 4 errors · / search · q close'
   lines.push(borderRow(theme, ' ' + theme.fg('dim', hints), pageWidth), bottomBorder(theme, pageWidth))
   return {
     lines: lines.slice(0, pageHeight),

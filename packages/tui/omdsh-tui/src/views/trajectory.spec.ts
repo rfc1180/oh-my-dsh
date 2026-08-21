@@ -88,11 +88,13 @@ describe('Trajectory projection', () => {
 
   it('cycles filters and applies an in-workspace search', () => {
     let state = readyState()
-    const tools = applyTrajectoryEvent(state, typed('f'))
-    expect(tools.kind).toBe('update')
-    state = tools.kind === 'update' ? tools.state : state
+    const all = applyTrajectoryEvent(state, typed('f'))
+    expect(all.kind).toBe('update')
+    state = all.kind === 'update' ? all.state : state
     expect(state.mode).toBe('all')
-    state = { ...state, mode: 'tools' }
+    const tools = applyTrajectoryEvent(state, typed('3'))
+    state = tools.kind === 'update' ? tools.state : state
+    expect(state.mode).toBe('tools')
     expect(filteredTrajectoryRows(state).map(row => row.label)).toEqual(['bash', 'Result'])
 
     const search = applyTrajectoryEvent(state, typed('/'))
@@ -113,20 +115,23 @@ describe('renderTrajectory', () => {
     expect(frame.lines).toHaveLength(32)
     expect(frame.lines.every(line => visibleWidth(line) <= 120)).toBe(true)
     expect(output).toContain('omdsh · Trajectory')
-    expect(output).toContain('Sessions')
+    expect(output).toContain('Conversation')
     expect(output).toContain('Review child')
     expect(output).toContain('Timeline')
     expect(output).toContain('Details')
     expect(output).toContain('Ship the terminal trajectory')
-    expect(output).toContain('Tab panes')
+    expect(output).toContain('1 summary')
+    expect(output).toContain('4 errors')
   })
 
   it('switches to a focused session page at narrow widths', () => {
     const frame = renderTrajectory(readyState(), createTheme(false), 70, 22)
     const output = frame.lines.map(stripAnsi).join('\n')
     expect(frame.lines).toHaveLength(22)
-    expect(output).toContain('Sessions')
+    expect(output).toContain('Conversation')
     expect(output).toContain('Review child')
+    expect(output).toContain('1 summary')
+    expect(output).toContain('4 errors')
     expect(output).not.toContain('Timeline')
   })
 })

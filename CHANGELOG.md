@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- Open a live multi-session Trajectory workspace with `/trajectory` or Alt+T. The alternate-screen view keeps the transcript intact while providing a durable root/child session tree, readable event timeline, raw event details, filtering, search, follow mode, refresh, and clipboard copy.
+- Open the current conversation's live Trajectory workspace with `/trajectory` or Alt+T. The alternate-screen view keeps the transcript intact, scopes the run tree to the active root and its descendants, and exposes numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 
 ### Changed
 
