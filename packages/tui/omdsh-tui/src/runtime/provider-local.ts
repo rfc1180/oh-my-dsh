@@ -209,6 +209,7 @@ export class LocalTui implements TuiService {
   #resizeWidthChanged = false
   readonly #streamRenderMs: number
   #streamRenderTimer: ReturnType<typeof setTimeout> | null = null
+  #pinnedOverflow = false
   readonly #term: TerminalLike
   #model: string
   #reasoningEffort: string | undefined
@@ -1069,6 +1070,18 @@ export class LocalTui implements TuiService {
     this.#focusBlock = undefined
     this.#promptDocument = frame.promptDocument
     this.#syncScroll(frame.transcript)
+    if (this.#trajectory === null) {
+      const assistantStreaming = this.#state.blocks.some(block => block.kind === 'assistant' && block.streaming)
+      const pendingSpan = frame.livePinned === true
+        ? frame.lines.length - (frame.liveStart ?? frame.lines.length)
+        : 0
+      if (this.#pinnedOverflow && frame.livePinned !== true && this.#terminalProfile === 'direct') {
+        // A long mutable suffix lived only on the physical screen while it streamed.
+        // Rebuild once at settlement so terminal hosts cannot retain only its tail.
+        this.#renderer.startEpoch({ replay: 'full' })
+      }
+      this.#pinnedOverflow = assistantStreaming && frame.livePinned === true && pendingSpan > this.#term.height()
+    }
     this.#renderer.render(frame)
   }
 
