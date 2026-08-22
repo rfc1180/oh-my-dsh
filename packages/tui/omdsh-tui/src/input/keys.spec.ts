@@ -65,6 +65,24 @@ describe('parseKeys', () => {
     ])
   })
 
+  it('swallows terminal protocol replies instead of typing their payload', () => {
+    expect(parseKeys('\x1b[?1;2c')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b[>0;276;0c')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b[?12;34R')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b]10;rgb:ffff/ffff/ffff\x1b\\')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1bP1$r0m\x1b\\')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('before\x1b[?1;2cafter').events).toEqual([
+      { type: 'text', value: 'before' },
+      { type: 'text', value: 'after' },
+    ])
+  })
+
+  it('holds fragmented private CSI replies until their final byte', () => {
+    const first = parseKeys('\x1b[?1;')
+    expect(first).toEqual({ events: [], rest: '\x1b[?1;' })
+    expect(parseKeys(first.rest + '2c')).toEqual({ events: [], rest: '' })
+  })
+
   it('holds a lone ESC as rest and flushes it as escape', () => {
     expect(parseKeys('\x1b')).toEqual({ events: [], rest: '\x1b' })
     expect(flushPending('\x1b')).toEqual([{ type: 'key', id: 'escape' }])

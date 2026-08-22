@@ -2047,6 +2047,18 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('does not type terminal protocol replies into the editor', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const pending = tui.readline()
+    press(term, '\x1b[?1;2c')
+    press(term, '\x1b[>0;276;0c')
+    press(term, '\x1b]10;rgb:ffff/ffff/ffff\x1b\\')
+    press(term, 'ok\r')
+    expect(await pending).toBe('ok')
+    tui.dispose()
+  })
+
   it('scrolls a few lines with shift+up', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
