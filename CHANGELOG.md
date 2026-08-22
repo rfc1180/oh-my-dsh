@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Added
 
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
-- Open the current conversation's live Trajectory in the native alternate-screen workspace with `/trajectory` or Alt+T. Use `/trajectory companion` for a separate read-only Surfterm block; both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
+- Open the current conversation's live Trajectory as a rich native read-only TUI in a separate Surfterm block with `/trajectory`, `/trajectory screen`, or `/trajectory companion`, keeping the main conversation visible. Alt+T retains the inline alternate-screen view; both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 
 ### Changed
 

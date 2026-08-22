@@ -576,6 +576,7 @@ export class LocalTui implements TuiService {
     this.#ac = null
     this.#trajectorySource = source
     this.#trajectory = createTrajectoryState(source.activeSessionId, options)
+    this.#deferInitialRender = false
     this.#render()
     void this.#refreshTrajectory(true, source.activeSessionId)
     const pollMs = Math.max(500, Math.min(30_000, source.pollIntervalMs ?? 1_500))
@@ -2187,11 +2188,6 @@ export class LocalTui implements TuiService {
       const textMode = firstArgument === 'text' || firstArgument === 'ledger'
       if (!textMode) {
         const companionMode = firstArgument === 'companion' || firstArgument === 'block' || firstArgument === 'detached'
-        if (companionMode && this.#trajectorySource.openCompanion === undefined) {
-          this.#notice('Trajectory companion requires a direct Surfterm block.')
-          this.#render()
-          return
-        }
         let options: TuiTrajectoryOptions
         try {
           options = parseTrajectoryOptions(companionMode ? words.slice(1).join(' ') : args)
@@ -2200,9 +2196,9 @@ export class LocalTui implements TuiService {
           this.#render()
           return
         }
-        const opened = companionMode
-          ? this.#trajectorySource.openCompanion!(options)
-          : this.openTrajectory(this.#trajectorySource, options)
+        const opened = this.#trajectorySource.openCompanion === undefined
+          ? this.openTrajectory(this.#trajectorySource, options)
+          : this.#trajectorySource.openCompanion(options)
         void opened.catch((error: unknown) => {
           this.#notice(error instanceof Error ? error.message : String(error))
           this.#render()
@@ -2428,15 +2424,8 @@ export class LocalTui implements TuiService {
   }
 }
 
-/**
- * Mount the local terminal provider as the tui service.
- * @param ctx - plugin context.
- * @param config - model label and color switch.
- */
-export function apply(ctx: Context, config: Config): void {
-  const dshHome = process.env.OMDSH_HOME ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  const terminalProfile = detectTerminalProfile()
-  const term: TerminalLike = {
+function processTerminal(): TerminalLike {
+  return {
     output: process.stdout,
     input: process.stdin,
     width: () => process.stdout.columns ?? 80,
@@ -2446,6 +2435,55 @@ export function apply(ctx: Context, config: Config): void {
       return () => { process.stdout.removeListener('resize', listener) }
     },
   }
+}
+
+export interface TrajectoryTerminalConfig {
+  terminal?: TerminalLike
+  colors?: boolean
+  theme?: string
+  copy?: ClipboardWriter
+  signal?: AbortSignal
+}
+
+/** Run the native Trajectory renderer as a dedicated read-only terminal application. */
+export async function runTrajectoryTerminal(
+  source: TuiTrajectorySource,
+  options: TuiTrajectoryOptions = {},
+  config: TrajectoryTerminalConfig = {},
+): Promise<void> {
+  const term = config.terminal ?? processTerminal()
+  const tui = new LocalTui(
+    term,
+    'Trajectory',
+    config.colors ?? term.output.isTTY === true,
+    parseThemeName(config.theme),
+    config.copy ?? copyToClipboard,
+    {
+      deferInitialRender: true,
+      terminalProfile: 'direct',
+      alternateScreenOverlays: true,
+    },
+  )
+  const abort = (): void => { tui.dispose() }
+  if (config.signal?.aborted === true) abort()
+  else config.signal?.addEventListener('abort', abort, { once: true })
+  try {
+    await tui.openTrajectory(source, options)
+  } finally {
+    config.signal?.removeEventListener('abort', abort)
+    tui.dispose()
+  }
+}
+
+/**
+ * Mount the local terminal provider as the tui service.
+ * @param ctx - plugin context.
+ * @param config - model label and color switch.
+ */
+export function apply(ctx: Context, config: Config): void {
+  const dshHome = process.env.OMDSH_HOME ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const terminalProfile = detectTerminalProfile()
+  const term = processTerminal()
   const tui = new LocalTui(
     term,
     config.model,

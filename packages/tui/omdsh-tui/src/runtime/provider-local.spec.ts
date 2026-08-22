@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { formatSessionReferenceMention } from '@deepseek-ai/dsh-session-reference'
 import { copyToClipboard } from '../input/clipboard.ts'
-import { LocalTui, type TerminalLike } from './provider-local.ts'
+import { LocalTui, runTrajectoryTerminal, type TerminalLike } from './provider-local.ts'
 import { initialTranscript, renderView } from '../views/event-views.ts'
 import { createHistorySearch } from '../views/history-search.ts'
 import type { DirEntry, PathSearcher, ProjectPathEntry } from '../views/path-complete.ts'
@@ -155,7 +155,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('opens /trajectory as the native screen while keeping companion and text modes explicit', async () => {
+  it('opens every /trajectory screen form in the detached block while keeping text explicit', async () => {
     const term = new FakeTerminal()
     term.columns = 120
     term.rows = 30
@@ -175,26 +175,51 @@ describe('LocalTui (tty)', () => {
 
     press(term, '/trajectory tools 40\r')
     await flushAsyncPaste()
-    expect(term.captured.slice(before)).toContain('\x1b[?1049h')
-    expect(openCompanion).not.toHaveBeenCalled()
-    press(term, 'q')
-    await flushAsyncPaste()
-
-    const beforeCompanion = term.captured.length
-    press(term, '/trajectory companion errors 30\r')
-    await flushAsyncPaste()
-    expect(openCompanion).toHaveBeenCalledWith({ mode: 'errors', limit: 30 })
-    expect(term.captured.slice(beforeCompanion)).not.toContain('\x1b[?1049h')
+    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'tools', limit: 40 })
 
     press(term, '/trajectory screen summary\r')
     await flushAsyncPaste()
-    expect(term.captured.slice(beforeCompanion)).toContain('\x1b[?1049h')
-    press(term, 'q')
+    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'summary' })
+
+    press(term, '/trajectory companion errors 30\r')
     await flushAsyncPaste()
+    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'errors', limit: 30 })
+    expect(term.captured.slice(before)).not.toContain('\x1b[?1049h')
 
     press(term, '/trajectory text summary 20\r')
     await expect(pending).resolves.toEqual({ text: '/trajectory text summary 20', images: [] })
     tui.dispose()
+  })
+
+  it('runs the rich native Trajectory renderer as a dedicated terminal app', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 30
+    const running = runTrajectoryTerminal({
+      activeSessionId: 'session-live',
+      pollIntervalMs: 30_000,
+      list: async () => [{ id: 'session-live', title: 'Live task' }],
+      inspect: async () => ({
+        id: 'session-live',
+        title: 'Live task',
+        eventCount: 1,
+        events: [ev('assistant/message', { message: { content: [{ type: 'text', text: 'rich detached event' }] } }, 1)],
+      }),
+    }, { mode: 'summary' }, {
+      terminal: term,
+      colors: false,
+      copy: async () => {},
+    })
+
+    await flushAsyncPaste()
+    const rendered = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
+    expect(term.captured).toContain('\x1b[?1049h')
+    expect(rendered).toContain('Trajectory')
+    expect(rendered).toContain('Live task')
+    press(term, 'q')
+    await running
+    expect(term.captured).toContain('\x1b[?1049l')
+    expect(term.destroyed).toBe(true)
   })
 
   it('opens the configured Trajectory source while an agent turn is running', async () => {
