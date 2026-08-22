@@ -99,6 +99,8 @@ import type { ToolInfo } from '../chrome/tools-list.ts'
 import type { TuiToolPresentation } from '../chrome/tool-renderers.ts'
 import { TUI_SETTINGS_NAMESPACE, TuiSettingsSchema } from '../session/tui-settings.ts'
 import { defaultStatusBarConfig, resolveStatusBarConfig, type StatusBarConfig } from '../chrome/status-config.ts'
+import { encodeHostTelemetryOsc, hostTelemetryPayload } from '../chrome/host-telemetry.ts'
+import { sessionStatusGroups } from '../chrome/status-line.ts'
 import { HistoryStore } from '../views/history-store.ts'
 import {
   appendTrajectoryEvent,
@@ -147,6 +149,7 @@ const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
 // Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
 const DEFAULT_STREAM_RENDER_MS = 50
+const HOST_TELEMETRY_HEARTBEAT_MS = 30_000
 
 function shortenPath(cwd: string): string {
   const home = homedir()
@@ -292,6 +295,9 @@ export class LocalTui implements TuiService {
   readonly #welcomeTips: readonly WelcomeTip[]
   #sessionId: string | undefined
   #sessionStats: TuiSessionStats | undefined
+  readonly #hostTelemetry: boolean
+  #hostTelemetrySignature: string | undefined
+  #hostTelemetryHeartbeat: ReturnType<typeof setInterval> | null = null
   #sessionControls: TuiSessionControls | undefined
   #loopStatus: TuiLoopStatus | undefined
   #subagents: TuiSubagentRoster | undefined
@@ -351,10 +357,12 @@ export class LocalTui implements TuiService {
       alternateScreenOverlays?: boolean
       resizeDebounceMs?: number
       streamRenderMs?: number
+      hostTelemetry?: boolean
     } = {},
   ) {
     this.#term = term
     this.#model = model
+    this.#hostTelemetry = paths.hostTelemetry === true
     this.#colors = colors
     this.#themeName = themeName
     this.#copy = copy
@@ -433,6 +441,10 @@ export class LocalTui implements TuiService {
         }
       }) ?? null
       term.output.write('\x1b[?2004h')
+      if (this.#hostTelemetry) {
+        this.#hostTelemetryHeartbeat = setInterval(() => { this.#publishHostTelemetry(true) }, HOST_TELEMETRY_HEARTBEAT_MS)
+        this.#hostTelemetryHeartbeat.unref?.()
+      }
     }
     this.#render()
   }
@@ -891,12 +903,20 @@ export class LocalTui implements TuiService {
       clearInterval(this.#loopTick)
       this.#loopTick = null
     }
+    if (this.#hostTelemetryHeartbeat !== null) {
+      clearInterval(this.#hostTelemetryHeartbeat)
+      this.#hostTelemetryHeartbeat = null
+    }
     this.#closeTrajectory(false)
     this.#trajectorySource = null
     if (this.#tty) {
       this.#offData?.()
       this.#offResize?.()
       this.#term.input.setRawMode?.(false)
+      if (this.#hostTelemetrySignature !== undefined) {
+        this.#term.output.write(encodeHostTelemetryOsc())
+        this.#hostTelemetrySignature = undefined
+      }
       // Leave the cursor on a fresh line below the last frame so the shell
       // prompt does not overwrite the transcript. Disable bracketed paste
       // and restore the cursor.
@@ -1015,6 +1035,18 @@ export class LocalTui implements TuiService {
     }
   }
 
+  #publishHostTelemetry(force = false): void {
+    if (!this.#tty || !this.#hostTelemetry) return
+    const groups = this.#sessionStats === undefined || !this.#statusBar.enabled
+      ? []
+      : sessionStatusGroups(this.#sessionStats)
+    const payload = groups.length === 0 ? undefined : hostTelemetryPayload(groups)
+    const signature = payload === undefined ? '' : JSON.stringify(payload)
+    if (signature === this.#hostTelemetrySignature && (!force || payload === undefined)) return
+    this.#hostTelemetrySignature = signature
+    this.#term.output.write(encodeHostTelemetryOsc(payload))
+  }
+
   #render(): void {
     const deferStreamBlocks = this.#handlingInput && this.#streamRenderTimer !== null
     if (this.#streamRenderTimer !== null && !deferStreamBlocks) {
@@ -1096,6 +1128,7 @@ export class LocalTui implements TuiService {
       this.#pinnedOverflow = assistantStreaming && frame.livePinned === true && pendingSpan > this.#term.height()
     }
     this.#renderer.render(frame)
+    this.#publishHostTelemetry()
     if (!deferStreamBlocks && this.#trajectory === null) {
       this.#renderedBlocks = this.#state.blocks
     }
@@ -2569,6 +2602,9 @@ export function apply(ctx: Context, config: Config): void {
       deferInitialRender: true,
       terminalProfile,
       alternateScreenOverlays: terminalProfile === 'direct',
+      hostTelemetry: terminalProfile === 'direct'
+        && process.env.WAVETERM !== undefined
+        && process.env.WAVETERM_BLOCKID !== undefined,
       historyPath: config.historyPath ?? join(dshHome, 'omdsh', 'history.jsonl'),
       keybindingsPath: config.keybindingsPath ?? join(dshHome, 'omdsh', 'keybindings.json'),
     },

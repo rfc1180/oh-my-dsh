@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Publish the complete session telemetry projection to supporting terminal hosts so narrow panes can expose it through host-native hover chrome without enabling TUI mouse tracking.
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
 - Open the current conversation's live Trajectory as a rich native read-only TUI in the current terminal with `/trajectory`, `/trajectory screen`, or Alt+T; use `/trajectory companion` when a separate Surfterm block is preferred. Both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 
