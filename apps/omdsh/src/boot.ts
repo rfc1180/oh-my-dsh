@@ -12,6 +12,7 @@ import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import { NAME, prepareLaunchEnvironment } from './composition.ts'
 import { composeLaunch } from './profile.ts'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
+import { installRc7ZstdSessionCompatibility } from './session-persistence-compat.ts'
 
 export { NAME } from './composition.ts'
 
@@ -25,6 +26,7 @@ export async function runOmdsh(
   prompt: readonly string[],
   resume?: string,
 ): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
+  installRc7ZstdSessionCompatibility()
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
   const signalShutdown = new AbortController()
