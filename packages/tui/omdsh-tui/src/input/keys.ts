@@ -103,31 +103,40 @@ function kittyEvent(code: number, modifier: number): KeyEvent {
   return { type: 'key', id: withMods(`code${code}`, modifier) }
 }
 
-/** Consume a complete SGR mouse report (`\x1b[<button;col;rowM`) without emitting an event. */
-function parseSgr(body: string): { used: number } | 'partial' | null {
-  // body is the CSI payload after '['
-  const match = /^<(\d+);(\d+);(\d+)([Mm])/.exec(body)
-  if (match !== null) return { used: 1 + match[0].length }
-  if (body.length < 32 && /^<\d*(?:;\d*){0,2}$/.test(body)) return 'partial'
-  return null
+type EscapeParseResult = { event: KeyEvent | undefined; used: number } | 'partial' | null
+
+function csiSequenceLength(body: string): number | 'partial' | null {
+  let intermediates = false
+  for (let index = 0; index < body.length; index += 1) {
+    const code = body.charCodeAt(index)
+    if (code >= 0x40 && code <= 0x7e) return index + 1
+    if (code >= 0x30 && code <= 0x3f) {
+      if (intermediates) return null
+      continue
+    }
+    if (code >= 0x20 && code <= 0x2f) {
+      intermediates = true
+      continue
+    }
+    return null
+  }
+  return 'partial'
 }
 
-function parseCsi(seq: string): { event: KeyEvent | undefined; used: number } | 'partial' | null {
+function parseCsi(seq: string): EscapeParseResult {
   // seq starts after ESC; first char is '['
   const body = seq.slice(1)
   if (body === '') return 'partial'
-  if (body[0] === '<') {
-    const parsed = parseSgr(body)
-    if (parsed === 'partial') return 'partial'
-    if (parsed === null) return null
-    return { event: undefined, used: parsed.used }
+  const sequenceLength = csiSequenceLength(body)
+  if (sequenceLength === 'partial' || sequenceLength === null) return sequenceLength
+  const sequence = body.slice(0, sequenceLength)
+  const privateMarker = sequence.charCodeAt(0)
+  if (privateMarker >= 0x3c && privateMarker <= 0x3f) {
+    return { event: undefined, used: 1 + sequenceLength }
   }
-  const match = /^(?:(\d+)?(?:;(\d+))?(?:;(\d+))?)?([A-Za-z~u])/.exec(body)
-  if (match === null) {
-    if (/^[\d;]*$/.test(body) && body.length < 32) return 'partial'
-    return null
-  }
-  const used = 1 + match[0].length
+  const match = /^(?:(\d+)?(?:;(\d+))?(?:;(\d+))?)?([A-Za-z~u])/.exec(sequence)
+  if (match === null) return { event: undefined, used: 1 + sequenceLength }
+  const used = 1 + sequenceLength
   const p1 = match[1] === undefined || match[1] === '' ? 1 : Number(match[1])
   const p2 = match[2] === undefined || match[2] === '' ? 1 : Number(match[2])
   const p3 = match[3] === undefined || match[3] === '' ? undefined : Number(match[3])
@@ -148,12 +157,22 @@ function parseCsi(seq: string): { event: KeyEvent | undefined; used: number } | 
   return { event: asEvent(withMods(letter, p2 === 1 && p1 > 1 ? p1 : p2)), used }
 }
 
-function parseSs3(seq: string): { event: KeyEvent | undefined; used: number } | 'partial' | null {
+function parseSs3(seq: string): EscapeParseResult {
   const next = seq[1]
   if (next === undefined) return 'partial'
   const letter = CSI_LETTER[next]
   if (letter === undefined) return null
   return { event: asEvent(letter), used: 2 }
+}
+
+function controlStringLength(sequence: string): number | 'partial' {
+  const osc = sequence[1] === ']'
+  for (let index = 2; index < sequence.length; index += 1) {
+    const code = sequence.charCodeAt(index)
+    if ((osc && code === 0x07) || code === 0x9c) return index + 1
+    if (code === 0x1b && sequence[index + 1] === '\\') return index + 2
+  }
+  return 'partial'
 }
 
 /**
@@ -188,6 +207,12 @@ export function parseKeys(input: string): { events: KeyEvent[]; rest: string } {
         }
         if (parsed.event !== undefined) events.push(parsed.event)
         i += 1 + parsed.used
+        continue
+      }
+      if (second === ']' || second === 'P' || second === 'X' || second === '^' || second === '_') {
+        const used = controlStringLength(tail)
+        if (used === 'partial') return { events, rest: tail }
+        i += used
         continue
       }
       const alt = ALT_SPECIAL[second]
@@ -234,5 +259,10 @@ export function parseKeys(input: string): { events: KeyEvent[]; rest: string } {
  */
 export function flushPending(rest: string): KeyEvent[] {
   if (rest === '\x1b') return [{ type: 'key', id: 'escape' }]
+  if (rest.length === 2 && rest[0] === '\x1b' && rest[1] !== '[') {
+    const second = rest[1] as string
+    const special = ALT_SPECIAL[second]
+    return [{ type: 'key', id: special ?? `alt+${second.toLowerCase()}` }]
+  }
   return []
 }

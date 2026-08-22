@@ -65,9 +65,41 @@ describe('parseKeys', () => {
     ])
   })
 
-  it('holds a lone ESC as rest and flushes it as escape', () => {
+  it('swallows terminal protocol replies instead of typing their payload', () => {
+    expect(parseKeys('\x1b[?1;2c')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b[>0;276;0c')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b[?12;34R')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1b]10;rgb:ffff/ffff/ffff\x1b\\')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('\x1bP1$r0m\x1b\\')).toEqual({ events: [], rest: '' })
+    expect(parseKeys('before\x1b[?1;2cafter').events).toEqual([
+      { type: 'text', value: 'before' },
+      { type: 'text', value: 'after' },
+    ])
+  })
+
+  it('holds fragmented terminal replies until their final byte', () => {
+    const csi = parseKeys('\x1b[?1;')
+    expect(csi).toEqual({ events: [], rest: '\x1b[?1;' })
+    expect(parseKeys(csi.rest + '2c')).toEqual({ events: [], rest: '' })
+
+    const osc = parseKeys('\x1b]10;rgb:ffff/')
+    expect(osc).toEqual({ events: [], rest: '\x1b]10;rgb:ffff/' })
+    expect(parseKeys(osc.rest + 'ffff/ffff\x1b\\')).toEqual({ events: [], rest: '' })
+
+    const dcs = parseKeys('\x1bP1$r')
+    expect(dcs).toEqual({ events: [], rest: '\x1bP1$r' })
+    expect(parseKeys(dcs.rest + '0m\x1b\\')).toEqual({ events: [], rest: '' })
+  })
+
+  it('falls back to text when parameter bytes follow CSI intermediates', () => {
+    expect(parseKeys('\x1b[ 1A')).toEqual({ events: [{ type: 'text', value: '[ 1A' }], rest: '' })
+  })
+
+  it('flushes lone ESC and ambiguous two-byte Alt input after the escape timeout', () => {
     expect(parseKeys('\x1b')).toEqual({ events: [], rest: '\x1b' })
     expect(flushPending('\x1b')).toEqual([{ type: 'key', id: 'escape' }])
+    expect(parseKeys('\x1b]')).toEqual({ events: [], rest: '\x1b]' })
+    expect(flushPending('\x1b]')).toEqual([{ type: 'key', id: 'alt+]' }])
   })
 })
 

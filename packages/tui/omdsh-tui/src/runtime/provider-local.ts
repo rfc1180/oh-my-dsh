@@ -144,6 +144,7 @@ import type { StartupChangelogMode } from '../session/release-notes.ts'
 
 const DOUBLE_CTRL_C_MS = 500
 const DOUBLE_ESCAPE_MS = 500
+const MAX_PENDING_ESCAPE_BYTES = 4096
 
 function shortenPath(cwd: string): string {
   const home = homedir()
@@ -1098,13 +1099,13 @@ export class LocalTui implements TuiService {
       this.#escapeTimer = null
     }
     for (const event of events) this.#dispatch(event)
-    if (rest === '\x1b') {
+    if (rest.startsWith('\x1b') && rest.length <= MAX_PENDING_ESCAPE_BYTES) {
       this.#escapeTimer = setTimeout(() => {
         this.#pendingKeys = ''
         this.#escapeTimer = null
         for (const event of flushPending(rest)) this.#dispatch(event)
       }, 80)
-    } else if (rest.length > 32) {
+    } else if (rest.length > 0) {
       this.#pendingKeys = ''
     }
   }
