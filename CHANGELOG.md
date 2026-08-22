@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep composer typing and submit responsive during long assistant replies by using a cheap plain streaming preview, bounding repaint frequency, and reusing the last painted transcript for raw-key frames; full Markdown appears when the reply settles.
 - List and resume sessions written by Harness rc.7 as a single Zstandard frame after upgrading to rc.8, instead of rejecting their header as corrupt.
 - Consume terminal capability and status replies as control sequences instead of inserting their numeric or color payloads into the composer after focus or resize changes.
 - Repaint from a clean physical baseline after hidden-tab resize signals, and provide `Ctrl+T` as a manual full-transcript recovery when a terminal host loses rows.

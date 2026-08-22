@@ -956,6 +956,37 @@ describe('LocalTui (tty)', () => {
     }
   })
 
+  it('keeps raw-key frames ahead of a pending default stream repaint', async () => {
+    vi.useFakeTimers()
+    try {
+      const term = new FakeTerminal()
+      const tui = new LocalTui(term, 'm', false)
+      const pending = tui.readline()
+
+      tui.event(ev('assistant/chunk', {
+        turn: 1,
+        step: 1,
+        chunk: { type: 'text-delta', index: 0, text: 'deferred-stream-body' },
+      }, 1))
+      press(term, 'Q')
+
+      expect(stripAnsi(term.captured)).toContain('Q')
+      expect(stripAnsi(term.captured)).not.toContain('deferred-stream-body')
+
+      press(term, '\r')
+      await expect(pending).resolves.toBe('Q')
+
+      await vi.advanceTimersByTimeAsync(49)
+      expect(stripAnsi(term.captured)).not.toContain('deferred-stream-body')
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(stripAnsi(term.captured)).toContain('deferred-stream-body')
+      tui.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('skips a footer repaint when only non-visible session timing changes', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)

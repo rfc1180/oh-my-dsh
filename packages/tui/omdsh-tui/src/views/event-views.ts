@@ -577,6 +577,24 @@ function assistantMarkdown(
   return assistantContentLines(rendered.map(line => lockThinkingLine(line, theme)), width, paddingX)
 }
 
+/** Keep the growing stream cheap; settled blocks receive the full Markdown render. */
+function assistantStreamingLines(
+  source: string,
+  theme: Theme,
+  width: number,
+  style?: MarkdownStyle,
+): string[] {
+  const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
+  const contentWidth = Math.max(1, width - paddingX * 2)
+  const wrapped = wrapText(source, contentWidth)
+  const rendered = style?.color === 'thinkingText'
+    ? wrapped.map(line => lockThinkingLine(line, theme))
+    : style?.color === 'text'
+      ? wrapped.map(line => theme.fg('text', line))
+      : wrapped
+  return assistantContentLines(rendered, width, paddingX)
+}
+
 function userBubble(text: string, theme: Theme, width: number): string[] {
   const inner = Math.max(1, width - 2)
   const wrapped = renderPathMentionRows(text, inner, theme)
@@ -728,9 +746,10 @@ export function blockLines(
   if (block.kind === 'user') return userBubble(block.text, theme, width)
   if (block.kind === 'assistant') {
     const lines: string[] = []
+    const renderAssistant = block.streaming ? assistantStreamingLines : assistantMarkdown
     if (block.reasoning !== '') {
       if (activityDetail === 'standard') {
-        lines.push(...assistantMarkdown(block.reasoning, theme, width, { color: 'thinkingText', italic: true }))
+        lines.push(...renderAssistant(block.reasoning, theme, width, { color: 'thinkingText', italic: true }))
       } else if (activityDetail === 'compact') {
         lines.push(...compactReasoningLines(block.reasoning, theme, width))
       }
@@ -742,7 +761,7 @@ export function blockLines(
         lines.push(...assistantContentLines([theme.fg('dim', '…')], width, paddingX))
       }
     } else if (block.text !== '') {
-      lines.push(...assistantMarkdown(block.text, theme, width, hasExplicitTextColor(theme) ? { color: 'text' } : undefined))
+      lines.push(...renderAssistant(block.text, theme, width, hasExplicitTextColor(theme) ? { color: 'text' } : undefined))
     }
     if (block.interrupted === true) {
       const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0

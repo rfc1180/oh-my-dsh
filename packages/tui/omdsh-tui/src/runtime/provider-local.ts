@@ -145,6 +145,8 @@ import type { StartupChangelogMode } from '../session/release-notes.ts'
 const DOUBLE_CTRL_C_MS = 500
 const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
+// Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
+const DEFAULT_STREAM_RENDER_MS = 50
 
 function shortenPath(cwd: string): string {
   const home = homedir()
@@ -215,6 +217,8 @@ export class LocalTui implements TuiService {
   readonly #tty: boolean
   readonly #renderer: MainScreenRenderer
   #state: TranscriptState = initialTranscript()
+  #renderedBlocks: TranscriptState['blocks'] = this.#state.blocks
+  #handlingInput = false
   readonly #editor = new InputEditor()
   #history: string[] = []
   #historyIndex = 0
@@ -372,7 +376,7 @@ export class LocalTui implements TuiService {
     this.#deferInitialRender = paths.deferInitialRender === true
     this.#terminalProfile = paths.terminalProfile ?? detectTerminalProfile()
     this.#resizeDebounceMs = Math.max(0, paths.resizeDebounceMs ?? 120)
-    this.#streamRenderMs = Math.max(0, paths.streamRenderMs ?? 8)
+    this.#streamRenderMs = Math.max(0, paths.streamRenderMs ?? DEFAULT_STREAM_RENDER_MS)
     this.#trueColor = colors && detectTrueColor()
     this.#tty = term.input.isTTY === true
     this.#pwd = shortenPath(project.root)
@@ -990,12 +994,16 @@ export class LocalTui implements TuiService {
   }
 
   #render(): void {
-    if (this.#streamRenderTimer !== null) {
+    const deferStreamBlocks = this.#handlingInput && this.#streamRenderTimer !== null
+    if (this.#streamRenderTimer !== null && !deferStreamBlocks) {
       clearTimeout(this.#streamRenderTimer)
       this.#streamRenderTimer = null
     }
     if (this.#deferInitialRender) return
     const width = this.#term.width()
+    const renderState = deferStreamBlocks
+      ? { ...this.#state, blocks: this.#renderedBlocks }
+      : this.#state
     const frame = this.#tty
       ? this.#trajectory !== null
         ? renderTrajectory(
@@ -1006,7 +1014,7 @@ export class LocalTui implements TuiService {
           APP_NAME,
           this.#spinner,
         )
-        : renderView(this.#state, {
+        : renderView(renderState, {
         width,
         height: this.#term.height(),
         model: this.#model,
@@ -1054,6 +1062,9 @@ export class LocalTui implements TuiService {
     this.#promptDocument = frame.promptDocument
     this.#syncScroll(frame.transcript)
     this.#renderer.render(frame)
+    if (!deferStreamBlocks && this.#trajectory === null) {
+      this.#renderedBlocks = this.#state.blocks
+    }
   }
 
   #scheduleStreamRender(): void {
@@ -1105,15 +1116,25 @@ export class LocalTui implements TuiService {
       clearTimeout(this.#escapeTimer)
       this.#escapeTimer = null
     }
-    for (const event of events) this.#dispatch(event)
+    this.#dispatchInputEvents(events)
     if (rest.startsWith('\x1b') && rest.length <= MAX_PENDING_ESCAPE_BYTES) {
       this.#escapeTimer = setTimeout(() => {
         this.#pendingKeys = ''
         this.#escapeTimer = null
-        for (const event of flushPending(rest)) this.#dispatch(event)
+        this.#dispatchInputEvents(flushPending(rest))
       }, 80)
     } else if (rest.length > 0) {
       this.#pendingKeys = ''
+    }
+  }
+
+  #dispatchInputEvents(events: readonly KeyEvent[]): void {
+    const wasHandlingInput = this.#handlingInput
+    this.#handlingInput = true
+    try {
+      for (const event of events) this.#dispatch(event)
+    } finally {
+      this.#handlingInput = wasHandlingInput
     }
   }
 
