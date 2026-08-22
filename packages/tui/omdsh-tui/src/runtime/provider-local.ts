@@ -205,6 +205,8 @@ export class LocalTui implements TuiService {
   readonly #terminalProfile: 'direct' | 'multiplexer' | 'conpty'
   readonly #resizeDebounceMs: number
   #resizeTimer: ReturnType<typeof setTimeout> | null = null
+  #renderedWidth: number
+  #resizeWidthChanged = false
   readonly #streamRenderMs: number
   #streamRenderTimer: ReturnType<typeof setTimeout> | null = null
   readonly #term: TerminalLike
@@ -377,10 +379,11 @@ export class LocalTui implements TuiService {
     this.#tty = term.input.isTTY === true
     this.#pwd = shortenPath(project.root)
     this.#branch = project.gitLabel
+    this.#renderedWidth = this.#term.width()
     this.#renderer = new MainScreenRenderer(
       { write: (chunk) => { this.#term.output.write(chunk) } },
       {
-        width: this.#term.width(),
+        width: this.#renderedWidth,
         height: this.#term.height(),
         synchronized: this.#tty,
         clearScrollback: this.#terminalProfile === 'direct',
@@ -394,17 +397,30 @@ export class LocalTui implements TuiService {
       term.input.on('data', listener)
       this.#offData = () => { term.input.off('data', listener) }
       this.#offResize = term.onResize?.(() => {
-        // A terminal resize changes the committed/live seam; re-anchor the
-        // live window so it stays anchored at the bottom.
+        // Width reflow changes logical row numbers, so old native scrollback can
+        // no longer share an index space with the newly wrapped transcript.
+        this.#resizeWidthChanged ||= this.#term.width() !== this.#renderedWidth
         const repaint = (): void => {
           this.#resizeTimer = null
-          this.#renderer.resize(this.#term.width(), this.#term.height())
-          // A hidden tab can emit SIGWINCH without changing its final geometry.
-          // Its physical screen may still have been reflowed, so discard the old baseline.
-          this.#renderer.reset()
+          const width = this.#term.width()
+          const height = this.#term.height()
+          const widthChanged = this.#resizeWidthChanged || width !== this.#renderedWidth
+          this.#resizeWidthChanged = false
+          this.#renderer.resize(width, height)
+          this.#renderedWidth = width
+          if (widthChanged && this.#terminalProfile === 'direct') {
+            // Direct terminals support ED3: rebuild one coherent width epoch
+            // instead of mixing frozen narrow rows with the reflowed wide frame.
+            this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
+          } else {
+            // Height-only and same-geometry signals need only a fresh baseline.
+            // Multiplexers/ConPTY cannot safely erase host-owned scrollback.
+            this.#renderer.reset()
+          }
           this.#render()
         }
-        if (this.#terminalProfile === 'multiplexer') {
+        const debounce = this.#terminalProfile === 'multiplexer' || this.#resizeWidthChanged
+        if (debounce && this.#resizeDebounceMs > 0) {
           if (this.#resizeTimer !== null) clearTimeout(this.#resizeTimer)
           this.#resizeTimer = setTimeout(repaint, this.#resizeDebounceMs)
         } else {
