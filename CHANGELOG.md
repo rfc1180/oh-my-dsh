@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Consume terminal capability and status replies as control sequences instead of inserting their numeric or color payloads into the composer after focus or resize changes.
 - Keep streaming assistant rows mutable until the authoritative reply settles, preventing partial Markdown layouts from entering native scrollback and appearing again before the complete answer.
 - Prompt selectors now accept both terminal Enter encodings and submit the highlighted choice when a multi-select prompt has no checked options.
 
