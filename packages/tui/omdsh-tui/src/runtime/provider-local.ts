@@ -399,6 +399,9 @@ export class LocalTui implements TuiService {
         const repaint = (): void => {
           this.#resizeTimer = null
           this.#renderer.resize(this.#term.width(), this.#term.height())
+          // A hidden tab can emit SIGWINCH without changing its final geometry.
+          // Its physical screen may still have been reflowed, so discard the old baseline.
+          this.#renderer.reset()
           this.#render()
         }
         if (this.#terminalProfile === 'multiplexer') {
@@ -432,9 +435,13 @@ export class LocalTui implements TuiService {
 
   setStatus(status: TuiStatus): void {
     if (this.#state.status === 'compacting') return
+    const previous = this.#state.status
     this.#state = { ...this.#state, status }
     this.#syncTick()
-    if (this.#tty) this.#render()
+    if (this.#tty) {
+      this.#render()
+      if (previous === 'running' && status === 'idle') this.#term.output.write('\x07')
+    }
   }
 
   setModel(model: string, reasoningEffort?: string): void {
@@ -1453,6 +1460,13 @@ export class LocalTui implements TuiService {
       }
       if (event.id === 'shift+down') {
         this.#scrollBy(TRANSCRIPT_FAST_SCROLL)
+        return
+      }
+      if (event.id === 'ctrl+t') {
+        this.#follow = true
+        this.#scrollStart = this.#maxStart
+        this.#renderer.startEpoch({ replay: 'full' })
+        this.#render()
         return
       }
       if (event.id === 'ctrl+o') {

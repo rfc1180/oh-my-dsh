@@ -20,6 +20,7 @@ describe('formatHotkeysText', () => {
     expect(text).toContain('/help')
     expect(text).not.toContain('/hotkeys')
     expect(text).toContain('PgUp')
+    expect(text).toContain('Ctrl+T')
     expect(text).toContain('Ctrl+O')
     expect(text).toContain('Alt+A')
     expect(text).toContain('subagent transcript')

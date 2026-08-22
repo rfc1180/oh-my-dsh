@@ -247,6 +247,18 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('rings the terminal bell when a running turn becomes idle', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    tui.setStatus('running')
+    const before = term.captured.length
+
+    tui.setStatus('idle')
+
+    expect(term.captured.slice(before)).toContain('\x07')
+    tui.dispose()
+  })
+
   it('repaints the footer when live Agent and tool controls change', () => {
     const term = new FakeTerminal()
     term.columns = 100
@@ -409,6 +421,19 @@ describe('LocalTui (tty)', () => {
     const before = term.captured.length
 
     term.resize(42, 18)
+
+    const repaint = term.captured.slice(before)
+    expect(repaint).toContain('\x1b[2J\x1b[H')
+    expect(stripAnsi(repaint)).toContain('🐳')
+    tui.dispose()
+  })
+
+  it('fully repaints after a hidden tab emits a same-geometry resize', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const before = term.captured.length
+
+    term.resize(term.columns, term.rows)
 
     const repaint = term.captured.slice(before)
     expect(repaint).toContain('\x1b[2J\x1b[H')
@@ -2071,6 +2096,20 @@ describe('LocalTui (tty)', () => {
     }
     press(term, '\x1b[1;2A')
     expect(term.captured).toContain('later line')
+    tui.dispose()
+  })
+
+  it('replays the full transcript when Ctrl+T requests recovery', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    tui.event(ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'recover me' }] }, 1))
+    const before = term.captured.length
+
+    press(term, '\x14')
+
+    const repaint = term.captured.slice(before)
+    expect(repaint).toContain('\x1b[3J')
+    expect(stripAnsi(repaint)).toContain('recover me')
     tui.dispose()
   })
 

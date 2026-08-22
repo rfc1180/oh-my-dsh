@@ -794,6 +794,21 @@ describe('MainScreenRenderer', () => {
     expect(emu.visible()).toEqual(['f', 'g', 'h'])
   })
 
+  it('clears a stale screen when reset accompanies a same-geometry resize', () => {
+    const emu = new Emulator(3)
+    const renderer = new MainScreenRenderer(emu, { width: 80, height: 3, synchronized: false })
+    const current = frame(['a', 'b', 'c', 'd', 'e'], 3)
+    renderer.render(current)
+    const mark = emu.captured.length
+
+    renderer.resize(80, 3)
+    renderer.reset()
+    renderer.render(current)
+
+    expect(emu.outputAfter(mark)).toContain('\x1b[2J\x1b[H')
+    expect(emu.visible()).toEqual(['c', 'd', 'e'])
+  })
+
   it('preserves frozen scrollback rows when the terminal height grows', () => {
     const emu = new Emulator(3)
     const renderer = new MainScreenRenderer(emu, { width: 80, height: 3, synchronized: false })

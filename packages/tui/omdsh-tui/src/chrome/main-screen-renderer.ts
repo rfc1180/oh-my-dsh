@@ -233,12 +233,14 @@ export class MainScreenRenderer {
       this.#resize = undefined
     } else if (this.#resize !== undefined) {
       const transition = this.#resize
-      const baseline = this.#resizedScreen(transition.oldHeight)
-      body = this.#paintScreen(target.rows, baseline, transition.widthChanged)
+      const clear = transition.widthChanged || this.#reanchor
+      const baseline = clear ? this.#blankScreen() : this.#resizedScreen(transition.oldHeight)
+      body = this.#paintScreen(target.rows, baseline, clear)
       // The terminal has already moved rows between screen and scrollback.
       // Adopt that physical boundary rather than replaying those rows.
       this.#physical = viewStart
       this.#resize = undefined
+      this.#reanchor = false
     } else if (this.#reanchor) {
       if (candidatePhysical > this.#physical) {
         body = this.#paintFlush(next, this.#physical, candidatePhysical, viewStart, true)
@@ -351,11 +353,13 @@ export class MainScreenRenderer {
   #takeResizeBaseline(): ResizeBaseline {
     if (this.#resize === undefined) return { rows: this.#screen, clear: false }
     const transition = this.#resize
+    const clear = transition.widthChanged || this.#reanchor
     this.#resize = undefined
+    this.#reanchor = false
     this.#adoptPhysicalAfterTransient = true
     return {
-      rows: transition.widthChanged ? this.#blankScreen() : this.#resizedScreen(transition.oldHeight),
-      clear: transition.widthChanged,
+      rows: clear ? this.#blankScreen() : this.#resizedScreen(transition.oldHeight),
+      clear,
     }
   }
 
