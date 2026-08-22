@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Publish the complete session telemetry projection to supporting terminal hosts so narrow panes can expose it through host-native hover chrome without enabling TUI mouse tracking.
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
 - Open the current conversation's live Trajectory as a read-only companion block with `/trajectory`, keeping the main Surfterm conversation visible. `/trajectory screen` and Alt+T retain the alternate-screen view, while both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
 

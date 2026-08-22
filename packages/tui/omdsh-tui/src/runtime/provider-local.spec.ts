@@ -244,6 +244,62 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('publishes complete deduplicated telemetry for supporting terminal hosts', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'deepseek-v4-pro', false, 'dark', copyToClipboard, { hostTelemetry: true })
+    const session = {
+      id: 'session-telemetry',
+      recent: [],
+      stats: {
+        turns: 2,
+        steps: 5,
+        llmMs: 12_000,
+        toolMs: 3_000,
+        ttftMs: 600,
+        ttftSteps: 2,
+        decodeMs: 8_000,
+        decodeTokens: 320,
+        inputTokens: 20_000,
+        outputTokens: 400,
+        cacheReadTokens: 18_000,
+        cacheWriteTokens: 0,
+        contextTokens: 8_000,
+        contextWindow: 100_000,
+      },
+    }
+    tui.applyStoredPrefs({
+      theme: 'dark',
+      colors: false,
+      expandTools: false,
+      statusBar: { groups: ['context'] },
+    })
+    tui.setSession(session)
+
+    const frames = (): string[] => term.captured.match(/\x1b\]16163;[A-Za-z0-9+/=]*\x1b\\/gu) ?? []
+    const published = frames().find(frame => !frame.startsWith('\x1b]16163;\x1b\\'))
+    expect(published).toBeDefined()
+    const encoded = published?.slice('\x1b]16163;'.length, -2) ?? ''
+    const payload = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as { groups: string[] }
+    expect(payload.groups).toContain('Ctx 8% · 8K/100K')
+    expect(payload.groups).toContain('Cache 90%')
+
+    const beforeRefresh = frames().length
+    tui.refresh()
+    tui.setSession(session)
+    expect(frames()).toHaveLength(beforeRefresh)
+
+    tui.applyStoredPrefs({
+      theme: 'dark',
+      colors: false,
+      expandTools: false,
+      statusBar: { enabled: false },
+    })
+    expect(frames().at(-1)).toBe('\x1b]16163;\x1b\\')
+
+    tui.dispose()
+    expect(frames().at(-1)).toBe('\x1b]16163;\x1b\\')
+  })
+
   it('renders the package version in the welcome title', () => {
     const manifest = JSON.parse(
       readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
