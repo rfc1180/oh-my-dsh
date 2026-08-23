@@ -18,6 +18,7 @@ import { initialTranscript, renderView } from '../views/event-views.ts'
 import { createHistorySearch } from '../views/history-search.ts'
 import type { DirEntry, PathSearcher, ProjectPathEntry } from '../views/path-complete.ts'
 import { stripAnsi } from '../chrome/width.ts'
+import { SessionPresentationController } from '../session/session-controller.ts'
 
 const PNG_1X1 = new Uint8Array(Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zk5sAAAAASUVORK5CYII=',
@@ -989,29 +990,54 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('coalesces streamed assistant chunks but flushes settlement immediately', async () => {
+  it('coalesces 1,000 controller-style transcript and footer updates but flushes settlement immediately', async () => {
     vi.useFakeTimers()
     try {
       const term = new FakeTerminal()
       const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { streamRenderMs: 8 })
       const initialWrites = term.writes
+      let projectedOutputTokens = 0
+      const stats = (outputTokens: number) => ({
+        turns: 1,
+        steps: 1,
+        llmMs: outputTokens,
+        toolMs: 0,
+        ttftMs: 1,
+        ttftSteps: 1,
+        decodeMs: outputTokens,
+        decodeTokens: outputTokens,
+        inputTokens: 10,
+        outputTokens,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      })
+      const controller = new SessionPresentationController(tui, () => {
+        tui.setSession({ id: 'stream-session', recent: [], stats: stats(projectedOutputTokens) })
+      })
 
-      tui.event(ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'a' } }, 1))
-      tui.event(ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'b' } }, 2))
-      tui.event(ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'c' } }, 3))
+      for (let index = 0; index < 1_000; index += 1) {
+        projectedOutputTokens = index + 1
+        controller.event(ev('assistant/chunk', {
+          turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' },
+        }, index + 1))
+      }
       expect(term.writes).toBe(initialWrites)
 
       await vi.advanceTimersByTimeAsync(8)
       expect(term.writes).toBe(initialWrites + 1)
-      expect(term.captured).toContain('abc')
 
-      tui.event(ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'd' } }, 4))
-      tui.event(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 5))
-      expect(term.writes).toBe(initialWrites + 2)
-      expect(term.captured).toContain('abcd')
+      controller.event(ev('assistant/message', {
+        turn: 1,
+        step: 1,
+        message: { content: [{ type: 'text', text: 'FINAL-SETTLEMENT' }] },
+      }, 1_001))
+      controller.event(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 1_002))
+      expect(term.writes - initialWrites).toBeLessThanOrEqual(3)
+      expect(term.captured).toContain('FINAL-SETTLEMENT')
 
       await vi.advanceTimersByTimeAsync(8)
-      expect(term.writes).toBe(initialWrites + 2)
+      expect(term.writes - initialWrites).toBeLessThanOrEqual(3)
+      controller.dispose()
       tui.dispose()
     } finally {
       vi.useRealTimers()

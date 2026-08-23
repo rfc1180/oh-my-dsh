@@ -1068,6 +1068,38 @@ describe('MainScreenRenderer', () => {
     expect(overlayWrites).not.toContain('\x1b[3J')
   })
 
+  it('keeps only the latest frame while a terminal sink is backpressured', () => {
+    const emu = new Emulator(4)
+    let drain: (() => void) | undefined
+    let blocked = true
+    const renderer = new MainScreenRenderer({
+      write(chunk) {
+        emu.write(chunk)
+        if (!blocked) return true
+        blocked = false
+        return false
+      },
+      once(event, listener) {
+        if (event === 'drain') drain = listener
+      },
+    }, { width: 80, height: 4, synchronized: false })
+
+    renderer.render(frame(['header', 'FIRST', 'composer'], 1))
+    renderer.render(frame(['header', 'STALE-INTERMEDIATE', 'composer'], 1))
+    renderer.render(frame(['header', 'FINAL-SETTLEMENT', 'composer'], 1))
+
+    expect(emu.writeCount).toBe(1)
+    expect(emu.captured).not.toContain('STALE-INTERMEDIATE')
+    expect(emu.captured).not.toContain('FINAL-SETTLEMENT')
+
+    drain?.()
+
+    expect(emu.writeCount).toBe(2)
+    expect(emu.captured).not.toContain('STALE-INTERMEDIATE')
+    expect(emu.captured).toContain('FINAL-SETTLEMENT')
+    expect(joined(emu.visible())).toContain('FINAL-SETTLEMENT')
+  })
+
   it('replays a large resumed transcript without truncating its middle', () => {
     const writes: string[] = []
     const renderer = new MainScreenRenderer(

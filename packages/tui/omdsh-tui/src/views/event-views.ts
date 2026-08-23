@@ -141,16 +141,23 @@ function prettyArgs(raw: string): string {
   }
 }
 
-/** The streaming assistant block if it is the last block, else undefined. */
-function streamingBlock(state: TranscriptState, turn: number, step: number): Block | undefined {
-  const last = state.blocks[state.blocks.length - 1]
-  if (last?.kind === 'assistant' && last.streaming && last.turn === turn && last.step === step) return last
-  return undefined
+/** Find the assistant owned by one Harness turn/step, even across interleaved tool blocks. */
+function assistantBlockIndex(blocks: readonly Block[], turn: number, step: number, streaming?: boolean): number {
+  return blocks.findLastIndex(block => (
+    block.kind === 'assistant'
+    && block.turn === turn
+    && block.step === step
+    && (streaming === undefined || block.streaming === streaming)
+  ))
 }
 
-/** Replace the trailing streaming block with a settled one, or append. */
+/** Replace the matching turn/step assistant with its settled value, or append. */
 function editableBlocks(state: TranscriptState, mutable: boolean): Block[] {
   return mutable ? state.blocks as Block[] : state.blocks.slice()
+}
+
+function assistantKey(turn: number, step: number): string {
+  return `${turn}:${step}`
 }
 
 function settleAssistant(
@@ -161,9 +168,12 @@ function settleAssistant(
   reasoning: string,
   interrupted: boolean,
   mutable: boolean,
+  indexes?: ReplayIndexes,
 ): TranscriptState {
   const blocks = editableBlocks(state, mutable)
-  const last = blocks[blocks.length - 1]
+  const index = indexes === undefined
+    ? assistantBlockIndex(blocks, turn, step)
+    : indexes.assistantByTurnStep.get(assistantKey(turn, step)) ?? -1
   const settled: Block = {
     kind: 'assistant',
     turn,
@@ -173,11 +183,10 @@ function settleAssistant(
     streaming: false,
     ...(interrupted ? { interrupted: true } : {}),
   }
-  if (last?.kind === 'assistant' && last.streaming && last.turn === turn && last.step === step) {
-    blocks[blocks.length - 1] = settled
-  } else {
-    blocks.push(settled)
-  }
+  if (index >= 0) blocks[index] = settled
+  else blocks.push(settled)
+  indexes?.assistantByTurnStep.set(assistantKey(turn, step), index >= 0 ? index : blocks.length - 1)
+  indexes?.openAssistantIndexes.get(turn)?.delete(index >= 0 ? index : blocks.length - 1)
   return { ...state, blocks }
 }
 
@@ -205,13 +214,19 @@ export function replayEvents(
   presentations?: ReadonlyMap<number, TuiToolPresentation>,
 ): TranscriptState {
   let state = initialTranscript()
-  const indexes: ReplayIndexes = { toolByCallId: new Map() }
+  const indexes: ReplayIndexes = {
+    toolByCallId: new Map(),
+    assistantByTurnStep: new Map(),
+    openAssistantIndexes: new Map(),
+  }
   for (const event of events) state = foldEvent(state, event, presentations?.get(event.seq), true, indexes)
   return state
 }
 
 interface ReplayIndexes {
   readonly toolByCallId: Map<string, number>
+  readonly assistantByTurnStep: Map<string, number>
+  readonly openAssistantIndexes: Map<number, Set<number>>
 }
 
 function foldEvent(
@@ -225,14 +240,24 @@ function foldEvent(
     case 'turn/start':
       return { ...state, status: 'running', turn: event.data.turn, todos: [], compactCommandId: undefined }
     case 'turn/end': {
-      const last = state.blocks[state.blocks.length - 1]
       const reason = event.data.reason
-      const changesBlocks = (last?.kind === 'assistant' && last.streaming)
-        || reason.kind === 'error'
-        || reason.kind === 'aborted'
+      const indexedOpen = indexes?.openAssistantIndexes.get(event.data.turn)
+      const hasStreaming = indexes === undefined
+        ? state.blocks.some(block => (
+            block.kind === 'assistant' && block.streaming && block.turn === event.data.turn
+          ))
+        : (indexedOpen?.size ?? 0) > 0
+      const changesBlocks = hasStreaming || reason.kind === 'error' || reason.kind === 'aborted'
       const blocks = changesBlocks ? editableBlocks(state, mutable) : state.blocks
-      if (last?.kind === 'assistant' && last.streaming) {
-        blocks[blocks.length - 1] = { ...last, streaming: false }
+      if (hasStreaming) {
+        const open = indexedOpen ?? blocks.keys()
+        for (const index of open) {
+          const block = blocks[index]
+          if (block?.kind === 'assistant' && block.streaming && block.turn === event.data.turn) {
+            blocks[index] = { ...block, streaming: false }
+          }
+        }
+        indexes?.openAssistantIndexes.delete(event.data.turn)
       }
       if (reason.kind === 'error') {
         blocks.push({ kind: 'notice', level: 'error', text: 'error: ' + reason.error.code + ': ' + reason.error.message })
@@ -240,10 +265,10 @@ function foldEvent(
         // rc.8 finalizes a cancelled turn's delivered prefix as an assistant
         // block already marked interrupted; the bare notice only covers a
         // turn that aborted before any visible content.
-        const settledLast = blocks[blocks.length - 1]
-        if (settledLast?.kind !== 'assistant' || settledLast.interrupted !== true) {
-          blocks.push({ kind: 'notice', level: 'info', text: 'interrupted' })
-        }
+        const interrupted = blocks.some(block => (
+          block.kind === 'assistant' && block.turn === event.data.turn && block.interrupted === true
+        ))
+        if (!interrupted) blocks.push({ kind: 'notice', level: 'info', text: 'interrupted' })
       }
       return { ...state, blocks, status: 'idle', compactCommandId: undefined }
     }
@@ -262,25 +287,41 @@ function foldEvent(
       const { turn, step, chunk } = event.data
       if (chunk.type === 'text-delta') {
         const blocks = editableBlocks(state, mutable)
-        const last = streamingBlock(state, turn, step)
-        if (last !== undefined) {
-          const idx = blocks.length - 1
-          const found = blocks[idx]
-          if (found?.kind === 'assistant') blocks[idx] = { ...found, text: found.text + chunk.text }
-        } else {
+        const indexed = indexes?.assistantByTurnStep.get(assistantKey(turn, step))
+        const index = indexes === undefined
+          ? assistantBlockIndex(blocks, turn, step, true)
+          : indexed ?? -1
+        const found = blocks[index]
+        if (found?.kind === 'assistant' && found.streaming) {
+          blocks[index] = { ...found, text: found.text + chunk.text }
+        } else if (found?.kind !== 'assistant' && (indexes !== undefined || assistantBlockIndex(blocks, turn, step) < 0)) {
           blocks.push({ kind: 'assistant', turn, step, text: chunk.text, reasoning: '', streaming: true })
+          indexes?.assistantByTurnStep.set(assistantKey(turn, step), blocks.length - 1)
+          if (indexes !== undefined) {
+            const open = indexes.openAssistantIndexes.get(turn) ?? new Set<number>()
+            open.add(blocks.length - 1)
+            indexes.openAssistantIndexes.set(turn, open)
+          }
         }
         return { ...state, blocks }
       }
       if (chunk.type === 'reasoning-delta') {
         const blocks = editableBlocks(state, mutable)
-        const last = streamingBlock(state, turn, step)
-        if (last !== undefined) {
-          const idx = blocks.length - 1
-          const found = blocks[idx]
-          if (found?.kind === 'assistant') blocks[idx] = { ...found, reasoning: found.reasoning + chunk.text }
-        } else {
+        const indexed = indexes?.assistantByTurnStep.get(assistantKey(turn, step))
+        const index = indexes === undefined
+          ? assistantBlockIndex(blocks, turn, step, true)
+          : indexed ?? -1
+        const found = blocks[index]
+        if (found?.kind === 'assistant' && found.streaming) {
+          blocks[index] = { ...found, reasoning: found.reasoning + chunk.text }
+        } else if (found?.kind !== 'assistant' && (indexes !== undefined || assistantBlockIndex(blocks, turn, step) < 0)) {
           blocks.push({ kind: 'assistant', turn, step, text: '', reasoning: chunk.text, streaming: true })
+          indexes?.assistantByTurnStep.set(assistantKey(turn, step), blocks.length - 1)
+          if (indexes !== undefined) {
+            const open = indexes.openAssistantIndexes.get(turn) ?? new Set<number>()
+            open.add(blocks.length - 1)
+            indexes.openAssistantIndexes.set(turn, open)
+          }
         }
         return { ...state, blocks }
       }
@@ -318,6 +359,7 @@ function foldEvent(
         contentToReasoning(message.content),
         event.data.interrupted === true,
         mutable,
+        indexes,
       )
     }
     case 'tool/call': {

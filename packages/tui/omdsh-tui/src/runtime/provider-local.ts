@@ -386,7 +386,7 @@ export class LocalTui implements TuiService {
     this.#branch = project.gitLabel
     this.#renderedWidth = this.#term.width()
     this.#renderer = new MainScreenRenderer(
-      { write: (chunk) => { this.#term.output.write(chunk) } },
+      this.#term.output,
       {
         width: this.#renderedWidth,
         height: this.#term.height(),
@@ -644,7 +644,12 @@ export class LocalTui implements TuiService {
           ...info.controls,
           ...(info.controls.plan === undefined ? {} : { plan: { ...info.controls.plan } }),
         }
-    if (this.#tty) this.#render()
+    if (this.#tty) {
+      // SessionRuntime publishes aggregate stats after every transcript event.
+      // A pending chunk repaint already owns the next frame, so fold footer
+      // changes into it instead of defeating stream coalescing via setSession().
+      if (this.#streamRenderTimer === null) this.#render()
+    }
   }
 
   /** Apply prefs loaded from the settings document (does not persist). */

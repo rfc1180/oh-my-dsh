@@ -100,6 +100,9 @@ export class MainScreenRenderer {
   #cursorRow = 0
   #cursorCol = 0
   #cursorVisible = true
+  #writeBlocked = false
+  #pendingFrame: Frame | undefined
+  #finished = false
 
   constructor(sink: RenderSink, options: MainScreenRendererOptions) {
     this.#sink = sink
@@ -141,6 +144,8 @@ export class MainScreenRenderer {
 
   /** Put the cursor below the UI before terminal ownership is released. */
   finish(): void {
+    this.#finished = true
+    this.#pendingFrame = undefined
     const targetRow = Math.max(0, this.#height - 1)
     let out = ''
     if (this.#altActive) {
@@ -158,6 +163,13 @@ export class MainScreenRenderer {
 
   /** Render a frame, appending only finalized rows during a stable geometry epoch. */
   render(frame: Frame): void {
+    if (this.#finished) return
+    if (this.#writeBlocked) {
+      // The terminal cannot display intermediate paints before drain anyway.
+      // Retain only the newest complete frame instead of buffering stale ANSI.
+      this.#pendingFrame = frame
+      return
+    }
     const next = frame.lines.map(line => sanitizeDisplayLine(String(line)))
     const liveStart = Math.max(0, Math.min(frame.liveStart ?? 0, next.length))
     const livePinned = frame.livePinned !== false
@@ -166,7 +178,29 @@ export class MainScreenRenderer {
     const paint = liveStart === 0
       ? this.#paintTransient(next, cursor, cursorVisible)
       : this.#paintFollow(next, liveStart, livePinned, cursor, cursorVisible)
-    if (paint !== '') this.#sink.write(paint)
+    if (paint !== '') this.#write(paint)
+  }
+
+  #write(paint: string): void {
+    const result = this.#sink.write(paint)
+    if (result === false && this.#sink.once !== undefined) {
+      this.#writeBlocked = true
+      this.#sink.once('drain', () => { this.#resumeWrites() })
+    } else if (result instanceof Promise) {
+      this.#writeBlocked = true
+      void result.then(
+        () => { this.#resumeWrites() },
+        () => { this.#resumeWrites() },
+      )
+    }
+  }
+
+  #resumeWrites(): void {
+    if (this.#finished) return
+    this.#writeBlocked = false
+    const pending = this.#pendingFrame
+    this.#pendingFrame = undefined
+    if (pending !== undefined) this.render(pending)
   }
 
   #paintTransient(
