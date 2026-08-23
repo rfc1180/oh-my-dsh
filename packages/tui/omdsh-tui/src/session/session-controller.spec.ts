@@ -21,6 +21,8 @@ import {
 
 function stubTui(): TuiService {
   return {
+    activateInput: () => {},
+    replaceViewportTail: () => {},
     onInspectSubagent: () => () => {},
     onInspectClose: () => () => {},
     onInspectSubmit: () => () => {},
@@ -341,6 +343,7 @@ describe('SessionRuntime startup', () => {
     const model = new Promise<unknown>(resolve => { resolveModel = resolve })
     const skills = new Promise<unknown[]>(resolve => { resolveSkills = resolve })
     let configured = false
+    const order: string[] = []
     const session = {
       id: SessionId('durable-target'),
       header: { id: SessionId('durable-target'), cwd: '/workspace', createdAt: 1 },
@@ -367,19 +370,25 @@ describe('SessionRuntime startup', () => {
     const agents = {
       create: vi.fn(),
       resume: vi.fn(async ({ resumeSessionId, setup }) => {
+        order.push('resume')
         expect(resumeSessionId).toBe(SessionId('durable-target'))
         await setup(childContext)
+        order.push('validated')
         return handle
       }),
       get: vi.fn(),
     }
-    const replaceSession = vi.fn(() => { expect(configured).toBe(true) })
+    const replaceViewportTail = vi.fn(() => { order.push('preview') })
+    const replaceSession = vi.fn(() => { order.push('full'); expect(configured).toBe(true) })
+    const activateInput = vi.fn(() => { order.push('input'); expect(replaceSession).toHaveBeenCalledOnce() })
     const setCommands = vi.fn()
     const setModel = vi.fn()
     const setSession = vi.fn()
     const tui = {
       ...stubTui(),
       event: vi.fn(),
+      activateInput,
+      replaceViewportTail,
       setStatus: vi.fn(),
       setModel,
       setLoopStatus: vi.fn(),
@@ -399,6 +408,10 @@ describe('SessionRuntime startup', () => {
       skills: { list: () => skills },
       llm: { resolveModelInfo: () => model },
       sessionPersistence: {
+        omdshViewportTail: vi.fn(async () => ({
+          id: 'durable-target', revision: 'r1', checkpointSeq: 0, eventCount: 1, events: session.events,
+        })),
+        omdshRefreshViewportTail: vi.fn(async () => {}),
         list: () => recent,
         inspect: async () => ({ events: session.events }),
       },
@@ -413,7 +426,10 @@ describe('SessionRuntime startup', () => {
     await runtime.start('durable-target')
 
     expect(agents.create).not.toHaveBeenCalled()
+    expect(replaceViewportTail).toHaveBeenCalledOnce()
     expect(replaceSession).toHaveBeenCalledOnce()
+    expect(activateInput).toHaveBeenCalledOnce()
+    expect(order).toEqual(['resume', 'preview', 'validated', 'full', 'input'])
     expect(setCommands).toHaveBeenLastCalledWith([{ name: 'help', description: 'help' }])
     expect(setModel).toHaveBeenLastCalledWith('v4', undefined)
 

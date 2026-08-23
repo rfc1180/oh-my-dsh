@@ -1,5 +1,5 @@
 /** Durable omdsh read model for cheap session discovery over rc.8 persistence. */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmod, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import type {} from '@deepseek-ai/dsh-session-title'
@@ -12,6 +12,8 @@ export interface SessionPersistenceSnapshot {
 
 const INDEX_SCHEMA = 1
 const INDEX_FILENAME = '.omdsh-session-index-v1.json'
+const VIEWPORT_SCHEMA = 1
+const VIEWPORT_EVENT_LIMIT = 1_024
 const STATUS_VALUES = new Set(['done', 'failed', 'blocked', 'interrupted'])
 
 export interface IndexedRecentSession {
@@ -40,11 +42,27 @@ interface ProjectionCheckpoint {
   projection: SummaryProjection
 }
 
+export interface IndexedViewportTail {
+  readonly id: string
+  readonly revision: string
+  readonly checkpointSeq: number
+  readonly eventCount: number
+  readonly events: readonly SessionEvent[]
+}
+
+interface ViewportTailSnapshot extends IndexedViewportTail {
+  schema: number
+  generation: string
+  digest: string
+  events: SessionEvent[]
+}
+
 interface IndexEntry {
   header: SessionHeader
   path: string
   revision: string
   checkpoint?: ProjectionCheckpoint
+  viewport?: ViewportTailSnapshot
 }
 
 interface PersistedIndex {
@@ -86,6 +104,50 @@ function isProjection(value: unknown): value is SummaryProjection {
     && typeof value.openTurn === 'boolean'
     && Number.isSafeInteger(value.updatedAt) && Number(value.updatedAt) >= 0
     && Number.isSafeInteger(value.eventCount) && Number(value.eventCount) >= 0
+}
+
+function isSnapshotEvent(value: unknown): value is SessionEvent {
+  if (!isObject(value)) return false
+  return typeof value.type === 'string' && value.type !== ''
+    && Number.isSafeInteger(value.seq) && Number(value.seq) >= 0
+    && Number.isSafeInteger(value.time) && Number(value.time) >= 0
+    && isObject(value.data)
+}
+
+function viewportPayload(snapshot: Omit<ViewportTailSnapshot, 'digest'>): string {
+  return JSON.stringify(snapshot)
+}
+
+function viewportDigest(snapshot: Omit<ViewportTailSnapshot, 'digest'>): string {
+  return createHash('sha256').update(viewportPayload(snapshot)).digest('hex')
+}
+
+function buildViewportTail(
+  generation: string,
+  id: string,
+  revision: string,
+  events: readonly SessionEvent[],
+): ViewportTailSnapshot | undefined {
+  if (events.length === 0) return undefined
+  const candidateStart = Math.max(0, events.length - VIEWPORT_EVENT_LIMIT)
+  let start = events.findIndex((event, index) => index >= candidateStart && event.type === 'turn/start')
+  if (start < candidateStart) {
+    start = events.findIndex((event, index) => index >= candidateStart && event.type === 'user/message')
+  }
+  if (start < candidateStart) return undefined
+  const tail = structuredClone(events.slice(start))
+  const first = tail[0]
+  if (first === undefined) return undefined
+  const payload: Omit<ViewportTailSnapshot, 'digest'> = {
+    schema: VIEWPORT_SCHEMA,
+    generation,
+    id,
+    revision,
+    checkpointSeq: first.seq,
+    eventCount: events.length,
+    events: tail,
+  }
+  return { ...payload, digest: viewportDigest(payload) }
 }
 
 function eventText(event: SessionEvent): string | undefined {
@@ -162,6 +224,7 @@ export class DurableSessionIndex {
   readonly #root: string
   readonly #indexPath: string
   readonly #generation: string
+  readonly #viewportGeneration: string
   readonly #persistence: IndexedPersistence
   #loaded: PersistedIndex | undefined
   #loadAttempted = false
@@ -171,6 +234,7 @@ export class DurableSessionIndex {
     this.#root = resolve(root)
     this.#indexPath = resolve(this.#root, INDEX_FILENAME)
     this.#generation = `omdsh-session-index:${INDEX_SCHEMA}:${this.#root}:${compression}`
+    this.#viewportGeneration = `omdsh-viewport-tail:${VIEWPORT_SCHEMA}:${this.#root}:${compression}`
     this.#persistence = persistence
   }
 
@@ -268,6 +332,51 @@ export class DurableSessionIndex {
     return rows
   }
 
+  /** Return only a checksum-valid snapshot still bound to the exact durable journal revision. */
+  async viewportTail(id: string, signal?: AbortSignal): Promise<IndexedViewportTail | undefined> {
+    signal?.throwIfAborted()
+    const index = await this.#load()
+    const viewport = index?.entries[id]?.viewport
+    if (viewport === undefined) return undefined
+    const current = await this.#persistence.readStoredRevision(id as SessionId, signal)
+    if (String(current) !== viewport.revision) return undefined
+    if (viewport.id !== id) return undefined
+    return {
+      id: viewport.id,
+      revision: viewport.revision,
+      checkpointSeq: viewport.checkpointSeq,
+      eventCount: viewport.eventCount,
+      events: structuredClone(viewport.events),
+    }
+  }
+
+  /** Refresh one display-only tail from rc.8's validated physical read after Agent hydration. */
+  async refreshViewportTail(
+    id: string,
+    fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.listSnapshots(fallback, signal)
+    const index = this.#loaded
+    const entry = index?.entries[id]
+    if (index === undefined || entry === undefined) return
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      signal?.throwIfAborted()
+      const before = await this.#persistence.readStoredRevision(id as SessionId, signal)
+      if (before === undefined) return
+      const inspected = await this.#persistence.readFrom(id as SessionId, 0, signal)
+      if (inspected.meta.id !== id) return
+      const after = await this.#persistence.readStoredRevision(id as SessionId, signal)
+      if (before !== after) continue
+      const viewport = buildViewportTail(this.#viewportGeneration, id, String(after), inspected.events)
+      if (viewport === undefined) delete entry.viewport
+      else entry.viewport = viewport
+      entry.revision = String(after)
+      await this.#queueWrite(index)
+      return
+    }
+  }
+
   async #load(): Promise<PersistedIndex | undefined> {
     if (this.#loadAttempted) return this.#loaded
     this.#loadAttempted = true
@@ -303,9 +412,32 @@ export class DurableSessionIndex {
           || !isProjection(raw.checkpoint.projection)) return undefined
         checkpoint = raw.checkpoint as unknown as ProjectionCheckpoint
       }
+      let viewport: ViewportTailSnapshot | undefined
+      if (raw.viewport !== undefined) {
+        if (!isObject(raw.viewport) || raw.viewport.schema !== VIEWPORT_SCHEMA
+          || raw.viewport.generation !== this.#viewportGeneration || raw.viewport.id !== id
+          || typeof raw.viewport.revision !== 'string' || typeof raw.viewport.digest !== 'string'
+          || !Number.isSafeInteger(raw.viewport.checkpointSeq) || Number(raw.viewport.checkpointSeq) < 0
+          || !Number.isSafeInteger(raw.viewport.eventCount) || Number(raw.viewport.eventCount) < 0
+          || !Array.isArray(raw.viewport.events) || raw.viewport.events.length > VIEWPORT_EVENT_LIMIT
+          || !raw.viewport.events.every(isSnapshotEvent)) return undefined
+        const payload: Omit<ViewportTailSnapshot, 'digest'> = {
+          schema: VIEWPORT_SCHEMA,
+          generation: this.#viewportGeneration,
+          id,
+          revision: raw.viewport.revision,
+          checkpointSeq: Number(raw.viewport.checkpointSeq),
+          eventCount: Number(raw.viewport.eventCount),
+          events: structuredClone(raw.viewport.events),
+        }
+        if (viewportDigest(payload) !== raw.viewport.digest
+          || payload.events[0]?.seq !== payload.checkpointSeq) return undefined
+        viewport = { ...payload, digest: raw.viewport.digest }
+      }
       entries[id] = {
         header: structuredClone(raw.header), path: resolve(raw.path), revision: raw.revision,
         ...(checkpoint === undefined ? {} : { checkpoint }),
+        ...(viewport === undefined ? {} : { viewport }),
       }
     }
     return { schema: INDEX_SCHEMA, generation: this.#generation, projectDirectories, entries }
@@ -347,6 +479,7 @@ export class DurableSessionIndex {
       entries[snapshot.header.id] = {
         header: structuredClone(snapshot.header), path, revision: String(snapshot.revision),
         ...(prior?.checkpoint === undefined ? {} : { checkpoint: prior.checkpoint }),
+        ...(prior?.viewport === undefined ? {} : { viewport: prior.viewport }),
       }
     }
     const projectDirectories: Record<string, string> = {}

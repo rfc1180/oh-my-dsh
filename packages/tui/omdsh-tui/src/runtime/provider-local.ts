@@ -230,6 +230,7 @@ export class LocalTui implements TuiService {
   #state: TranscriptState = initialTranscript()
   #renderedBlocks: TranscriptState['blocks'] = this.#state.blocks
   #handlingInput = false
+  #inputActivated = false
   readonly #editor = new InputEditor()
   #history: string[] = []
   #historyIndex = 0
@@ -408,50 +409,52 @@ export class LocalTui implements TuiService {
         alternateScreenOverlays: paths.alternateScreenOverlays === true,
       },
     )
-    if (this.#tty) {
-      this.#renderer.startEpoch()
-      term.input.setRawMode?.(true)
-      const listener = (chunk: Buffer): void => { this.#onData(chunk) }
-      term.input.on('data', listener)
-      this.#offData = () => { term.input.off('data', listener) }
-      this.#offResize = term.onResize?.(() => {
-        // Width reflow changes logical row numbers, so old native scrollback can
-        // no longer share an index space with the newly wrapped transcript.
-        this.#resizeWidthChanged ||= this.#term.width() !== this.#renderedWidth
-        const repaint = (): void => {
-          this.#resizeTimer = null
-          const width = this.#term.width()
-          const height = this.#term.height()
-          const widthChanged = this.#resizeWidthChanged || width !== this.#renderedWidth
-          this.#resizeWidthChanged = false
-          this.#renderer.resize(width, height)
-          this.#renderedWidth = width
-          if (widthChanged && this.#terminalProfile === 'direct') {
-            // Direct terminals support ED3: rebuild one coherent width epoch
-            // instead of mixing frozen narrow rows with the reflowed wide frame.
-            this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
-          } else {
-            // Height-only and same-geometry signals need only a fresh baseline.
-            // Multiplexers/ConPTY cannot safely erase host-owned scrollback.
-            this.#renderer.reset()
-          }
-          this.#render()
-        }
-        const debounce = this.#terminalProfile === 'multiplexer' || this.#resizeWidthChanged
-        if (debounce && this.#resizeDebounceMs > 0) {
-          if (this.#resizeTimer !== null) clearTimeout(this.#resizeTimer)
-          this.#resizeTimer = setTimeout(repaint, this.#resizeDebounceMs)
-        } else {
-          repaint()
-        }
-      }) ?? null
-      term.output.write('\x1b[?2004h')
-      if (this.#hostTelemetry) {
-        this.#hostTelemetryHeartbeat = setInterval(() => { this.#publishHostTelemetry(true) }, HOST_TELEMETRY_HEARTBEAT_MS)
-        this.#hostTelemetryHeartbeat.unref?.()
-      }
-    }
+    if (this.#tty) this.#renderer.startEpoch()
+    if (!this.#deferInitialRender) this.activateInput()
     this.#render()
+  }
+
+  /** Enable composer input only after the target Agent passed resume validation. */
+  activateInput(): void {
+    if (this.#inputActivated || this.#disposed) return
+    this.#inputActivated = true
+    if (!this.#tty) return
+    this.#term.input.setRawMode?.(true)
+    const readable = this.#term.input as NodeJS.ReadableStream & { read?: () => unknown }
+    while (readable.read?.() !== null && readable.read !== undefined) { /* discard pre-validation input */ }
+    const listener = (chunk: Buffer): void => { this.#onData(chunk) }
+    this.#term.input.on('data', listener)
+    this.#offData = () => { this.#term.input.off('data', listener) }
+    this.#offResize = this.#term.onResize?.(() => {
+      this.#resizeWidthChanged ||= this.#term.width() !== this.#renderedWidth
+      const repaint = (): void => {
+        this.#resizeTimer = null
+        const width = this.#term.width()
+        const height = this.#term.height()
+        const widthChanged = this.#resizeWidthChanged || width !== this.#renderedWidth
+        this.#resizeWidthChanged = false
+        this.#renderer.resize(width, height)
+        this.#renderedWidth = width
+        if (widthChanged && this.#terminalProfile === 'direct') {
+          this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
+        } else {
+          this.#renderer.reset()
+        }
+        this.#render()
+      }
+      const debounce = this.#terminalProfile === 'multiplexer' || this.#resizeWidthChanged
+      if (debounce && this.#resizeDebounceMs > 0) {
+        if (this.#resizeTimer !== null) clearTimeout(this.#resizeTimer)
+        this.#resizeTimer = setTimeout(repaint, this.#resizeDebounceMs)
+      } else {
+        repaint()
+      }
+    }) ?? null
+    this.#term.output.write('\x1b[?2004h')
+    if (this.#hostTelemetry) {
+      this.#hostTelemetryHeartbeat = setInterval(() => { this.#publishHostTelemetry(true) }, HOST_TELEMETRY_HEARTBEAT_MS)
+      this.#hostTelemetryHeartbeat.unref?.()
+    }
   }
 
   event(event: SessionEvent, presentation?: TuiToolPresentation): void {
@@ -629,6 +632,18 @@ export class LocalTui implements TuiService {
     this.#trajectoryPoll = setInterval(() => { void this.#refreshTrajectory(true) }, pollMs)
     this.#trajectoryPoll.unref?.()
     return new Promise((resolve) => { this.#trajectoryResolve = resolve })
+  }
+
+  replaceViewportTail(events: readonly SessionEvent[]): void {
+    if (!this.#tty || events.length === 0) return
+    const state = replayEvents(events)
+    this.#state = { ...state, status: 'idle', compactCommandId: undefined }
+    this.#followTail()
+    this.#deferInitialRender = false
+    // A preview owns only the visible screen. It never commits synthetic history;
+    // the validated full target starts a fresh authoritative epoch later.
+    this.#renderer.startEpoch({ replay: 'tail' })
+    this.#render()
   }
 
   replaceSession(
@@ -917,7 +932,7 @@ export class LocalTui implements TuiService {
     if (this.#tty) {
       this.#offData?.()
       this.#offResize?.()
-      this.#term.input.setRawMode?.(false)
+      if (this.#inputActivated) this.#term.input.setRawMode?.(false)
       if (this.#hostTelemetrySignature !== undefined) {
         this.#term.output.write(encodeHostTelemetryOsc())
         this.#hostTelemetrySignature = undefined
@@ -926,7 +941,7 @@ export class LocalTui implements TuiService {
       // prompt does not overwrite the transcript. Disable bracketed paste
       // and restore the cursor.
       this.#renderer.finish()
-      this.#term.output.write('\x1b[?2004l\x1b[?25h\r\n')
+      this.#term.output.write((this.#inputActivated ? '\x1b[?2004l' : '') + '\x1b[?25h\r\n')
       if (this.#resumeHintRequested && this.#sessionId !== undefined) {
         this.#term.output.write(`\r\nResume this session with ${APP_NAME} --resume ${this.#sessionId}\r\n`)
       }
@@ -2577,6 +2592,7 @@ export async function runTrajectoryTerminal(
       alternateScreenOverlays: true,
     },
   )
+  tui.activateInput()
   const abort = (): void => { tui.dispose() }
   if (config.signal?.aborted === true) abort()
   else config.signal?.addEventListener('abort', abort, { once: true })

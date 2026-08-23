@@ -229,6 +229,8 @@ export interface TuiSubmission {
  * Implementations must be single-consumer: one runner owns readInput().
  */
 export interface TuiService {
+  /** Enable raw composer input after the target Agent is authoritative. */
+  activateInput(): void
   /** Render one session-log event (streamed as recorded). */
   event(event: SessionEvent, presentation?: TuiToolPresentation): void
   /** Update the status line liveness. */
@@ -255,7 +257,9 @@ export interface TuiService {
   setTrajectorySource(source?: TuiTrajectorySource): void
   /** Open the read-only live Trajectory workspace until the human closes it. */
   openTrajectory(source: TuiTrajectorySource, options?: TuiTrajectoryOptions): Promise<void>
-  /** Replace the transcript when a new or resumed session becomes active. */
+  /** Stage a read-only durable tail while the authoritative Agent is still validating. */
+  replaceViewportTail(events: readonly SessionEvent[]): void
+  /** Replace the transcript atomically when a new or resumed session becomes authoritative. */
   replaceSession(
     events: readonly SessionEvent[],
     presentations?: ReadonlyMap<number, TuiToolPresentation>,
