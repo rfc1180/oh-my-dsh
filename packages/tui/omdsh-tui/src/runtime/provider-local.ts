@@ -207,8 +207,11 @@ export class LocalTui implements TuiService {
   readonly #terminalProfile: 'direct' | 'multiplexer' | 'conpty'
   readonly #resizeDebounceMs: number
   #resizeTimer: ReturnType<typeof setTimeout> | null = null
+  #renderedWidth: number
+  #resizeWidthChanged = false
   readonly #streamRenderMs: number
   #streamRenderTimer: ReturnType<typeof setTimeout> | null = null
+  #pinnedOverflow = false
   readonly #term: TerminalLike
   #model: string
   #reasoningEffort: string | undefined
@@ -381,10 +384,11 @@ export class LocalTui implements TuiService {
     this.#tty = term.input.isTTY === true
     this.#pwd = shortenPath(project.root)
     this.#branch = project.gitLabel
+    this.#renderedWidth = this.#term.width()
     this.#renderer = new MainScreenRenderer(
       { write: (chunk) => { this.#term.output.write(chunk) } },
       {
-        width: this.#term.width(),
+        width: this.#renderedWidth,
         height: this.#term.height(),
         synchronized: this.#tty,
         clearScrollback: this.#terminalProfile === 'direct',
@@ -398,17 +402,30 @@ export class LocalTui implements TuiService {
       term.input.on('data', listener)
       this.#offData = () => { term.input.off('data', listener) }
       this.#offResize = term.onResize?.(() => {
-        // A terminal resize changes the committed/live seam; re-anchor the
-        // live window so it stays anchored at the bottom.
+        // Width reflow changes logical row numbers, so old native scrollback can
+        // no longer share an index space with the newly wrapped transcript.
+        this.#resizeWidthChanged ||= this.#term.width() !== this.#renderedWidth
         const repaint = (): void => {
           this.#resizeTimer = null
-          this.#renderer.resize(this.#term.width(), this.#term.height())
-          // A hidden tab can emit SIGWINCH without changing its final geometry.
-          // Its physical screen may still have been reflowed, so discard the old baseline.
-          this.#renderer.reset()
+          const width = this.#term.width()
+          const height = this.#term.height()
+          const widthChanged = this.#resizeWidthChanged || width !== this.#renderedWidth
+          this.#resizeWidthChanged = false
+          this.#renderer.resize(width, height)
+          this.#renderedWidth = width
+          if (widthChanged && this.#terminalProfile === 'direct') {
+            // Direct terminals support ED3: rebuild one coherent width epoch
+            // instead of mixing frozen narrow rows with the reflowed wide frame.
+            this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
+          } else {
+            // Height-only and same-geometry signals need only a fresh baseline.
+            // Multiplexers/ConPTY cannot safely erase host-owned scrollback.
+            this.#renderer.reset()
+          }
           this.#render()
         }
-        if (this.#terminalProfile === 'multiplexer') {
+        const debounce = this.#terminalProfile === 'multiplexer' || this.#resizeWidthChanged
+        if (debounce && this.#resizeDebounceMs > 0) {
           if (this.#resizeTimer !== null) clearTimeout(this.#resizeTimer)
           this.#resizeTimer = setTimeout(repaint, this.#resizeDebounceMs)
         } else {
@@ -1061,6 +1078,18 @@ export class LocalTui implements TuiService {
     this.#focusBlock = undefined
     this.#promptDocument = frame.promptDocument
     this.#syncScroll(frame.transcript)
+    if (this.#trajectory === null) {
+      const assistantStreaming = this.#state.blocks.some(block => block.kind === 'assistant' && block.streaming)
+      const pendingSpan = frame.livePinned === true
+        ? frame.lines.length - (frame.liveStart ?? frame.lines.length)
+        : 0
+      if (this.#pinnedOverflow && frame.livePinned !== true && this.#terminalProfile === 'direct') {
+        // A long mutable suffix lived only on the physical screen while it streamed.
+        // Rebuild once at settlement so terminal hosts cannot retain only its tail.
+        this.#renderer.startEpoch({ replay: 'full' })
+      }
+      this.#pinnedOverflow = assistantStreaming && frame.livePinned === true && pendingSpan > this.#term.height()
+    }
     this.#renderer.render(frame)
     if (!deferStreamBlocks && this.#trajectory === null) {
       this.#renderedBlocks = this.#state.blocks

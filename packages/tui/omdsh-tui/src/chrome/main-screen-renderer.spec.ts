@@ -461,6 +461,70 @@ describe('MainScreenRenderer', () => {
     expect(tape.match(/FINAL-END/gu)).toHaveLength(1)
   })
 
+  it('keeps every streamed table row after a pinned width epoch settles through turn/end', () => {
+    const narrowWidth = 60
+    const wideWidth = 100
+    const initialHeight = 24
+    const resizedHeight = 18
+    const emu = new Emulator(initialHeight)
+    const renderer = new MainScreenRenderer(emu, {
+      width: narrowWidth,
+      height: initialHeight,
+      synchronized: false,
+    })
+    const rows = Array.from(
+      { length: 40 },
+      (_, index) => `| resize-${index.toString().padStart(2, '0')} | ${'long value '.repeat(4)} |`,
+    )
+    const table = ['| key | value |', '| --- | --- |', ...rows].join('\n')
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'stream a long table' }],
+    }, 1))
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', text: table },
+    }, 2))
+    renderer.render(renderView(state, {
+      width: narrowWidth,
+      height: initialHeight,
+      model: 'm',
+      input: '',
+      inputCursor: 0,
+      colors: false,
+    }))
+
+    emu.resize(resizedHeight)
+    renderer.resize(wideWidth, resizedHeight)
+    renderer.startEpoch({ replay: 'pinned' })
+    renderer.render(renderView(state, {
+      width: wideWidth,
+      height: resizedHeight,
+      model: 'm',
+      input: '',
+      inputCursor: 0,
+      colors: false,
+    }))
+
+    state = applyEvent(state, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3))
+    renderer.render(renderView(state, {
+      width: wideWidth,
+      height: resizedHeight,
+      model: 'm',
+      input: '',
+      inputCursor: 0,
+      colors: false,
+    }))
+
+    const tape = joined([...emu.scrollback, ...emu.visible()])
+    for (let index = 0; index < rows.length; index += 1) {
+      const id = `resize-${index.toString().padStart(2, '0')}`
+      expect(tape.match(new RegExp(id, 'gu'))).toHaveLength(1)
+    }
+  })
+
   it('keeps out-of-order quiet tool errors behind the earliest hidden pending call', () => {
     const width = 48
     const height = 6

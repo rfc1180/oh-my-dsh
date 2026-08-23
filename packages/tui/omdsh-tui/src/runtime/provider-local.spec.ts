@@ -415,29 +415,91 @@ describe('LocalTui (tty)', () => {
     expect(term.destroyed).toBe(true)
   })
 
-  it('clears and fully repaints after the terminal is resized', () => {
+  it('starts a clean transcript epoch after direct-terminal width reflow', () => {
     const term = new FakeTerminal()
-    const tui = new LocalTui(term, 'm', false)
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { resizeDebounceMs: 0 })
+    const rows = Array.from({ length: 30 }, (_, index) => `| row-${index.toString().padStart(2, '0')} | value-${index} |`)
+    const table = ['| key | value |', '| --- | --- |', ...rows].join('\n')
+    tui.replaceSession([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'render the complete table' }] }, 1),
+      ev('assistant/message', { turn: 1, step: 1, message: { content: [{ type: 'text', text: table }] } }, 2),
+    ])
     const before = term.captured.length
 
-    term.resize(42, 18)
+    term.resize(100, 18)
 
     const repaint = term.captured.slice(before)
+    expect(repaint.match(/\x1b\[3J/gu)).toHaveLength(1)
     expect(repaint).toContain('\x1b[2J\x1b[H')
-    expect(stripAnsi(repaint)).toContain('🐳')
+    expect(stripAnsi(repaint)).toContain('row-00')
+    expect(stripAnsi(repaint)).toContain('row-15')
+    expect(stripAnsi(repaint)).toContain('row-29')
     tui.dispose()
   })
 
-  it('fully repaints after a hidden tab emits a same-geometry resize', () => {
+  it('rebuilds an oversized streaming reply once when turn/end settles it', () => {
     const term = new FakeTerminal()
-    const tui = new LocalTui(term, 'm', false)
+    term.rows = 18
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { streamRenderMs: 0 })
+    const rows = Array.from({ length: 40 }, (_, index) => `| settle-${index.toString().padStart(2, '0')} | ${'long value '.repeat(4)} |`)
+    const table = ['| key | value |', '| --- | --- |', ...rows].join('\n')
+    tui.replaceSession([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'stream an oversized table' }] }, 1),
+      ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', text: table } }, 2),
+    ], undefined, 'running')
     const before = term.captured.length
 
+    tui.event(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3))
+
+    const settlement = term.captured.slice(before)
+    expect(settlement.match(/\x1b\[3J/gu)).toHaveLength(1)
+    for (let index = 0; index < rows.length; index += 1) {
+      expect(stripAnsi(settlement)).toContain(`settle-${index.toString().padStart(2, '0')}`)
+    }
+    tui.dispose()
+  })
+
+  it('rebuilds a streaming Markdown table across direct-terminal width reflow', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { resizeDebounceMs: 0 })
+    const rows = Array.from({ length: 30 }, (_, index) => `| stream-${index.toString().padStart(2, '0')} | value-${index} |`)
+    const table = ['| key | value |', '| --- | --- |', ...rows].join('\n')
+    tui.replaceSession([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'stream the complete table' }] }, 1),
+      ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', text: table } }, 2),
+    ], undefined, 'running')
+    const before = term.captured.length
+
+    term.resize(100, 18)
+    tui.event(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3))
+
+    const reflow = term.captured.slice(before)
+    expect(reflow.match(/\x1b\[3J/gu)).toHaveLength(2)
+    expect(stripAnsi(reflow)).toContain('stream-00')
+    expect(stripAnsi(reflow)).toContain('stream-15')
+    expect(stripAnsi(reflow)).toContain('stream-29')
+    tui.dispose()
+  })
+
+  it('repaints height-only and same-geometry resize without erasing scrollback', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const beforeHeight = term.captured.length
+
+    term.resize(term.columns, 18)
+
+    const heightRepaint = term.captured.slice(beforeHeight)
+    expect(heightRepaint).not.toContain('\x1b[3J')
+    expect(heightRepaint).toContain('\x1b[2J\x1b[H')
+    expect(stripAnsi(heightRepaint)).toContain('🐳')
+
+    const beforeSameGeometry = term.captured.length
     term.resize(term.columns, term.rows)
 
-    const repaint = term.captured.slice(before)
-    expect(repaint).toContain('\x1b[2J\x1b[H')
-    expect(stripAnsi(repaint)).toContain('🐳')
+    const sameGeometryRepaint = term.captured.slice(beforeSameGeometry)
+    expect(sameGeometryRepaint).not.toContain('\x1b[3J')
+    expect(sameGeometryRepaint).toContain('\x1b[2J\x1b[H')
+    expect(stripAnsi(sameGeometryRepaint)).toContain('🐳')
     tui.dispose()
   })
 
