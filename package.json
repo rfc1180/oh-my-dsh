@@ -20,6 +20,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "benchmark:tui": "tsx scripts/benchmark-tui.mts",
+    "benchmark:session-index": "tsx scripts/benchmark-session-index.mts",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "format:md": "node scripts/format-markdown.mjs && node scripts/sync-package-readme.mjs",

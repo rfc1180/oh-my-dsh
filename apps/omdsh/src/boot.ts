@@ -13,6 +13,7 @@ import { NAME, prepareLaunchEnvironment } from './composition.ts'
 import { composeLaunch } from './profile.ts'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 import { installRc7ZstdSessionCompatibility } from './session-persistence-compat.ts'
+import { installSessionPersistenceIndex } from './session-persistence-index.ts'
 
 export { NAME } from './composition.ts'
 
@@ -27,6 +28,7 @@ export async function runOmdsh(
   resume?: string,
 ): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
   installRc7ZstdSessionCompatibility()
+  installSessionPersistenceIndex()
   const app: { current?: Context } = {}
   const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
   const signalShutdown = new AbortController()
