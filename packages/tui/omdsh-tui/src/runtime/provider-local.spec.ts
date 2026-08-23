@@ -268,6 +268,24 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('does not repaint the complete transcript at the old 80 ms spinner cadence', () => {
+    vi.useFakeTimers()
+    try {
+      const term = new FakeTerminal()
+      const tui = new LocalTui(term, 'm', false)
+      tui.setStatus('running')
+      const writes = term.writes
+
+      vi.advanceTimersByTime(999)
+      expect(term.writes).toBe(writes)
+      vi.advanceTimersByTime(1)
+      expect(term.writes).toBeGreaterThan(writes)
+      tui.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('repaints the footer when live Agent and tool controls change', () => {
     const term = new FakeTerminal()
     term.columns = 100

@@ -53,6 +53,7 @@ import type {
 } from '../definition.ts'
 import { descendantDepth, isSteerableSubagent, SubagentRoster } from './subagent-roster.ts'
 import type {} from '../runtime/tool-presentation.ts'
+import type { StartupMilestone } from '../runtime/startup-telemetry.ts'
 import * as commandPermission from '../commands/permission.ts'
 import {
   defaultToolPresentation,
@@ -491,6 +492,7 @@ export class SessionRuntime {
   #recent: TuiRecentSession[] = []
   #skillCommands: TuiCommand[] = []
   #started = false
+  readonly #hydrations = new Set<Promise<void>>()
   readonly #retired: AgentHandle[] = []
   #disposed = false
   readonly #off: Array<() => void> = []
@@ -605,7 +607,11 @@ export class SessionRuntime {
     return true
   }
 
-  async start(resumeId?: string, signal?: AbortSignal): Promise<void> {
+  async start(
+    resumeId?: string,
+    signal?: AbortSignal,
+    milestone?: (milestone: StartupMilestone) => void,
+  ): Promise<void> {
     if (this.#started) return
     this.#started = true
     const defaults = this.#ctx.get('agentDefaultModel')?.currentSelection()
@@ -613,8 +619,15 @@ export class SessionRuntime {
     const active = resumeId === undefined
       ? await this.#create(defaults)
       : await this.#resume(resumeId, defaults, signal)
-    await this.#activate(active)
-    await this.refreshRecent()
+    milestone?.('targetAgentReady')
+    this.#activate(active, false)
+    milestone?.('targetFrame')
+    this.#hydrate(active, milestone)
+  }
+
+  /** Settle background startup catalogs for tests, shutdown, and explicit diagnostics. */
+  async whenHydrated(): Promise<void> {
+    await Promise.allSettled([...this.#hydrations])
   }
 
   /** Submit one human composer value; active turns retain it as a later follow-up. */
@@ -718,15 +731,13 @@ export class SessionRuntime {
   /** Start a new top-level session with the current model selection. */
   async newSession(agent: Agent): Promise<void> {
     this.assertActive(agent)
-    await this.#activate(await this.#create(this.selection(agent)))
-    await this.refreshRecent()
+    this.#activate(await this.#create(this.selection(agent)))
   }
 
   /** Replace the active top-level session with one durable session. */
   async resumeSession(agent: Agent, id: string, signal: AbortSignal): Promise<void> {
     this.assertActive(agent)
-    await this.#activate(await this.#resume(id, this.selection(agent), signal))
-    await this.refreshRecent()
+    this.#activate(await this.#resume(id, this.selection(agent), signal))
   }
 
   /** Fork before a selected human turn and restore that message as an editable draft. */
@@ -836,7 +847,6 @@ export class SessionRuntime {
     this.#tui.restoreInput({ text, images })
     this.#tui.notice(`Rewound to before turn ${selected.turn}. The original session remains available in /resume.`)
     await this.#disposeRetired()
-    await this.refreshRecent()
   }
 
   /** Whole-session figures for the active Agent. */
@@ -917,9 +927,10 @@ export class SessionRuntime {
     return outcome
   }
 
-  async refreshRecent(): Promise<void> {
+  async refreshRecent(expected: ActiveSession | undefined = this.#active): Promise<void> {
     const persistence = this.#ctx.get('sessionPersistence')
     if (persistence === undefined) {
+      if (expected !== this.#active) return
       this.#recent = []
       this.#pushSessionInfo()
       return
@@ -947,6 +958,7 @@ export class SessionRuntime {
         if (rows.length >= 8) break
       }
     }
+    if (expected !== this.#active) return
     this.#recent = rows
     this.#pushSessionInfo()
   }
@@ -1036,25 +1048,47 @@ export class SessionRuntime {
     }
   }
 
-  async #activate(next: ActiveSession): Promise<void> {
+  #activate(next: ActiveSession, hydrate = true): void {
     const previous = this.#active
     this.#active = next
     const agent = next.handle.agent
     this.#inspectedId = undefined
+    this.#skillCommands = []
     this.#tui.setInspectedSubagent(undefined)
     this.#tui.setStatus(agent.status)
     this.#syncSubagents()
     this.#replaceTranscript(agent)
     this.#pushTools()
-    const selected = this.selection(agent)
-    const info = await this.#resolveModelInfo(selected)
-    next.contextWindow = info?.context?.contextWindow
-    const status = modelStatus(selected, info)
+    const status = modelStatus(this.selection(agent))
     next.reasoningEffort = status.reasoningEffort
     this.#tui.setModel(status.model, status.reasoningEffort)
-    await this.#refreshSkills()
+    this.#pushCommands()
     this.#pushSessionInfo()
     if (previous !== undefined) this.#retired.push(previous.handle)
+    if (hydrate) this.#hydrate(next)
+  }
+
+  #hydrate(active: ActiveSession, milestone?: (milestone: StartupMilestone) => void): void {
+    const tasks = [
+      this.refreshRecent(active).finally(() => { milestone?.('recentReady') }),
+      this.#hydrateModel(active).finally(() => { milestone?.('modelReady') }),
+      this.#refreshSkills(undefined, active).finally(() => { milestone?.('skillsReady') }),
+    ]
+    const hydration = Promise.allSettled(tasks).then(() => undefined)
+    this.#hydrations.add(hydration)
+    void hydration.finally(() => { this.#hydrations.delete(hydration) })
+  }
+
+  async #hydrateModel(active: ActiveSession): Promise<void> {
+    const selected = active.selection.current
+    if (selected === undefined) return
+    const info = await this.#resolveModelInfo(selected)
+    if (this.#active !== active) return
+    active.contextWindow = info?.context?.contextWindow
+    const status = modelStatus(selected, info)
+    active.reasoningEffort = status.reasoningEffort
+    this.#tui.setModel(status.model, status.reasoningEffort)
+    this.#pushSessionInfo()
   }
 
   #pushCommands(): void {
@@ -1085,15 +1119,14 @@ export class SessionRuntime {
     this.#tui.setTools(tools)
   }
 
-  async #refreshSkills(signal?: AbortSignal): Promise<void> {
-    const agent = this.agent
+  async #refreshSkills(signal?: AbortSignal, expected: ActiveSession | undefined = this.#active): Promise<void> {
+    const agent = expected?.handle.agent
     const skills = this.#ctx.get('skills')
-    if (agent === undefined || skills === undefined) {
-      this.#skillCommands = []
-    } else {
-      const list = await skills.list({ cwd: agent.session.header.cwd, scope: agent, signal })
-      this.#skillCommands = userSkillCommands(list)
-    }
+    const commands = agent === undefined || skills === undefined
+      ? []
+      : userSkillCommands(await skills.list({ cwd: agent.session.header.cwd, scope: agent, signal }))
+    if (expected !== this.#active) return
+    this.#skillCommands = commands
     this.#pushCommands()
   }
 

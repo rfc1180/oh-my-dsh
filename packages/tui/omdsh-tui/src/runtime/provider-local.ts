@@ -149,6 +149,11 @@ const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
 // Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
 const DEFAULT_STREAM_RENDER_MS = 50
+// A busy turn used to repaint the complete transcript every 80 ms solely to
+// animate the spinner. Large durable sessions could therefore consume an
+// entire CPU core and starve raw-key handling. Events still render
+// immediately; only the cosmetic idle-between-events animation is throttled.
+const BUSY_SPINNER_RENDER_MS = 1_000
 const HOST_TELEMETRY_HEARTBEAT_MS = 30_000
 
 function shortenPath(cwd: string): string {
@@ -1015,7 +1020,7 @@ export class LocalTui implements TuiService {
         this.#tick = setInterval(() => {
           this.#spinner += 1
           this.#render()
-        }, 80)
+        }, BUSY_SPINNER_RENDER_MS)
       }
     } else if (this.#tick !== null) {
       clearInterval(this.#tick)

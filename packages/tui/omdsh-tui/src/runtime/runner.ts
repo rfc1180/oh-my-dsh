@@ -15,6 +15,7 @@ import type { TuiService } from '../definition.ts'
 import { looksLikeSlashCommand, stripComposerImageMarkers } from '../input/image-paste.ts'
 import type {} from './session-runtime.ts'
 import type {} from './startup-notices.ts'
+import { createStartupTelemetry } from './startup-telemetry.ts'
 import type {} from '../commands/loop.ts'
 
 export const name = 'omdsh-runner'
@@ -25,20 +26,23 @@ function fail(error: unknown, exit: (code: number) => void): void {
   exit(1)
 }
 
-async function run(ctx: Context, tui: TuiService): Promise<void> {
+export async function run(ctx: Context, tui: TuiService): Promise<void> {
+  const args = ctx.get('cmdlineArgs')?.get() ?? []
+  const resumeId = args[0] === '--resume' ? args[1] : undefined
+  const startup = createStartupTelemetry(resumeId === undefined ? 'new' : 'resume')
   await ctx.get('loader')?.await()
+  startup.mark('loaderReady')
   const controller = ctx.get('omdshSession')
   if (controller === undefined) return
   const loop = ctx.get('omdshLoop')
-  const args = ctx.get('cmdlineArgs')?.get() ?? []
-  const resumeId = args[0] === '--resume' ? args[1] : undefined
   let operation: AbortController | undefined
+  startup.mark('sessionStart')
   if (resumeId === undefined) {
-    await controller.start()
+    await controller.start(undefined, undefined, milestone => { startup.mark(milestone) })
   } else {
     operation = new AbortController()
     try {
-      await controller.start(resumeId, operation.signal)
+      await controller.start(resumeId, operation.signal, milestone => { startup.mark(milestone) })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`Resume failed: ${message}`)
@@ -80,6 +84,7 @@ async function run(ctx: Context, tui: TuiService): Promise<void> {
   })
   try {
     if (resumeId === undefined && args.length > 0) await controller.send(args.join(' '))
+    startup.mark('inputReady')
     for (;;) {
       const submission = await tui.readInput()
       if (submission === null) break

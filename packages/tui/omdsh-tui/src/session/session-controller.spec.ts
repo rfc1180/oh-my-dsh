@@ -309,3 +309,106 @@ describe('SessionRuntime.execute', () => {
     await ctx.fiber.dispose()
   })
 })
+
+describe('SessionRuntime startup', () => {
+  it('publishes only a validated resume target, then hydrates recent, model, and skills in the TUI', async () => {
+    let resolveRecent!: (value: unknown[]) => void
+    let resolveModel!: (value: unknown) => void
+    let resolveSkills!: (value: unknown[]) => void
+    const recent = new Promise<unknown[]>(resolve => { resolveRecent = resolve })
+    const model = new Promise<unknown>(resolve => { resolveModel = resolve })
+    const skills = new Promise<unknown[]>(resolve => { resolveSkills = resolve })
+    let configured = false
+    const session = {
+      id: SessionId('durable-target'),
+      header: { id: SessionId('durable-target'), cwd: '/workspace', createdAt: 1 },
+      events: [{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'target transcript' }] } }],
+      append: vi.fn(),
+    }
+    const childTools = { presentAs: vi.fn(() => () => {}) }
+    const childContext = {
+      agent: undefined as unknown,
+      get: (name: string) => name === 'agentPresets'
+        ? { defaultId: 'standard', mount: async () => { configured = true; return { id: 'standard' } } }
+        : name === 'tools' ? childTools : undefined,
+      plugin: async () => {},
+      on: () => () => {},
+    }
+    const agent = {
+      id: SessionId('durable-target'),
+      status: 'idle',
+      session,
+      ctx: childContext,
+    }
+    childContext.agent = agent
+    const handle = { agent, dispose: vi.fn(async () => {}) }
+    const agents = {
+      create: vi.fn(),
+      resume: vi.fn(async ({ resumeSessionId, setup }) => {
+        expect(resumeSessionId).toBe(SessionId('durable-target'))
+        await setup(childContext)
+        return handle
+      }),
+      get: vi.fn(),
+    }
+    const replaceSession = vi.fn(() => { expect(configured).toBe(true) })
+    const setCommands = vi.fn()
+    const setModel = vi.fn()
+    const setSession = vi.fn()
+    const tui = {
+      ...stubTui(),
+      event: vi.fn(),
+      setStatus: vi.fn(),
+      setModel,
+      setLoopStatus: vi.fn(),
+      setTools: vi.fn(),
+      setCommands,
+      replaceSession,
+      setSession,
+      setTrajectorySource: vi.fn(),
+    } as unknown as TuiService
+    const services: Record<string, unknown> = {
+      agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'v4' }) },
+      agents,
+      sessions: { list: () => [] },
+      agentPresets: {},
+      tools: { schemas: () => [{ name: 'bash', description: 'shell' }] },
+      commands: { list: () => [{ name: 'help', description: 'help' }] },
+      skills: { list: () => skills },
+      llm: { resolveModelInfo: () => model },
+      sessionPersistence: {
+        list: () => recent,
+        inspect: async () => ({ events: session.events }),
+      },
+    }
+    const ctx = {
+      agents,
+      get: (name: string) => services[name],
+      on: () => () => {},
+    } as unknown as Context
+    const runtime = new SessionRuntime(ctx, tui)
+
+    await runtime.start('durable-target')
+
+    expect(agents.create).not.toHaveBeenCalled()
+    expect(replaceSession).toHaveBeenCalledOnce()
+    expect(setCommands).toHaveBeenLastCalledWith([{ name: 'help', description: 'help' }])
+    expect(setModel).toHaveBeenLastCalledWith('v4', undefined)
+
+    resolveRecent([{ id: SessionId('recent'), createdAt: 2, origin: 'user' }])
+    resolveModel({ context: { contextWindow: 128_000 }, reasoning: { defaultEffort: ReasoningEffortId('high') } })
+    resolveSkills([{
+      name: 'review', description: 'Review code', source: 'project-dsh', provider: 'filesystem',
+      invocation: { modelInvocable: true, userInvocable: true },
+    }])
+    await runtime.whenHydrated()
+
+    expect(setModel).toHaveBeenLastCalledWith('v4', 'high')
+    expect(setCommands).toHaveBeenLastCalledWith([
+      { name: 'help', description: 'help' },
+      { name: 'skill:review', description: 'Review code' },
+    ])
+    expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 1, eventCount: 1 }])
+    await runtime.dispose()
+  })
+})
