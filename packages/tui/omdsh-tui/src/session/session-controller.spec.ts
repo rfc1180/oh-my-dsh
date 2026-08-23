@@ -299,6 +299,28 @@ describe('encodeComposerImages', () => {
   })
 })
 
+describe('SessionRuntime.refreshRecent', () => {
+  it('prefers indexed summaries without inspecting full session logs', async () => {
+    const ctx = new Context()
+    const indexed = vi.fn(async () => [{ id: 'session-one', title: 'Indexed', createdAt: 1, updatedAt: 2, eventCount: 3 }])
+    const inspect = vi.fn()
+    ctx.provide('sessionPersistence', {
+      omdshRecentSessions: indexed,
+      list: vi.fn(async () => []),
+      inspect,
+    } as never)
+    const runtime = new SessionRuntime(ctx, stubTui())
+
+    await runtime.refreshRecent()
+
+    expect(runtime.recentSessions).toEqual([{ id: 'session-one', title: 'Indexed', createdAt: 1, updatedAt: 2, eventCount: 3 }])
+    expect(indexed).toHaveBeenCalledWith(8)
+    expect(inspect).not.toHaveBeenCalled()
+    await runtime.dispose()
+    await ctx.fiber.dispose()
+  })
+})
+
 describe('SessionRuntime.execute', () => {
   it('does not treat a handwritten image placeholder as a slash command', async () => {
     const ctx = new Context()

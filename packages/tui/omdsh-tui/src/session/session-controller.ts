@@ -935,6 +935,18 @@ export class SessionRuntime {
       this.#pushSessionInfo()
       return
     }
+    const accelerated = persistence as typeof persistence & {
+      omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
+    }
+    if (accelerated.omdshRecentSessions !== undefined) {
+      try {
+        this.#recent = await accelerated.omdshRecentSessions(8)
+        this.#pushSessionInfo()
+        return
+      } catch {
+        // Fail closed: the rc.8 inspect path remains authoritative for stale/corrupt indexes.
+      }
+    }
     const headers = (await persistence.list()).filter(header => header.origin !== 'subagent')
       .sort((left, right) => right.createdAt - left.createdAt)
     const rows: TuiRecentSession[] = []
