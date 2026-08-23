@@ -30,10 +30,25 @@ async function run(ctx: Context, tui: TuiService): Promise<void> {
   const controller = ctx.get('omdshSession')
   if (controller === undefined) return
   const loop = ctx.get('omdshLoop')
-
-  await controller.start()
-  void ctx.get('omdshStartup')?.afterSessionStart().catch(() => {})
+  const args = ctx.get('cmdlineArgs')?.get() ?? []
+  const resumeId = args[0] === '--resume' ? args[1] : undefined
   let operation: AbortController | undefined
+  if (resumeId === undefined) {
+    await controller.start()
+  } else {
+    operation = new AbortController()
+    try {
+      await controller.start(resumeId, operation.signal)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Resume failed: ${message}`)
+    } finally {
+      operation = undefined
+    }
+    tui.commandOutput('resume', `Resumed ${resumeId}.`)
+    loop?.syncAgent(controller.agent)
+  }
+  void ctx.get('omdshStartup')?.afterSessionStart().catch(() => {})
   const offInterrupt = tui.onInterrupt(() => {
     if (controller.interruptVisible()) return
     operation?.abort(new Error('cancelled by user'))
@@ -64,20 +79,7 @@ async function run(ctx: Context, tui: TuiService): Promise<void> {
     })
   })
   try {
-    const args = ctx.get('cmdlineArgs')?.get() ?? []
-    if (args[0] === '--resume' && args[1] !== undefined) {
-      operation = new AbortController()
-      try {
-        await controller.execute(`/resume ${args[1]}`, operation.signal)
-      } catch (error: unknown) {
-        if (!operation.signal.aborted) tui.notice(error instanceof Error ? error.message : String(error), { level: 'error' })
-      } finally {
-        operation = undefined
-        loop?.syncAgent(controller.agent)
-      }
-    } else if (args.length > 0) {
-      await controller.send(args.join(' '))
-    }
+    if (resumeId === undefined && args.length > 0) await controller.send(args.join(' '))
     for (;;) {
       const submission = await tui.readInput()
       if (submission === null) break
