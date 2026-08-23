@@ -557,12 +557,15 @@ export class SessionRuntime {
     return true
   }
 
-  async start(): Promise<void> {
+  async start(resumeId?: string, signal?: AbortSignal): Promise<void> {
     if (this.#started) return
     this.#started = true
     const defaults = this.#ctx.get('agentDefaultModel')?.currentSelection()
     if (defaults === undefined) throw new Error('agent default model is unavailable')
-    await this.#activate(await this.#create(defaults))
+    const active = resumeId === undefined
+      ? await this.#create(defaults)
+      : await this.#resume(resumeId, defaults, signal)
+    await this.#activate(active)
     await this.refreshRecent()
   }
 
@@ -674,33 +677,7 @@ export class SessionRuntime {
   /** Replace the active top-level session with one durable session. */
   async resumeSession(agent: Agent, id: string, signal: AbortSignal): Promise<void> {
     this.assertActive(agent)
-    const selection = this.selection(agent)
-    const ref: ModelSelectionRef = { current: selection, assembled: undefined }
-    let configured: ConfiguredAgentContext | undefined
-    const handle = await this.#ctx.agents.resume({
-      resumeSessionId: SessionId(id),
-      agentOptions: { provider: selection.provider, model: selection.model },
-      signal,
-      setup: async (agentCtx) => { configured = await setupAgentContext(agentCtx, ref) },
-    })
-    const configuration = configured
-    if (configuration === undefined) {
-      await handle.dispose()
-      throw new Error('resumed agent was published without session configuration')
-    }
-    this.#pinToolPresentation(handle.agent, configuration)
-    await this.#activate({
-      handle,
-      selection: ref,
-      contextWindow: undefined,
-      reasoningEffort: undefined,
-      configuration: {
-        agentPreset: configuration.agentPreset,
-        tools: configuration.tools,
-        toolsSource: configuration.toolsSource,
-      },
-      disposeToolPresentation: configuration.disposeToolPresentation,
-    })
+    await this.#activate(await this.#resume(id, this.selection(agent), signal))
     await this.refreshRecent()
   }
 
@@ -941,6 +918,35 @@ export class SessionRuntime {
     await Promise.allSettled(this.#retired.splice(0).map(handle => handle.dispose()))
     await this.#active?.handle.dispose()
     this.#active = undefined
+  }
+
+  async #resume(id: string, selection: ModelSelection, signal?: AbortSignal): Promise<ActiveSession> {
+    const ref: ModelSelectionRef = { current: selection, assembled: undefined }
+    let configured: ConfiguredAgentContext | undefined
+    const handle = await this.#ctx.agents.resume({
+      resumeSessionId: SessionId(id),
+      agentOptions: { provider: selection.provider, model: selection.model },
+      ...(signal === undefined ? {} : { signal }),
+      setup: async (agentCtx) => { configured = await setupAgentContext(agentCtx, ref) },
+    })
+    const configuration = configured
+    if (configuration === undefined) {
+      await handle.dispose()
+      throw new Error('resumed agent was published without session configuration')
+    }
+    this.#pinToolPresentation(handle.agent, configuration)
+    return {
+      handle,
+      selection: ref,
+      contextWindow: undefined,
+      reasoningEffort: undefined,
+      configuration: {
+        agentPreset: configuration.agentPreset,
+        tools: configuration.tools,
+        toolsSource: configuration.toolsSource,
+      },
+      disposeToolPresentation: configuration.disposeToolPresentation,
+    }
   }
 
   async #create(selection: ModelSelection): Promise<ActiveSession> {

@@ -69,6 +69,7 @@ describe('omdsh smoke', () => {
         timeout: 180_000,
         env,
       })
+    const resumedIds = findSessionIds(omdshHome)
     rmSync(omdshHome, { recursive: true, force: true })
     const createdOut = (created.stdout ?? '') + (created.stderr ?? '')
     const resumedOut = resumed === undefined ? '' : (resumed.stdout ?? '') + (resumed.stderr ?? '')
@@ -76,6 +77,7 @@ describe('omdsh smoke', () => {
     expect(createdOut).toContain('error:')
     expect(sessionId).toEqual(expect.stringMatching(/^session-/u))
     expect(resumed?.status, resumedOut).toBe(0)
+    expect(resumedIds).toEqual([sessionId])
     expect(resumedOut).toContain(`Resumed ${sessionId}.`)
     expect(resumedOut).not.toContain('unknown to this harness')
     expect(resumedOut).not.toContain('omdsh/tools-selected')
@@ -97,7 +99,7 @@ describe('omdsh smoke', () => {
     )
     rmSync(omdshHome, { recursive: true, force: true })
     const out = (result.stdout ?? '') + (result.stderr ?? '')
-    expect(result.status, out).toBe(0)
+    expect(result.status, out).toBe(1)
     expect(out).toContain('Resume failed:')
     expect(out).toContain(missing)
     expect(out).not.toContain('Unsupported platform')
