@@ -147,6 +147,41 @@ describe('applyEvent', () => {
     ])
   })
 
+  it('settles one interleaved assistant by turn and step without orphaning or duplicating it', () => {
+    let state = initialTranscript()
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'draft' },
+    }, 1))
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'tool-call-delta', id: 'call-1', name: 'bash', argumentsDelta: '{"command":"true"}' },
+    }, 2))
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1, step: 1, message: { content: [{ type: 'text', text: 'final' }] },
+    }, 3))
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: '-late' },
+    }, 4))
+    state = applyEvent(state, ev('tool/call', {
+      turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: { command: 'true' },
+    }, 4))
+    state = applyEvent(state, ev('tool/result', {
+      turn: 1,
+      step: 1,
+      message: { role: 'user', content: [{
+        type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'ok' }],
+      }] },
+    }, 5))
+    state = applyEvent(state, ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 6))
+
+    expect(state.blocks.filter(block => block.kind === 'assistant')).toEqual([
+      { kind: 'assistant', turn: 1, step: 1, text: 'final', reasoning: '', streaming: false },
+    ])
+    expect(state.blocks.some(block => block.kind === 'assistant' && block.streaming)).toBe(false)
+    expect(state.blocks.filter(block => block.kind === 'tool')).toHaveLength(1)
+  })
+
   it('settles an unterminated stream on turn/end', () => {
     let state = initialTranscript()
     state = applyEvent(state, ev('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } }, 1))

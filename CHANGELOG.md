@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep interleaved assistant and tool streaming attached to the correct turn and step, coalesce transcript/footer paints in production, and discard stale terminal frames while stdout is backpressured.
 - Keep composer typing and submit responsive during long assistant replies by using a cheap plain streaming preview, bounding repaint frequency, and reusing the last painted transcript for raw-key frames; full Markdown appears when the reply settles.
 - List and resume sessions written by Harness rc.7 as a single Zstandard frame after upgrading to rc.8, instead of rejecting their header as corrupt.
 - Consume terminal capability and status replies as control sequences instead of inserting their numeric or color payloads into the composer after focus or resize changes.

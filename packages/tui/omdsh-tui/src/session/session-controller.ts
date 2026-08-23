@@ -62,6 +62,51 @@ import {
 } from './session-configuration.ts'
 import { stripComposerImageMarkers } from '../input/image-paste.ts'
 
+const SESSION_INFO_COALESCE_MS = 50
+
+/** Keep transcript delivery immediate while coalescing aggregate footer projections. */
+export class SessionPresentationController {
+  readonly #tui: TuiService
+  readonly #pushSessionInfo: () => void
+  #timer: ReturnType<typeof setTimeout> | undefined
+  #disposed = false
+
+  constructor(tui: TuiService, pushSessionInfo: () => void) {
+    this.#tui = tui
+    this.#pushSessionInfo = pushSessionInfo
+  }
+
+  event(event: SessionEvent, presentation?: Parameters<TuiService['event']>[1]): void {
+    this.#tui.event(event, presentation)
+    if (event.type === 'assistant/chunk') this.#schedule()
+    else this.flush()
+  }
+
+  sessionInfoChanged(): void {
+    this.#schedule()
+  }
+
+  flush(): void {
+    if (this.#timer !== undefined) clearTimeout(this.#timer)
+    this.#timer = undefined
+    if (!this.#disposed) this.#pushSessionInfo()
+  }
+
+  dispose(): void {
+    this.#disposed = true
+    if (this.#timer !== undefined) clearTimeout(this.#timer)
+    this.#timer = undefined
+  }
+
+  #schedule(): void {
+    if (this.#timer !== undefined || this.#disposed) return
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined
+      if (!this.#disposed) this.#pushSessionInfo()
+    }, SESSION_INFO_COALESCE_MS)
+  }
+}
+
 interface ActiveSession {
   handle: AgentHandle
   selection: ModelSelectionRef
@@ -453,10 +498,12 @@ export class SessionRuntime {
   #subagentEpoch = 0
   #inspectEpoch = 0
   #inspectedId: string | undefined
+  readonly #presentation: SessionPresentationController
 
   constructor(ctx: Context, tui: TuiService) {
     this.#ctx = ctx
     this.#tui = tui
+    this.#presentation = new SessionPresentationController(tui, () => { this.#pushSessionInfo() })
     this.#off.push(tui.onInspectSubagent(id => { void this.#inspectSubagent(id) }))
     this.#off.push(tui.onInspectClose(() => { this.#closeInspect() }))
     this.#off.push(tui.onInspectSubmit(submission => { void this.#steerInspected(submission) }))
@@ -509,9 +556,10 @@ export class SessionRuntime {
       }
       if (session === active.handle.agent.session) {
         if (this.#inspectedId === undefined) {
-          tui.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
+          this.#presentation.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
+        } else {
+          this.#presentation.sessionInfoChanged()
         }
-        this.#pushSessionInfo()
         if (event.type === 'session/title') void this.refreshRecent()
         return
       }
@@ -535,7 +583,7 @@ export class SessionRuntime {
       this.#off.push(projections.onChanged((session, key) => {
         if (session !== this.#active?.handle.agent.session) return
         if (key === 'sessionStats' || key === 'tokenUsage' || key === 'contextPressure'
-          || key === 'plan' || key === 'permissions') this.#pushSessionInfo()
+          || key === 'plan' || key === 'permissions') this.#presentation.sessionInfoChanged()
       }))
     }
   }
@@ -929,6 +977,7 @@ export class SessionRuntime {
   async dispose(): Promise<void> {
     if (this.#disposed) return
     this.#disposed = true
+    this.#presentation.dispose()
     this.#subagentEpoch += 1
     this.#inspectedId = undefined
     this.#subagents.reset()

@@ -52,7 +52,10 @@ export interface Frame {
 
 /** The write sink a renderer emits into (stdout or a test capture). */
 export interface RenderSink {
-  write(chunk: string): void
+  /** Node streams return false until `drain`; async embedders may return a promise. */
+  write(chunk: string): void | boolean | Promise<void>
+  /** Optional Node-style backpressure notification. */
+  once?(event: 'drain', listener: () => void): unknown
 }
 
 /**
