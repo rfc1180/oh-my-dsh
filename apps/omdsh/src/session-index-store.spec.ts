@@ -78,6 +78,54 @@ describe('DurableSessionIndex', () => {
     expect(item.reads).toEqual([0, 2])
   })
 
+  it('publishes only a checksum-valid viewport tail bound to the exact journal revision', async () => {
+    const item = await fixture()
+    const first = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await first.refreshViewportTail(item.header.id, item.fallback)
+
+    const reopened = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await expect(reopened.viewportTail(item.header.id)).resolves.toEqual({
+      id: item.header.id,
+      revision: await sessionFileRevision(item.path),
+      checkpointSeq: 0,
+      eventCount: 2,
+      events: item.events,
+    })
+
+    await writeFile(item.path, 'changed-journal-revision')
+    await expect(reopened.viewportTail(item.header.id)).resolves.toBeUndefined()
+  })
+
+  it('rejects corrupt and identity-mismatched viewport snapshots without scanning the journal', async () => {
+    const item = await fixture()
+    await new DurableSessionIndex(item.root, 'none', item.persistence)
+      .refreshViewportTail(item.header.id, item.fallback)
+    const indexPath = join(item.root, '.omdsh-session-index-v1.json')
+    const stored = JSON.parse(await readFile(indexPath, 'utf8')) as {
+      entries: Record<string, { viewport: { id: string; events: Array<{ data: unknown }> } }>
+    }
+    stored.entries[item.header.id]!.viewport.id = 'another-session'
+    stored.entries[item.header.id]!.viewport.events[0]!.data = { corrupt: true }
+    await writeFile(indexPath, JSON.stringify(stored), { mode: 0o600 })
+    const readsBefore = item.reads.length
+
+    await expect(new DurableSessionIndex(item.root, 'none', item.persistence).viewportTail(item.header.id))
+      .resolves.toBeUndefined()
+    expect(item.reads).toHaveLength(readsBefore)
+  })
+
+  it('does not checkpoint a viewport across a revision race', async () => {
+    const item = await fixture()
+    let revisions = 0
+    const racing: IndexedPersistence = {
+      ...item.persistence,
+      readStoredRevision: async () => `${await sessionFileRevision(item.path)}:${revisions++}`,
+    }
+    const index = new DurableSessionIndex(item.root, 'none', racing)
+    await index.refreshViewportTail(item.header.id, item.fallback)
+    await expect(index.viewportTail(item.header.id)).resolves.toBeUndefined()
+  })
+
   it('fails closed to a validated rebuild for corrupt or over-permissive index files', async () => {
     const item = await fixture()
     await new DurableSessionIndex(item.root, 'none', item.persistence).recent(item.fallback, 8)

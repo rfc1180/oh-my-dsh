@@ -484,6 +484,17 @@ export async function restoreSubmissionMessage(
   return { text, images }
 }
 
+interface ViewportPersistenceExtension {
+  omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<{
+    id: string
+    revision: string
+    checkpointSeq: number
+    eventCount: number
+    events: readonly SessionEvent[]
+  } | undefined>
+  omdshRefreshViewportTail?: (id: string, signal?: AbortSignal) => Promise<void>
+}
+
 /** Own one switchable top-level Agent and project it onto a TuiService. */
 export class SessionRuntime {
   readonly #ctx: Context
@@ -616,9 +627,25 @@ export class SessionRuntime {
     this.#started = true
     const defaults = this.#ctx.get('agentDefaultModel')?.currentSelection()
     if (defaults === undefined) throw new Error('agent default model is unavailable')
-    const active = resumeId === undefined
-      ? await this.#create(defaults)
-      : await this.#resume(resumeId, defaults, signal)
+    let targetSettled = false
+    const persistence = this.#ctx.get('sessionPersistence') as unknown as ViewportPersistenceExtension | undefined
+    const viewport = resumeId === undefined ? undefined : persistence?.omdshViewportTail?.(resumeId, signal)
+    if (viewport !== undefined) {
+      void viewport.then((snapshot) => {
+        if (!targetSettled && snapshot !== undefined && snapshot.id === resumeId) {
+          this.#tui.replaceViewportTail(snapshot.events)
+        }
+      }, () => undefined)
+    }
+    let active: ActiveSession
+    try {
+      active = resumeId === undefined
+        ? await this.#create(defaults)
+        : await this.#resume(resumeId, defaults, signal)
+    } finally {
+      // A late cache read must never replace the validated target frame.
+      targetSettled = true
+    }
     milestone?.('targetAgentReady')
     this.#activate(active, false)
     milestone?.('targetFrame')
@@ -1077,14 +1104,17 @@ export class SessionRuntime {
     this.#pushCommands()
     this.#pushSessionInfo()
     if (previous !== undefined) this.#retired.push(previous.handle)
+    this.#tui.activateInput()
     if (hydrate) this.#hydrate(next)
   }
 
   #hydrate(active: ActiveSession, milestone?: (milestone: StartupMilestone) => void): void {
+    const persistence = this.#ctx.get('sessionPersistence') as unknown as ViewportPersistenceExtension | undefined
     const tasks = [
       this.refreshRecent(active).finally(() => { milestone?.('recentReady') }),
       this.#hydrateModel(active).finally(() => { milestone?.('modelReady') }),
       this.#refreshSkills(undefined, active).finally(() => { milestone?.('skillsReady') }),
+      persistence?.omdshRefreshViewportTail?.(active.handle.agent.id) ?? Promise.resolve(),
     ]
     const hydration = Promise.allSettled(tasks).then(() => undefined)
     this.#hydrations.add(hydration)

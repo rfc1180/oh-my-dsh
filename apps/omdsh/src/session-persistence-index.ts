@@ -5,6 +5,7 @@ import {
   DurableSessionIndex,
   type IndexedPersistence,
   type IndexedRecentSession,
+  type IndexedViewportTail,
   type SessionPersistenceSnapshot,
 } from './session-index-store.ts'
 
@@ -14,6 +15,8 @@ interface AcceleratedPrototype extends IndexedPersistence {
   list: (signal?: AbortSignal) => Promise<SessionHeader[]>
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
   omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
+  omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
+  omdshRefreshViewportTail?: (id: string, signal?: AbortSignal) => Promise<void>
 }
 
 let installed = false
@@ -47,5 +50,11 @@ export function installSessionPersistenceIndex(): void {
   }
   prototype.omdshRecentSessions = function (limit, signal) {
     return indexFor(this).recent(candidate => listSnapshots.call(this, candidate), limit, signal)
+  }
+  prototype.omdshViewportTail = function (id, signal) {
+    return indexFor(this).viewportTail(id, signal)
+  }
+  prototype.omdshRefreshViewportTail = function (id, signal) {
+    return indexFor(this).refreshViewportTail(id, candidate => listSnapshots.call(this, candidate), signal)
   }
 }

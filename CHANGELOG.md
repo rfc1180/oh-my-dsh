@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Show an exact-revision durable viewport tail while a resumed Agent is still validating, then atomically replace it with the authoritative full transcript before enabling composer input.
 - Keep a durable revision-bound session index and recent-session summary cache so `/resume` avoids full inspection of unchanged histories.
 - Publish the complete session telemetry projection to supporting terminal hosts so narrow panes can expose it through host-native hover chrome without enabling TUI mouse tracking.
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.

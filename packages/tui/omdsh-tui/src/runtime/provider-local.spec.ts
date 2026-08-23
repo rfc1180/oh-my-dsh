@@ -120,6 +120,28 @@ function shortenedWorkspaceRoot(): string {
 }
 
 describe('LocalTui (tty)', () => {
+  it('shows a staged tail while composer input stays unbound until activation', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { deferInitialRender: true })
+    expect(term.raw).toBe(false)
+    expect(term.resizeListener).toBeUndefined()
+    press(term, 'ignored before validation')
+    tui.replaceViewportTail([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'early durable tail' }] }, 1),
+    ])
+    expect(stripAnsi(term.captured)).toContain('early durable tail')
+    expect(term.raw).toBe(false)
+
+    tui.activateInput()
+    tui.activateInput()
+    expect(term.raw).toBe(true)
+    expect(term.resizeListener).toBeTypeOf('function')
+    const pending = tui.readInput()
+    press(term, 'accepted\r')
+    await expect(pending).resolves.toEqual({ text: 'accepted', images: [] })
+    tui.dispose()
+  })
+
   it('opens Trajectory in the alternate screen and restores the transcript on close', async () => {
     const term = new FakeTerminal()
     term.columns = 120
