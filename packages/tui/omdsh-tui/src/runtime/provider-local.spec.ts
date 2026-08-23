@@ -156,7 +156,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('opens every /trajectory screen form in the detached block while keeping text explicit', async () => {
+  it('opens /trajectory as the native screen while keeping companion and text explicit', async () => {
     const term = new FakeTerminal()
     term.columns = 120
     term.rows = 30
@@ -176,16 +176,24 @@ describe('LocalTui (tty)', () => {
 
     press(term, '/trajectory tools 40\r')
     await flushAsyncPaste()
-    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'tools', limit: 40 })
+    expect(term.captured.slice(before)).toContain('\x1b[?1049h')
+    expect(openCompanion).not.toHaveBeenCalled()
+    press(term, 'q')
+    await flushAsyncPaste()
 
+    const beforeScreen = term.captured.length
     press(term, '/trajectory screen summary\r')
     await flushAsyncPaste()
-    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'summary' })
+    expect(term.captured.slice(beforeScreen)).toContain('\x1b[?1049h')
+    expect(openCompanion).not.toHaveBeenCalled()
+    press(term, 'q')
+    await flushAsyncPaste()
 
+    const beforeCompanion = term.captured.length
     press(term, '/trajectory companion errors 30\r')
     await flushAsyncPaste()
     expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'errors', limit: 30 })
-    expect(term.captured.slice(before)).not.toContain('\x1b[?1049h')
+    expect(term.captured.slice(beforeCompanion)).not.toContain('\x1b[?1049h')
 
     press(term, '/trajectory text summary 20\r')
     await expect(pending).resolves.toEqual({ text: '/trajectory text summary 20', images: [] })

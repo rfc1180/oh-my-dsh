@@ -2258,6 +2258,11 @@ export class LocalTui implements TuiService {
       const textMode = firstArgument === 'text' || firstArgument === 'ledger'
       if (!textMode) {
         const companionMode = firstArgument === 'companion' || firstArgument === 'block' || firstArgument === 'detached'
+        if (companionMode && this.#trajectorySource.openCompanion === undefined) {
+          this.#notice('Trajectory companion requires a direct Surfterm block.')
+          this.#render()
+          return
+        }
         let options: TuiTrajectoryOptions
         try {
           options = parseTrajectoryOptions(companionMode ? words.slice(1).join(' ') : args)
@@ -2266,9 +2271,9 @@ export class LocalTui implements TuiService {
           this.#render()
           return
         }
-        const opened = this.#trajectorySource.openCompanion === undefined
-          ? this.openTrajectory(this.#trajectorySource, options)
-          : this.#trajectorySource.openCompanion(options)
+        const opened = companionMode
+          ? this.#trajectorySource.openCompanion!(options)
+          : this.openTrajectory(this.#trajectorySource, options)
         void opened.catch((error: unknown) => {
           this.#notice(error instanceof Error ? error.message : String(error))
           this.#render()
