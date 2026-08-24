@@ -461,6 +461,91 @@ describe('MainScreenRenderer', () => {
     expect(tape.match(/FINAL-END/gu)).toHaveLength(1)
   })
 
+  it('commits completed Markdown blocks while the active final block keeps streaming', () => {
+    const width = 42
+    const height = 6
+    const emu = new Emulator(height)
+    const renderer = new MainScreenRenderer(emu, { width, height, synchronized: false })
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'request' }],
+    }, 1))
+    const stable = 'STREAM-STABLE-A\n\nSTREAM-STABLE-B\n\n'
+    const active = Array.from({ length: 14 }, (_, index) => `active-${index}`).join('\n')
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', text: stable + active },
+    }, 2))
+    const options = { width, height, model: 'm', input: '', inputCursor: 0, colors: false } as const
+    const partial = renderView(state, options)
+    expect(partial.livePinned).toBe(true)
+    renderer.render(partial)
+    expect(joined(emu.scrollback)).toContain('STREAM-STABLE-A')
+    expect(joined(emu.scrollback)).toContain('STREAM-STABLE-B')
+
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', text: '\nactive-14\nactive-15' },
+    }, 3))
+    renderer.render(renderView(state, options))
+    const during = joined([...emu.scrollback, ...emu.visible()])
+    expect(during.match(/STREAM-STABLE-A/gu)).toHaveLength(1)
+    expect(during.match(/STREAM-STABLE-B/gu)).toHaveLength(1)
+
+    const finalText = stable + active + '\nactive-14\nactive-15'
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: finalText }] },
+    }, 4))
+    renderer.render(renderView(state, options))
+    const settled = joined([...emu.scrollback, ...emu.visible()])
+    expect(settled.match(/STREAM-STABLE-A/gu)).toHaveLength(1)
+    expect(settled.match(/STREAM-STABLE-B/gu)).toHaveLength(1)
+    expect(settled.match(/active-15/gu)).toHaveLength(1)
+  })
+
+  it('freezes completed wrapped rows of one long plain streaming paragraph', () => {
+    const width = 36
+    const height = 6
+    const emu = new Emulator(height)
+    const renderer = new MainScreenRenderer(emu, { width, height, synchronized: false })
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'request' }],
+    }, 1))
+    const initial = 'PLAIN-FIRST ' + 'ordinary words '.repeat(80)
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', text: initial },
+    }, 2))
+    const options = { width, height, model: 'm', input: '', inputCursor: 0, colors: false } as const
+    renderer.render(renderView(state, options))
+    expect(joined(emu.scrollback)).toContain('PLAIN-FIRST')
+
+    state = applyEvent(state, ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', text: 'PLAIN-LAST' },
+    }, 3))
+    renderer.render(renderView(state, options))
+    const finalText = initial + 'PLAIN-LAST'
+    state = applyEvent(state, ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: finalText }] },
+    }, 4))
+    renderer.render(renderView(state, options))
+    const tape = joined([...emu.scrollback, ...emu.visible()])
+    expect(tape.match(/PLAIN-FIRST/gu)).toHaveLength(1)
+    expect(tape.match(/PLAIN-LAST/gu)).toHaveLength(1)
+  })
+
   it('keeps every streamed table row after a pinned width epoch settles through turn/end', () => {
     const narrowWidth = 60
     const wideWidth = 100
