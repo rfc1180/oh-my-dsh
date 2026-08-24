@@ -290,7 +290,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('does not repaint the complete transcript at the old 80 ms spinner cadence', () => {
+  it('does not repaint the complete transcript on a cosmetic spinner timer', () => {
     vi.useFakeTimers()
     try {
       const term = new FakeTerminal()
@@ -298,9 +298,9 @@ describe('LocalTui (tty)', () => {
       tui.setStatus('running')
       const writes = term.writes
 
-      vi.advanceTimersByTime(999)
+      vi.advanceTimersByTime(30_000)
       expect(term.writes).toBe(writes)
-      vi.advanceTimersByTime(1)
+      tui.event({ seq: 1, type: 'turn/start', data: { turn: 1 } })
       expect(term.writes).toBeGreaterThan(writes)
       tui.dispose()
     } finally {

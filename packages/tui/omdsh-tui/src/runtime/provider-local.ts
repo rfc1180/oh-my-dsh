@@ -149,11 +149,9 @@ const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
 // Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
 const DEFAULT_STREAM_RENDER_MS = 50
-// A busy turn used to repaint the complete transcript every 80 ms solely to
-// animate the spinner. Large durable sessions could therefore consume an
-// entire CPU core and starve raw-key handling. Events still render
-// immediately; only the cosmetic idle-between-events animation is throttled.
-const BUSY_SPINNER_RENDER_MS = 1_000
+// Spinner frames advance with real Agent/roster events. A cosmetic interval
+// must never repaint the complete durable transcript while the model is idle
+// between events: that periodic work competes directly with raw-key input.
 const HOST_TELEMETRY_HEARTBEAT_MS = 30_000
 
 function shortenPath(cwd: string): string {
@@ -280,7 +278,6 @@ export class LocalTui implements TuiService {
   #pwd: string
   #branch: string | undefined
   #spinner = 0
-  #tick: ReturnType<typeof setInterval> | null = null
   #scrollStart = 0
   #maxStart = 0
   #scrollBudget = 0
@@ -458,10 +455,10 @@ export class LocalTui implements TuiService {
 
   event(event: SessionEvent, presentation?: TuiToolPresentation): void {
     this.#state = applyEvent(this.#state, event, presentation)
+    this.#spinner += 1
     if (this.#trajectory !== null && this.#sessionId !== undefined) {
       this.#trajectory = appendTrajectoryEvent(this.#trajectory, this.#sessionId, event)
     }
-    this.#syncTick()
     if (this.#tty) {
       if (event.type === 'assistant/chunk' && this.#streamRenderMs > 0) {
         this.#scheduleStreamRender()
@@ -477,7 +474,7 @@ export class LocalTui implements TuiService {
     if (this.#state.status === 'compacting') return
     const previous = this.#state.status
     this.#state = { ...this.#state, status }
-    this.#syncTick()
+    this.#spinner += 1
     if (this.#tty) {
       this.#render()
       if (previous === 'running' && status === 'idle') this.#term.output.write('\x07')
@@ -513,14 +510,13 @@ export class LocalTui implements TuiService {
         }
       }
     }
-    this.#syncTick()
+    this.#spinner += 1
     if (this.#tty) this.#render()
   }
 
   setInspectedSubagent(inspected: TuiInspectedSubagent | undefined): void {
     this.#inspected = inspected === undefined ? undefined : { ...inspected }
     if (inspected !== undefined) this.#subagentLauncherFocused = false
-    this.#syncTick()
     if (this.#tty) this.#render()
   }
 
@@ -913,10 +909,6 @@ export class LocalTui implements TuiService {
       clearTimeout(this.#streamRenderTimer)
       this.#streamRenderTimer = null
     }
-    if (this.#tick !== null) {
-      clearInterval(this.#tick)
-      this.#tick = null
-    }
     if (this.#hostTelemetryHeartbeat !== null) {
       clearInterval(this.#hostTelemetryHeartbeat)
       this.#hostTelemetryHeartbeat = null
@@ -1014,27 +1006,6 @@ export class LocalTui implements TuiService {
     }
     this.#plainPrinted = this.#state.blocks.length
     if (out !== '') this.#term.output.write(out)
-  }
-
-  #busy(): boolean {
-    if (this.#state.status !== 'idle') return true
-    if (this.#state.blocks.some((block) => block.kind === 'tool' && block.status === 'running')) return true
-    return this.#subagents?.agents.some(agent => agent.phase === 'running' || agent.phase === 'starting') === true
-  }
-
-  #syncTick(): void {
-    if (!this.#tty) return
-    if (this.#busy()) {
-      if (this.#tick === null) {
-        this.#tick = setInterval(() => {
-          this.#spinner += 1
-          this.#render()
-        }, BUSY_SPINNER_RENDER_MS)
-      }
-    } else if (this.#tick !== null) {
-      clearInterval(this.#tick)
-      this.#tick = null
-    }
   }
 
   #publishHostTelemetry(force = false): void {

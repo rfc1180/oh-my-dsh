@@ -492,7 +492,7 @@ interface ViewportPersistenceExtension {
     eventCount: number
     events: readonly SessionEvent[]
   } | undefined>
-  omdshRefreshViewportTail?: (id: string, signal?: AbortSignal) => Promise<void>
+  omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
 }
 
 /** Own one switchable top-level Agent and project it onto a TuiService. */
@@ -1110,11 +1110,13 @@ export class SessionRuntime {
 
   #hydrate(active: ActiveSession, milestone?: (milestone: StartupMilestone) => void): void {
     const persistence = this.#ctx.get('sessionPersistence') as unknown as ViewportPersistenceExtension | undefined
+    const events = active.handle.agent.session.events
+    const knownNextSeq = (events.at(-1)?.seq ?? -1) + 1
     const tasks = [
       this.refreshRecent(active).finally(() => { milestone?.('recentReady') }),
       this.#hydrateModel(active).finally(() => { milestone?.('modelReady') }),
       this.#refreshSkills(undefined, active).finally(() => { milestone?.('skillsReady') }),
-      persistence?.omdshRefreshViewportTail?.(active.handle.agent.id) ?? Promise.resolve(),
+      persistence?.omdshRefreshViewportTail?.(active.handle.agent.id, knownNextSeq) ?? Promise.resolve(),
     ]
     const hydration = Promise.allSettled(tasks).then(() => undefined)
     this.#hydrations.add(hydration)

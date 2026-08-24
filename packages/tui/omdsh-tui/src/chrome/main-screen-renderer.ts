@@ -170,8 +170,21 @@ export class MainScreenRenderer {
       this.#pendingFrame = frame
       return
     }
-    const next = frame.lines.map(line => sanitizeDisplayLine(String(line)))
-    const liveStart = Math.max(0, Math.min(frame.liveStart ?? 0, next.length))
+    const liveStart = Math.max(0, Math.min(frame.liveStart ?? 0, frame.lines.length))
+    const viewStart = Math.max(0, frame.lines.length - this.#height)
+    // Rows below #physical are the only rows that can still be emitted during
+    // an ordinary follow paint. Frozen history has already been sanitized and
+    // scrolled into the terminal, so regex-scanning it again on every token is
+    // both redundant and the dominant cost for long durable sessions.
+    const sanitizeStart = liveStart === 0
+      ? viewStart
+      : !this.#hasFrame || this.#newEpoch || frame.lines.length <= this.#physical
+        ? 0
+        : Math.min(this.#physical, viewStart)
+    const next = frame.lines.slice()
+    for (let index = sanitizeStart; index < next.length; index += 1) {
+      next[index] = sanitizeDisplayLine(next[index] ?? '')
+    }
     const livePinned = frame.livePinned !== false
     const cursor = frame.cursor ?? { row: next.length, column: 0 }
     const cursorVisible = frame.cursorVisible !== false

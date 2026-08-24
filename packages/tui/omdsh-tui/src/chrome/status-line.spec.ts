@@ -482,6 +482,22 @@ describe('session status line', () => {
     expect(dirtyDefault[0]).toContain(theme.getFgAnsi('warning'))
   })
 
+  it('does not reuse a cached footer painted with another theme', () => {
+    const dark = createTheme(true, true, 'dark')
+    const light = createTheme(true, true, 'light')
+    const options = {
+      model: 'm',
+      config: statusBar({ colors: { model: 'accent' } }),
+      width: 80,
+    }
+    const darkLines = renderStatusFooter(options, dark)
+    const lightLines = renderStatusFooter(options, light)
+    expect(dark.getFgAnsi('accent')).not.toBe(light.getFgAnsi('accent'))
+    expect(darkLines[0]).toContain(dark.getFgAnsi('accent'))
+    expect(lightLines[0]).toContain(light.getFgAnsi('accent'))
+    expect(lightLines[0]).not.toContain(dark.getFgAnsi('accent'))
+  })
+
   it('packs a complete settings preview instead of clipping the right column', () => {
     const lines = renderStatusPreviewLines({
       model: 'deepseek',

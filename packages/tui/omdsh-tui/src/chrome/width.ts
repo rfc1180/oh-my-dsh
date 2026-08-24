@@ -50,12 +50,15 @@ export function visibleWidth(text: string): number {
 export function splitAnsi(text: string): { ansi: boolean; value: string }[] {
   const parts: { ansi: boolean; value: string }[] = []
   let last = 0
-  for (const match of text.matchAll(ANSI_RE)) {
+  ANSI_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = ANSI_RE.exec(text)) !== null) {
     const index = match.index
     if (index > last) parts.push({ ansi: false, value: text.slice(last, index) })
-    parts.push({ ansi: true, value: match[0] ?? '' })
-    last = index + (match[0]?.length ?? 0)
+    parts.push({ ansi: true, value: match[0] })
+    last = index + match[0].length
   }
+  ANSI_RE.lastIndex = 0
   if (last < text.length) parts.push({ ansi: false, value: text.slice(last) })
   return parts
 }

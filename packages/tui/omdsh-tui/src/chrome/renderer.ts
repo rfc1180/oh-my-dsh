@@ -90,7 +90,9 @@ export function sanitizeDisplayLine(value: string): string {
     .replace(UNSAFE_CONTROL, '')
   let output = ''
   let cursor = 0
-  for (const match of value.matchAll(DISPLAY_ESCAPE)) {
+  DISPLAY_ESCAPE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = DISPLAY_ESCAPE.exec(value)) !== null) {
     output += plain(value.slice(cursor, match.index))
     const sequence = match[0]
     if ((sequence.startsWith('\x1b[') && sequence.endsWith('m')) || sequence.startsWith('\x1b]8;')) {
@@ -98,6 +100,7 @@ export function sanitizeDisplayLine(value: string): string {
     }
     cursor = match.index + sequence.length
   }
+  DISPLAY_ESCAPE.lastIndex = 0
   return output + plain(value.slice(cursor))
 }
 

@@ -126,13 +126,25 @@ function buildViewportTail(
   generation: string,
   id: string,
   revision: string,
+  eventCount: number,
   events: readonly SessionEvent[],
 ): ViewportTailSnapshot | undefined {
   if (events.length === 0) return undefined
   const candidateStart = Math.max(0, events.length - VIEWPORT_EVENT_LIMIT)
-  let start = events.findIndex((event, index) => index >= candidateStart && event.type === 'turn/start')
+  let start = -1
+  for (let index = candidateStart; index < events.length; index += 1) {
+    if (events[index]?.type === 'turn/start') {
+      start = index
+      break
+    }
+  }
   if (start < candidateStart) {
-    start = events.findIndex((event, index) => index >= candidateStart && event.type === 'user/message')
+    for (let index = candidateStart; index < events.length; index += 1) {
+      if (events[index]?.type === 'user/message') {
+        start = index
+        break
+      }
+    }
   }
   if (start < candidateStart) return undefined
   const tail = structuredClone(events.slice(start))
@@ -144,7 +156,7 @@ function buildViewportTail(
     id,
     revision,
     checkpointSeq: first.seq,
-    eventCount: events.length,
+    eventCount,
     events: tail,
   }
   return { ...payload, digest: viewportDigest(payload) }
@@ -316,9 +328,8 @@ export class DurableSessionIndex {
         const after = await this.#persistence.readStoredRevision(snapshot.header.id, signal)
         if (String(after) !== revision) throw new Error(`session "${snapshot.header.id}" changed during projection read`)
         const projection = foldEvents(checkpoint?.projection, suffix.events)
-        const nextSeq = suffix.events.length === 0
-          ? fromSeq
-          : Math.max(fromSeq, ...suffix.events.map(event => event.seq + 1))
+        let nextSeq = fromSeq
+        for (const event of suffix.events) nextSeq = Math.max(nextSeq, event.seq + 1)
         checkpoint = { revision, nextSeq, projection }
         entry.checkpoint = checkpoint
         entry.revision = revision
@@ -355,20 +366,29 @@ export class DurableSessionIndex {
     id: string,
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
     signal?: AbortSignal,
+    knownNextSeq?: number,
   ): Promise<void> {
     await this.listSnapshots(fallback, signal)
     const index = this.#loaded
     const entry = index?.entries[id]
     if (index === undefined || entry === undefined) return
+    const boundedNextSeq = Number.isSafeInteger(knownNextSeq) && Number(knownNextSeq) >= 0
+      ? Number(knownNextSeq)
+      : entry.checkpoint?.nextSeq
+    const fromSeq = Math.max(0, (boundedNextSeq ?? 0) - VIEWPORT_EVENT_LIMIT)
     for (let attempt = 0; attempt < 2; attempt += 1) {
       signal?.throwIfAborted()
       const before = await this.#persistence.readStoredRevision(id as SessionId, signal)
       if (before === undefined) return
-      const inspected = await this.#persistence.readFrom(id as SessionId, 0, signal)
+      const inspected = await this.#persistence.readFrom(id as SessionId, fromSeq, signal)
       if (inspected.meta.id !== id) return
       const after = await this.#persistence.readStoredRevision(id as SessionId, signal)
       if (before !== after) continue
-      const viewport = buildViewportTail(this.#viewportGeneration, id, String(after), inspected.events)
+      const eventCount = inspected.events.reduce(
+        (count, event) => Math.max(count, event.seq + 1),
+        boundedNextSeq ?? 0,
+      )
+      const viewport = buildViewportTail(this.#viewportGeneration, id, String(after), eventCount, inspected.events)
       if (viewport === undefined) delete entry.viewport
       else entry.viewport = viewport
       entry.revision = String(after)

@@ -697,8 +697,11 @@ export function detectTrueColor(env: NodeJS.ProcessEnv = process.env): boolean {
   return true
 }
 
+const THEME_CACHE = new Map<string, Theme>()
+
 /**
- * Build a theme.
+ * Build a theme. The finite palette/capability matrix is memoized because a
+ * live TUI asks for the same immutable paint helpers on every frame.
  * @param colors - emit SGR when true.
  * @param trueColor - 24-bit hex; ignored when colors is false.
  * @param name - shipped palette (`dark` default).
@@ -709,6 +712,9 @@ export function createTheme(
   name: ThemeName = 'dark',
 ): Theme {
   const tc = colors && trueColor
+  const cacheKey = `${name}:${colors ? 1 : 0}:${tc ? 1 : 0}`
+  const cached = THEME_CACHE.get(cacheKey)
+  if (cached !== undefined) return cached
   const palette = PALETTES[name]
   const ansi = ANSI16[name]
   const getFgAnsi = (color: ThemeColor): string =>
@@ -717,7 +723,7 @@ export function createTheme(
     colors ? bgCode(palette[color], tc, ansi[color]) : ''
   const paint = (open: string, text: string, close: string): string =>
     colors && open !== '' ? open + text + close : text
-  return {
+  const theme: Theme = {
     name,
     colors,
     trueColor: tc,
@@ -732,6 +738,9 @@ export function createTheme(
     dim: (text) => paint(getFgAnsi('dim'), text, FG_RESET),
     inverse: (text) => (colors ? `\x1b[7m${text}${INVERSE_RESET}` : text),
   }
+  Object.freeze(theme)
+  THEME_CACHE.set(cacheKey, theme)
+  return theme
 }
 
 /** DeepSeek mark adapted from the official SVG for a 20×6 terminal cell. */

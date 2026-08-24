@@ -96,6 +96,24 @@ describe('DurableSessionIndex', () => {
     await expect(reopened.viewportTail(item.header.id)).resolves.toBeUndefined()
   })
 
+  it('refreshes a large viewport from only the bounded event suffix', async () => {
+    const item = await fixture()
+    item.events.splice(0, item.events.length, ...Array.from({ length: 2_000 }, (_, seq) => ({
+      seq,
+      time: seq + 1,
+      type: seq === 976 ? 'turn/start' : 'test/event',
+      data: seq === 976 ? { turn: 1 } : {},
+    }) as SessionEvent))
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.refreshViewportTail(item.header.id, item.fallback, undefined, 2_000)
+
+    expect(item.reads).toEqual([976])
+    await expect(index.viewportTail(item.header.id)).resolves.toMatchObject({
+      checkpointSeq: 976,
+      eventCount: 2_000,
+    })
+  })
+
   it('rejects corrupt and identity-mismatched viewport snapshots without scanning the journal', async () => {
     const item = await fixture()
     await new DurableSessionIndex(item.root, 'none', item.persistence)

@@ -21,9 +21,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Fixed
 
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first; recent-session, model-info, and skill catalogs now hydrate after the target transcript and composer are ready.
-- Bound the cosmetic busy-spinner repaint to once per second so long transcripts no longer consume a CPU core and starve terminal input while an agent is working; event-driven output still renders immediately.
-- Remove the per-second full-frame repaint while a deadline Loop runs, and memoize the status footer so unchanged raw-key/scroll frames no longer redo regex width measurement and group selection on every paint.
-- Replace the exponential subset enumeration in telemetry group selection with an equivalent linear dynamic program, so a running session stops burning CPU proportionally to 2^n footer groups.
+- Advance busy and Loop spinners only on real Agent or roster events, eliminating cosmetic full-frame timers that periodically stalled raw-key input in long sessions.
+- Sanitize only the mutable terminal suffix after frozen transcript rows enter native scrollback, and keep memoized status footers isolated by theme so long sessions stay responsive without cross-theme paint reuse.
+- Replace exponential telemetry subset enumeration with a bounded dynamic program so status layout cost no longer grows as 2^n.
 - Keep interleaved assistant and tool streaming attached to the correct turn and step, coalesce transcript/footer paints in production, and discard stale terminal frames while stdout is backpressured.
 - Keep composer typing and submit responsive during long assistant replies by using a cheap plain streaming preview, bounding repaint frequency, and reusing the last painted transcript for raw-key frames; full Markdown appears when the reply settles.
 - List and resume sessions written by Harness rc.7 as a single Zstandard frame after upgrading to rc.8, instead of rejecting their header as corrupt.

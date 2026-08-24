@@ -25,6 +25,13 @@ function contrastRatio(foreground: number, background: number): number {
 }
 
 describe('createTheme', () => {
+  it('reuses immutable helpers for the same palette capabilities', () => {
+    const first = createTheme(true, true, 'dark')
+    const second = createTheme(true, true, 'dark')
+    expect(second).toBe(first)
+    expect(Object.isFrozen(first)).toBe(true)
+  })
+
   it('is identity when colors are off', () => {
     const theme = createTheme(false, true)
     expect(theme.fg('accent', 'x')).toBe('x')
