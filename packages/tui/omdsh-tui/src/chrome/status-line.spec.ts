@@ -512,4 +512,33 @@ describe('session status line', () => {
     expect(lines.join('\n')).not.toContain('…')
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80)
   })
+
+  it('keeps more telemetry groups visible than the old greedy high-water heuristic', () => {
+    // A wide first group used to greedily consume the whole budget even though
+    // two narrower groups fit together. The new maximum-count selection must
+    // prefer the wider group count so fewer metrics disappear.
+    const footer = renderStatusFooter({
+      model: 'm',
+      config: statusBar(),
+      width: 40,
+      stats: {
+        turns: 1,
+        steps: 1,
+        llmMs: 0,
+        toolMs: 0,
+        ttftMs: 0,
+        ttftSteps: 0,
+        decodeMs: 0,
+        decodeTokens: 0,
+        inputTokens: 1_234_567,
+        outputTokens: 12_345,
+        cacheReadTokens: 900_000,
+        cacheWriteTokens: 0,
+        contextWindow: 1_000_000,
+        contextTokens: 123_456,
+      },
+    }, createTheme(false))
+    // Every returned line must respect the width even when extra groups are chosen.
+    for (const line of footer) expect(visibleWidth(line)).toBeLessThanOrEqual(40)
+  })
 })

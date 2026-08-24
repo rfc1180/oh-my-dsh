@@ -290,59 +290,65 @@ function layoutWidth(groups: readonly StatusGroup[], separator = GROUP_SEPARATOR
   return LABEL_PADDING + groupsWidth(groups, separator)
 }
 
-/** Maximize complete groups, using configured order to break equal-size ties. */
+/**
+ * Choose the largest-count subset of groups that fits, preserving configured
+ * order within the selection. The original implementation enumerated every
+ * 2^n subset on every footer paint, which made the per-second status refresh
+ * exponential in group count. This dynamic program is O(n^2): for each count
+ * it keeps the single smallest-width selection, so the widest group count is
+ * discovered without exhaustively scanning subsets.
+ */
 function selectBestGroups(
   groups: readonly StatusGroup[],
-  fits: (selection: readonly StatusGroup[]) => boolean,
+  capacity: number,
+  measure: (selection: readonly StatusGroup[]) => number,
 ): StatusGroup[] {
-  let best: StatusGroup[] = []
-  const bestIds = (): Set<StatusGroupId> => new Set(best.map(group => group.id))
-  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
-    const selection = groups.filter((_, index) => (mask & (1 << index)) !== 0)
-    if (!fits(selection) || selection.length < best.length) continue
-    if (selection.length > best.length) {
-      best = selection
-      continue
+  // dp[count] = smallest-width selection with exactly `count` groups, in order.
+  const dp: (readonly StatusGroup[] | undefined)[] = [[]]
+  for (const group of groups) {
+    for (let count = dp.length - 1; count >= 0; count -= 1) {
+      const base = dp[count]
+      if (base === undefined) continue
+      const candidate = [...base, group]
+      const width = measure(candidate)
+      if (width > capacity) continue
+      const existing = dp[count + 1]
+      if (existing === undefined || width < measure(existing)) dp[count + 1] = candidate
     }
-    const selected = new Set(selection.map(group => group.id))
-    const previous = bestIds()
-    const firstDifference = groups.find(group => selected.has(group.id) !== previous.has(group.id))
-    if (firstDifference !== undefined && selected.has(firstDifference.id)) best = selection
   }
-  return best
+  let best: readonly StatusGroup[] = []
+  let bestWidth = Number.POSITIVE_INFINITY
+  for (let count = 1; count < dp.length; count += 1) {
+    const candidate = dp[count]
+    if (candidate === undefined) continue
+    const width = measure(candidate)
+    if (candidate.length > best.length || (candidate.length === best.length && width < bestWidth)) {
+      best = candidate
+      bestWidth = width
+    }
+  }
+  return [...best]
 }
 
 /**
- * Follow configured priority greedily, but retain the previous high-water group
- * count when a newly fitting wide group would otherwise evict several metrics.
+ * Follow configured priority greedily, but when a greedy pass would leave room
+ * for more complete metrics, prefer the maximum-count selection instead. This
+ * reproduces the previous 2^n high-water behavior in O(n^2): greedy keeps the
+ * visually-stable earlier groups on ties, while a wider-count selection wins
+ * whenever more groups fit.
  */
 function selectStableGroups(
   groups: readonly StatusGroup[],
   capacity: number,
   measure: (selection: readonly StatusGroup[]) => number,
 ): StatusGroup[] {
-  const greedyAt = (width: number): StatusGroup[] => {
-    const selected: StatusGroup[] = []
-    for (const group of groups) {
-      const candidate = [...selected, group]
-      if (measure(candidate) <= width) selected.push(group)
-    }
-    return selected
+  const greedy: StatusGroup[] = []
+  for (const group of groups) {
+    const candidate = [...greedy, group]
+    if (measure(candidate) <= capacity) greedy.push(group)
   }
-  const greedy = greedyAt(capacity)
-  let highWaterCount = greedy.length
-  const thresholds = new Set<number>()
-  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
-    const selection = groups.filter((_, index) => (mask & (1 << index)) !== 0)
-    const threshold = measure(selection)
-    if (threshold <= capacity) thresholds.add(threshold)
-  }
-  for (const threshold of thresholds) {
-    highWaterCount = Math.max(highWaterCount, greedyAt(threshold).length)
-  }
-  if (greedy.length === highWaterCount) return greedy
-  return selectBestGroups(groups, selection =>
-    selection.length <= highWaterCount && measure(selection) <= capacity)
+  const best = selectBestGroups(groups, capacity, measure)
+  return best.length > greedy.length ? best : greedy
 }
 
 /** Keep the product telemetry priority while retaining the user's visual order. */
@@ -647,18 +653,61 @@ function metadataColumns(
 /**
  * Render the fixed footer: model/workspace metadata first, customizable
  * session telemetry second. Both rows use left/right columns and exact width.
+ *
+ * The footer changes only when its inputs or geometry change. `renderView` is
+ * called on every raw-key, scroll, and status tick, so memoizing the last
+ * footer avoids rebuilding group selections and re-wrapping the same strings
+ * with regex-backed width measurement on every frame.
  */
+const statusFooterCache: {
+  signature: string
+  lines: [string, string]
+} = { signature: '', lines: ['', ''] }
+
 export function renderStatusFooter(options: StatusFooterOptions, theme: Theme): string[] {
   const normalized = resolveStatusBarConfig(options.config)
   const width = Math.max(0, options.width)
   if (width === 0) return ['', '']
   const padding = responsiveFooterPadding(width)
   const innerWidth = Math.max(0, width - padding * 2)
+  const signature = JSON.stringify([
+    options.model,
+    options.reasoningEffort ?? '',
+    options.pwd ?? '',
+    options.branch ?? '',
+    options.focus ?? '',
+    options.controls?.agentPreset ?? '',
+    options.controls?.tools ?? '',
+    options.controls?.permission ?? '',
+    options.controls?.plan?.active === true,
+    options.controls?.plan?.pending === true,
+    options.loop?.phase ?? '',
+    options.loop?.deadline ?? '',
+    options.loop?.repeats ?? '',
+    options.loop?.total ?? '',
+    options.loop?.limit ?? '',
+    options.stats === undefined ? null : [
+      options.stats.turns, options.stats.steps, options.stats.llmMs, options.stats.toolMs,
+      options.stats.ttftMs, options.stats.ttftSteps, options.stats.decodeMs, options.stats.decodeTokens,
+      options.stats.inputTokens, options.stats.outputTokens, options.stats.cacheReadTokens,
+      options.stats.cacheWriteTokens, options.stats.contextTokens, options.stats.contextWindow,
+    ],
+    width,
+    normalized.labels,
+    normalized.enabled,
+    normalized.groups,
+    normalized.order,
+    normalized.meta,
+    normalized.metaOrder,
+    normalized.colors,
+    normalized.sides,
+  ])
+  if (statusFooterCache.signature === signature) return [...statusFooterCache.lines]
   const metadata = metadataColumns({ ...options, config: normalized }, theme, innerWidth, normalized, options.focus)
   const telemetryGroups = options.stats === undefined || !normalized.enabled
     ? { left: [], right: [], separator: GROUP_SEPARATOR }
     : selectFooterGroups(buildStatusGroups(options.stats, normalized), innerWidth, normalized)
-  return [
+  const lines: [string, string] = [
     renderSplitRow(metadata.left, metadata.right, width),
     renderSplitRow(
       paintColumn(telemetryGroups.left, theme, normalized, telemetryGroups.separator, options.focus),
@@ -666,6 +715,9 @@ export function renderStatusFooter(options: StatusFooterOptions, theme: Theme): 
       width,
     ),
   ]
+  statusFooterCache.signature = signature
+  statusFooterCache.lines = lines
+  return [...lines]
 }
 
 function packPreviewParts(

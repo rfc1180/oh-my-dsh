@@ -281,7 +281,6 @@ export class LocalTui implements TuiService {
   #branch: string | undefined
   #spinner = 0
   #tick: ReturnType<typeof setInterval> | null = null
-  #loopTick: ReturnType<typeof setInterval> | null = null
   #scrollStart = 0
   #maxStart = 0
   #scrollBudget = 0
@@ -493,7 +492,6 @@ export class LocalTui implements TuiService {
 
   setLoopStatus(status: TuiLoopStatus | undefined): void {
     this.#loopStatus = status === undefined ? undefined : { ...status }
-    this.#syncLoopTick()
     if (this.#tty) this.#render()
   }
 
@@ -919,10 +917,6 @@ export class LocalTui implements TuiService {
       clearInterval(this.#tick)
       this.#tick = null
     }
-    if (this.#loopTick !== null) {
-      clearInterval(this.#loopTick)
-      this.#loopTick = null
-    }
     if (this.#hostTelemetryHeartbeat !== null) {
       clearInterval(this.#hostTelemetryHeartbeat)
       this.#hostTelemetryHeartbeat = null
@@ -1040,18 +1034,6 @@ export class LocalTui implements TuiService {
     } else if (this.#tick !== null) {
       clearInterval(this.#tick)
       this.#tick = null
-    }
-  }
-
-  #syncLoopTick(): void {
-    if (!this.#tty) return
-    const countdown = this.#loopStatus?.phase === 'running' && this.#loopStatus.deadline !== undefined
-    if (countdown && this.#loopTick === null) {
-      this.#loopTick = setInterval(() => { this.#render() }, 1_000)
-      this.#loopTick.unref?.()
-    } else if (!countdown && this.#loopTick !== null) {
-      clearInterval(this.#loopTick)
-      this.#loopTick = null
     }
   }
 
