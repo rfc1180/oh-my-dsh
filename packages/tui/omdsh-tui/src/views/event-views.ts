@@ -637,6 +637,95 @@ function assistantStreamingLines(
   return assistantContentLines(rendered, width, paddingX)
 }
 
+interface ProgressiveAssistantLines {
+  lines: string[]
+  /** Leading rows whose source block is complete and cannot grow further. */
+  stablePrefixLines: number
+}
+
+/**
+ * Return the last completed Markdown block boundary that already has a newer
+ * block after it. The active final block remains mutable, while paragraphs,
+ * lists, tables, and closed fences before it may enter native scrollback.
+ */
+function stableMarkdownPrefixEnd(source: string): number {
+  let contentEnd = source.length
+  while (contentEnd > 0 && /\s/u.test(source[contentEnd - 1] ?? '')) contentEnd -= 1
+  if (contentEnd === 0) return 0
+  let offset = 0
+  let candidate = 0
+  let fenceChar: '`' | '~' | undefined
+  let fenceLength = 0
+  while (offset < source.length) {
+    const newline = source.indexOf('\n', offset)
+    const lineEnd = newline < 0 ? source.length : newline
+    const line = source.slice(offset, lineEnd)
+    const marker = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
+    if (marker !== undefined) {
+      const char = marker[0] as '`' | '~'
+      if (fenceChar === undefined) {
+        fenceChar = char
+        fenceLength = marker.length
+      } else if (char === fenceChar && marker.length >= fenceLength) {
+        fenceChar = undefined
+        fenceLength = 0
+      }
+    }
+    const next = newline < 0 ? source.length : newline + 1
+    if (fenceChar === undefined && line.trim() === '' && next < contentEnd) candidate = next
+    if (newline < 0) break
+    offset = next
+  }
+  return candidate
+}
+
+let stableAssistantMarkdownCache: {
+  source: string
+  theme: Theme
+  width: number
+  color?: MarkdownStyle['color']
+  italic?: boolean
+  lines: readonly string[]
+} | undefined
+
+function cachedStableAssistantMarkdown(
+  source: string,
+  theme: Theme,
+  width: number,
+  style?: MarkdownStyle,
+): readonly string[] {
+  const cached = stableAssistantMarkdownCache
+  if (cached !== undefined && cached.source === source && cached.theme === theme && cached.width === width
+    && cached.color === style?.color && cached.italic === style?.italic) return cached.lines
+  const lines = assistantMarkdown(source, theme, width, style)
+  stableAssistantMarkdownCache = {
+    source,
+    theme,
+    width,
+    ...(style?.color === undefined ? {} : { color: style.color }),
+    ...(style?.italic === undefined ? {} : { italic: style.italic }),
+    lines,
+  }
+  return lines
+}
+
+/** Render completed Markdown blocks richly and keep only the active block cheap/mutable. */
+function assistantProgressiveLines(
+  source: string,
+  theme: Theme,
+  width: number,
+  style?: MarkdownStyle,
+): ProgressiveAssistantLines {
+  const prefixEnd = stableMarkdownPrefixEnd(source)
+  if (prefixEnd === 0) {
+    return { lines: assistantStreamingLines(source, theme, width, style), stablePrefixLines: 0 }
+  }
+  const stable = cachedStableAssistantMarkdown(source.slice(0, prefixEnd), theme, width, style)
+  const activeSource = source.slice(prefixEnd)
+  const active = activeSource === '' ? [] : assistantStreamingLines(activeSource, theme, width, style)
+  return { lines: [...stable, ...active], stablePrefixLines: stable.length }
+}
+
 function userBubble(text: string, theme: Theme, width: number): string[] {
   const inner = Math.max(1, width - 2)
   const wrapped = renderPathMentionRows(text, inner, theme)
@@ -667,6 +756,69 @@ function compactReasoningLines(source: string, theme: Theme, width: number): str
   const contentWidth = Math.max(1, width - paddingX * 2)
   const line = truncateToWidth(theme.italic(theme.fg('thinkingText', '… ' + summary)), contentWidth)
   return assistantContentLines([line], width, paddingX)
+}
+
+interface RenderedAssistantBlock {
+  lines: string[]
+  stablePrefixLines: number
+}
+
+function renderAssistantBlock(
+  block: Extract<Block, { kind: 'assistant' }>,
+  theme: Theme,
+  width: number,
+  activityDetail: ActivityDetailMode,
+): RenderedAssistantBlock {
+  const lines: string[] = []
+  let stablePrefixLines = 0
+  const complete = (renderedLines: string[]): ProgressiveAssistantLines => ({
+    lines: renderedLines,
+    stablePrefixLines: renderedLines.length,
+  })
+  const append = (rendered: ProgressiveAssistantLines): void => {
+    const start = lines.length
+    lines.push(...rendered.lines)
+    if (stablePrefixLines === start) stablePrefixLines += rendered.stablePrefixLines
+  }
+  if (block.reasoning !== '') {
+    if (activityDetail === 'standard') {
+      const style: MarkdownStyle = { color: 'thinkingText', italic: true }
+      // Once visible answer text starts, Harness will not append more reasoning.
+      append(block.streaming && block.text === ''
+        ? assistantProgressiveLines(block.reasoning, theme, width, style)
+        : complete(assistantMarkdown(block.reasoning, theme, width, style)))
+      stablePrefixLines = Math.min(stablePrefixLines, lines.length)
+    } else if (activityDetail === 'compact') {
+      const compact = compactReasoningLines(block.reasoning, theme, width)
+      lines.push(...compact)
+      if (!block.streaming || block.text !== '') stablePrefixLines = lines.length
+    }
+    if (lines.length > 0 && block.text !== '') {
+      const reasoningStable = stablePrefixLines === lines.length
+      lines.push('')
+      if (reasoningStable) stablePrefixLines += 1
+    }
+  }
+  if (block.text === '' && block.streaming && (activityDetail === 'standard' || activityDetail === 'compact')) {
+    if (activityDetail === 'standard' || lines.length === 0) {
+      const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
+      lines.push(...assistantContentLines([theme.fg('dim', '…')], width, paddingX))
+    }
+  } else if (block.text !== '') {
+    const style = hasExplicitTextColor(theme) ? { color: 'text' as const } : undefined
+    append(block.streaming
+      ? assistantProgressiveLines(block.text, theme, width, style)
+      : complete(assistantMarkdown(block.text, theme, width, style)))
+    stablePrefixLines = Math.min(stablePrefixLines, lines.length)
+  }
+  if (block.interrupted === true) {
+    const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
+    lines.push(...assistantContentLines([theme.fg('dim', '· interrupted')], width, paddingX))
+  }
+  return {
+    lines,
+    stablePrefixLines: block.streaming ? stablePrefixLines : lines.length,
+  }
 }
 
 /** Render a tool as one status row for lighter activity modes. */
@@ -787,29 +939,7 @@ export function blockLines(
 ): string[] {
   if (block.kind === 'user') return userBubble(block.text, theme, width)
   if (block.kind === 'assistant') {
-    const lines: string[] = []
-    const renderAssistant = block.streaming ? assistantStreamingLines : assistantMarkdown
-    if (block.reasoning !== '') {
-      if (activityDetail === 'standard') {
-        lines.push(...renderAssistant(block.reasoning, theme, width, { color: 'thinkingText', italic: true }))
-      } else if (activityDetail === 'compact') {
-        lines.push(...compactReasoningLines(block.reasoning, theme, width))
-      }
-      if (lines.length > 0 && block.text !== '') lines.push('')
-    }
-    if (block.text === '' && block.streaming && (activityDetail === 'standard' || activityDetail === 'compact')) {
-      if (activityDetail === 'standard' || lines.length === 0) {
-        const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
-        lines.push(...assistantContentLines([theme.fg('dim', '…')], width, paddingX))
-      }
-    } else if (block.text !== '') {
-      lines.push(...renderAssistant(block.text, theme, width, hasExplicitTextColor(theme) ? { color: 'text' } : undefined))
-    }
-    if (block.interrupted === true) {
-      const paddingX = width > ASSISTANT_PADDING_X * 2 ? ASSISTANT_PADDING_X : 0
-      lines.push(...assistantContentLines([theme.fg('dim', '· interrupted')], width, paddingX))
-    }
-    return lines
+    return renderAssistantBlock(block, theme, width, activityDetail).lines
   }
   if (block.kind === 'tool') {
     if (toolsExpanded || activityDetail === 'standard' || block.status === 'error') {
@@ -883,6 +1013,7 @@ interface BlockLinesCache {
   activityDetail: ActivityDetailMode
   expanded: boolean
   lines: readonly string[]
+  stablePrefixLines: number
 }
 
 /** Settled immutable blocks keep their expensive Markdown/tool layout. */
@@ -897,7 +1028,7 @@ function cachedBlockLines(
   spinnerFrame: number,
   activityDetail: ActivityDetailMode,
   expanded: boolean,
-): readonly string[] {
+): { lines: readonly string[]; stablePrefixLines: number } {
   const animatedSpinnerFrame = block.kind === 'tool' && block.status === 'running'
     && (activityDetail !== 'quiet' || expanded)
     ? spinnerFrame
@@ -910,8 +1041,13 @@ function cachedBlockLines(
     && cached.themeName === themeName
     && cached.spinnerFrame === animatedSpinnerFrame
     && cached.activityDetail === activityDetail
-    && cached.expanded === expanded) return cached.lines
-  const lines = blockLines(block, theme, options.width, spinnerFrame, expanded, activityDetail)
+    && cached.expanded === expanded) {
+    return { lines: cached.lines, stablePrefixLines: cached.stablePrefixLines }
+  }
+  const rendered = block.kind === 'assistant'
+    ? renderAssistantBlock(block, theme, options.width, activityDetail)
+    : { lines: blockLines(block, theme, options.width, spinnerFrame, expanded, activityDetail), stablePrefixLines: 0 }
+  const { lines, stablePrefixLines } = rendered
   blockLinesCache.set(block, {
     width: options.width,
     colors: options.colors,
@@ -921,8 +1057,9 @@ function cachedBlockLines(
     activityDetail,
     expanded,
     lines,
+    stablePrefixLines,
   })
-  return lines
+  return { lines, stablePrefixLines }
 }
 
 function renderTranscriptBody(
@@ -963,11 +1100,13 @@ function renderTranscriptBody(
   let pendingStart: number | undefined
   let previous: Block | undefined
   for (const block of state.blocks) {
-    if (pendingStart === undefined && isBlockPending(block)) pendingStart = lines.length
+    const pending = pendingStart === undefined && isBlockPending(block)
+    const pendingBoundary = lines.length
     const expanded = toolsExpanded || (block.kind === 'tool' && options.expandedTools?.has(block.callId) === true)
     const rendered = cachedBlockLines(block, options, theme, themeName, trueColor, spinnerFrame, activityDetail, expanded)
-    if (rendered.length === 0) {
+    if (rendered.lines.length === 0) {
       blockStarts.push(lines.length)
+      if (pending) pendingStart = pendingBoundary
       continue
     }
     if (lines.length > 0) {
@@ -979,8 +1118,14 @@ function renderTranscriptBody(
         lines.push('')
       }
     }
-    blockStarts.push(lines.length)
-    lines.push(...rendered)
+    const blockStart = lines.length
+    blockStarts.push(blockStart)
+    lines.push(...rendered.lines)
+    if (pending) {
+      pendingStart = rendered.stablePrefixLines > 0
+        ? blockStart + Math.min(rendered.stablePrefixLines, rendered.lines.length)
+        : pendingBoundary
+    }
     previous = block
   }
   transcriptBodyCache.set(state.blocks, {

@@ -651,7 +651,7 @@ describe('blockLines', () => {
     expect(reasoningStream).toEqual([' thought    ', ' …          '])
   })
 
-  it('keeps streaming assistant content plain and applies Markdown when settled', () => {
+  it('renders completed streaming blocks as stable Markdown and keeps only the active block plain', () => {
     const source = '# Head\n\n- one\n\n**bold**'
     const streaming = blockLines({
       kind: 'assistant',
@@ -670,15 +670,33 @@ describe('blockLines', () => {
       streaming: false,
     }, theme, 40).map(stripAnsi).join('\n')
 
-    expect(streaming).toContain('**thinking**')
-    expect(streaming).toContain('# Head')
-    expect(streaming).toContain('- one')
+    expect(streaming).toContain('thinking')
+    expect(streaming).not.toContain('**thinking**')
+    expect(streaming).toContain('Head')
+    expect(streaming).not.toContain('# Head')
+    expect(streaming).toContain('• one')
+    expect(streaming).not.toContain('- one')
     expect(streaming).toContain('**bold**')
     expect(settled).toContain('thinking')
     expect(settled).not.toContain('**thinking**')
     expect(settled).not.toContain('# Head')
     expect(settled).toContain('• one')
     expect(settled).not.toContain('**bold**')
+  })
+
+  it('does not freeze a blank line inside an open Markdown fence', () => {
+    const streaming = blockLines({
+      kind: 'assistant',
+      turn: 1,
+      step: 1,
+      text: '# Before\n\n```text\ncode\n\n**still code**',
+      reasoning: '',
+      streaming: true,
+    }, theme, 40).map(stripAnsi).join('\n')
+    expect(streaming).toContain('Before')
+    expect(streaming).not.toContain('# Before')
+    expect(streaming).toContain('```text')
+    expect(streaming).toContain('**still code**')
   })
 
   it('paints reasoning in thinkingText italic without a rail, and keeps prose off default ink', () => {
