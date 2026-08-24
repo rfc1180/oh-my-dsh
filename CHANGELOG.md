@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Reconcile live terminal geometry before painting so a resize missed during startup or between terminal events cannot leave the composer and status footer above blank rows.
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first; recent-session, model-info, and skill catalogs now hydrate after the target transcript and composer are ready.
 - Advance busy and Loop spinners only on real Agent or roster events, eliminating cosmetic full-frame timers that periodically stalled raw-key input in long sessions.
 - Sanitize only the mutable terminal suffix after frozen transcript rows enter native scrollback, and keep memoized status footers isolated by theme so long sessions stay responsive without cross-theme paint reuse.
