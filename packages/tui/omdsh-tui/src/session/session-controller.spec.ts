@@ -12,6 +12,7 @@ import {
   encodeComposerImages,
   modelStatus,
   recentSessionContent,
+  resolveDurableModelSelection,
   restoreSubmissionMessage,
   SessionRuntime,
   sessionControls,
@@ -54,6 +55,30 @@ describe('modelStatus', () => {
     expect(modelStatus(base, info)).toEqual({ model: 'deepseek-v4-pro', reasoningEffort: 'high' })
     expect(modelStatus({ ...base, reasoningEffort: ReasoningEffortId('max') }, info))
       .toEqual({ model: 'deepseek-v4-pro', reasoningEffort: 'max' })
+  })
+})
+
+describe('resolveDurableModelSelection', () => {
+  it('keeps the latest route of the resumed conversation instead of the global default', () => {
+    const fallback = { provider: 'openai-codex', model: 'gpt-5.6-luna' }
+    const events = [
+      {
+        type: 'request/header', seq: 1, time: 1,
+        data: { header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } } },
+      },
+      {
+        type: 'request/header', seq: 2, time: 2,
+        data: { header: { config: {
+          provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: ReasoningEffortId('xhigh'),
+        } } },
+      },
+    ] as unknown as SessionEvent[]
+    expect(resolveDurableModelSelection(events, fallback)).toEqual({
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'xhigh',
+    })
+    expect(resolveDurableModelSelection([], fallback)).toBe(fallback)
   })
 })
 
@@ -347,7 +372,12 @@ describe('SessionRuntime startup', () => {
     const session = {
       id: SessionId('durable-target'),
       header: { id: SessionId('durable-target'), cwd: '/workspace', createdAt: 1 },
-      events: [{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'target transcript' }] } }],
+      events: [
+        { type: 'request/header', seq: 1, time: 1, data: { header: { config: {
+          provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: ReasoningEffortId('xhigh'),
+        } } } },
+        { type: 'user/message', seq: 2, time: 2, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'target transcript' }] } },
+      ],
       append: vi.fn(),
     }
     const childTools = { presentAs: vi.fn(() => () => {}) }
@@ -431,7 +461,7 @@ describe('SessionRuntime startup', () => {
     expect(activateInput).toHaveBeenCalledOnce()
     expect(order).toEqual(['resume', 'preview', 'validated', 'full', 'input'])
     expect(setCommands).toHaveBeenLastCalledWith([{ name: 'help', description: 'help' }])
-    expect(setModel).toHaveBeenLastCalledWith('v4', undefined)
+    expect(setModel).toHaveBeenLastCalledWith('gpt-5.6-sol', 'xhigh')
 
     resolveRecent([{ id: SessionId('recent'), createdAt: 2, origin: 'user' }])
     resolveModel({ context: { contextWindow: 128_000 }, reasoning: { defaultEffort: ReasoningEffortId('high') } })
@@ -441,12 +471,12 @@ describe('SessionRuntime startup', () => {
     }])
     await runtime.whenHydrated()
 
-    expect(setModel).toHaveBeenLastCalledWith('v4', 'high')
+    expect(setModel).toHaveBeenLastCalledWith('gpt-5.6-sol', 'xhigh')
     expect(setCommands).toHaveBeenLastCalledWith([
       { name: 'help', description: 'help' },
       { name: 'skill:review', description: 'Review code' },
     ])
-    expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 1, eventCount: 1 }])
+    expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 2, eventCount: 2 }])
     await runtime.dispose()
   })
 })

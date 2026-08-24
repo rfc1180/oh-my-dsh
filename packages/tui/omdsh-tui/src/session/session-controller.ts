@@ -121,10 +121,17 @@ interface ConfiguredAgentContext extends SessionConfiguration {
   disposeToolPresentation: () => void
 }
 
-async function setupAgentContext(agentCtx: Context, selection: ModelSelectionRef): Promise<ConfiguredAgentContext> {
-  installModelSelection(agentCtx, selection)
+async function setupAgentContext(
+  agentCtx: Context,
+  selection: ModelSelectionRef,
+  restoreDurableSelection = false,
+): Promise<ConfiguredAgentContext> {
   const agent = agentCtx.agent
   if (agent === undefined) throw new Error('agent setup context has no agent')
+  if (restoreDurableSelection && selection.current !== undefined) {
+    selection.current = resolveDurableModelSelection(agent.session.events, selection.current)
+  }
+  installModelSelection(agentCtx, selection)
   const agentPresets = agentCtx.get('agentPresets')
   const tools = agentCtx.get('tools')
   if (agentPresets === undefined || tools === undefined) throw new Error('agent configuration services are unavailable')
@@ -169,6 +176,25 @@ export function modelStatus(
     model: selection.model,
     ...(effort === undefined ? {} : { reasoningEffort: String(effort) }),
   }
+}
+
+/** Resume with this conversation's last durable request route, not a mutable global default. */
+export function resolveDurableModelSelection(
+  events: readonly SessionEvent[],
+  fallback: ModelSelection,
+): ModelSelection {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type !== 'request/header') continue
+    const config = event.data.header.config
+    if (typeof config.provider !== 'string' || typeof config.model !== 'string') continue
+    return {
+      provider: config.provider,
+      model: config.model,
+      ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
+    }
+  }
+  return fallback
 }
 
 /** Fold a complete log as the capability-absence fallback for projections. */
@@ -1027,7 +1053,7 @@ export class SessionRuntime {
       resumeSessionId: SessionId(id),
       agentOptions: { provider: selection.provider, model: selection.model },
       ...(signal === undefined ? {} : { signal }),
-      setup: async (agentCtx) => { configured = await setupAgentContext(agentCtx, ref) },
+      setup: async (agentCtx) => { configured = await setupAgentContext(agentCtx, ref, true) },
     })
     const configuration = configured
     if (configuration === undefined) {
