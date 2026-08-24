@@ -214,6 +214,7 @@ export class LocalTui implements TuiService {
   readonly #resizeDebounceMs: number
   #resizeTimer: ReturnType<typeof setTimeout> | null = null
   #renderedWidth: number
+  #renderedHeight: number
   #resizeWidthChanged = false
   readonly #streamRenderMs: number
   #streamRenderTimer: ReturnType<typeof setTimeout> | null = null
@@ -395,11 +396,12 @@ export class LocalTui implements TuiService {
     this.#pwd = shortenPath(project.root)
     this.#branch = project.gitLabel
     this.#renderedWidth = this.#term.width()
+    this.#renderedHeight = this.#term.height()
     this.#renderer = new MainScreenRenderer(
       this.#term.output,
       {
         width: this.#renderedWidth,
-        height: this.#term.height(),
+        height: this.#renderedHeight,
         synchronized: this.#tty,
         clearScrollback: this.#terminalProfile === 'direct',
         alternateScreenOverlays: paths.alternateScreenOverlays === true,
@@ -408,6 +410,24 @@ export class LocalTui implements TuiService {
     if (this.#tty) this.#renderer.startEpoch()
     if (!this.#deferInitialRender) this.activateInput()
     this.#render()
+  }
+
+  /** Keep the renderer's cached grid synchronized with the live terminal geometry. */
+  #reconcileGeometry(widthChangedSinceLastPaint = false, forceRepaint = false): boolean {
+    const width = this.#term.width()
+    const height = this.#term.height()
+    const widthChanged = widthChangedSinceLastPaint || width !== this.#renderedWidth
+    const geometryChanged = width !== this.#renderedWidth || height !== this.#renderedHeight
+    if (!geometryChanged && !forceRepaint) return false
+    this.#renderer.resize(width, height)
+    this.#renderedWidth = width
+    this.#renderedHeight = height
+    if (widthChanged && this.#terminalProfile === 'direct') {
+      this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
+    } else {
+      this.#renderer.reset()
+    }
+    return true
   }
 
   /** Enable composer input only after the target Agent passed resume validation. */
@@ -425,17 +445,9 @@ export class LocalTui implements TuiService {
       this.#resizeWidthChanged ||= this.#term.width() !== this.#renderedWidth
       const repaint = (): void => {
         this.#resizeTimer = null
-        const width = this.#term.width()
-        const height = this.#term.height()
-        const widthChanged = this.#resizeWidthChanged || width !== this.#renderedWidth
+        const widthChanged = this.#resizeWidthChanged
         this.#resizeWidthChanged = false
-        this.#renderer.resize(width, height)
-        this.#renderedWidth = width
-        if (widthChanged && this.#terminalProfile === 'direct') {
-          this.#renderer.startEpoch({ replay: this.#state.status === 'idle' ? 'full' : 'pinned' })
-        } else {
-          this.#renderer.reset()
-        }
+        this.#reconcileGeometry(widthChanged, true)
         this.#render()
       }
       const debounce = this.#terminalProfile === 'multiplexer' || this.#resizeWidthChanged
@@ -446,6 +458,7 @@ export class LocalTui implements TuiService {
         repaint()
       }
     }) ?? null
+    if (this.#reconcileGeometry()) this.#render()
     this.#term.output.write('\x1b[?2004h')
     if (this.#hostTelemetry) {
       this.#hostTelemetryHeartbeat = setInterval(() => { this.#publishHostTelemetry(true) }, HOST_TELEMETRY_HEARTBEAT_MS)
@@ -1027,6 +1040,11 @@ export class LocalTui implements TuiService {
       this.#streamRenderTimer = null
     }
     if (this.#deferInitialRender) return
+    if (this.#reconcileGeometry(this.#resizeWidthChanged) && this.#resizeTimer !== null) {
+      clearTimeout(this.#resizeTimer)
+      this.#resizeTimer = null
+      this.#resizeWidthChanged = false
+    }
     const width = this.#term.width()
     const renderState = deferStreamBlocks
       ? { ...this.#state, blocks: this.#renderedBlocks }

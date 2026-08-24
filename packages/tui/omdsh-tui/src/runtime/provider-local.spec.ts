@@ -142,6 +142,35 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('reconciles a resize that happens before input activation', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { deferInitialRender: true })
+    tui.replaceSession([
+      ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'initial frame' }] }, 1),
+    ])
+
+    term.rows = 40
+    tui.activateInput()
+
+    const screen = emulatedScreenRows(term.captured).map(stripAnsi)
+    expect(screen[38]).toContain('m')
+    expect(screen).toHaveLength(40)
+    tui.dispose()
+  })
+
+  it('reconciles live geometry when the terminal resize event is missed', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+
+    term.rows = 40
+    tui.setModel('resized-model')
+
+    const screen = emulatedScreenRows(term.captured).map(stripAnsi)
+    expect(screen[38]).toContain('resized-model')
+    expect(screen).toHaveLength(40)
+    tui.dispose()
+  })
+
   it('opens Trajectory in the alternate screen and restores the transcript on close', async () => {
     const term = new FakeTerminal()
     term.columns = 120
@@ -539,6 +568,22 @@ describe('LocalTui (tty)', () => {
     expect(stripAnsi(repaint)).toContain('row-00')
     expect(stripAnsi(repaint)).toContain('row-15')
     expect(stripAnsi(repaint)).toContain('row-29')
+    tui.dispose()
+  })
+
+  it('preserves a pending direct-terminal width reflow when an event reconciles height first', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { resizeDebounceMs: 1_000 })
+
+    term.resize(70, 24)
+    term.columns = 60
+    term.rows = 30
+    const before = term.captured.length
+    tui.setModel('resized-model')
+
+    const repaint = term.captured.slice(before)
+    expect(repaint.match(/\x1b\[3J/gu)).toHaveLength(1)
+    expect(emulatedScreenRows(repaint).map(stripAnsi)[28]).toContain('resized-model')
     tui.dispose()
   })
 
