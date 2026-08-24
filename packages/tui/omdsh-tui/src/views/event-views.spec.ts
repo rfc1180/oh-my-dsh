@@ -1046,6 +1046,24 @@ describe('renderView', () => {
     expect(readonlyFrame.cursorVisible).toBe(false)
   })
 
+  it('renders a very large transcript without spreading rows into call arguments', () => {
+    const state = {
+      ...initialTranscript(),
+      blocks: Array.from({ length: 40_000 }, (_, index) => ({
+        kind: 'user' as const,
+        text: 'large-row-' + index,
+      })),
+    }
+    expect(() => renderView(state, {
+      width: 80,
+      height: 24,
+      model: 'm',
+      input: 'typing',
+      inputCursor: 6,
+      colors: false,
+    })).not.toThrow()
+  })
+
   it('exposes the full transcript in follow mode for main-screen scrollback', () => {
     let state = initialTranscript()
     for (let i = 0; i < 20; i += 1) {

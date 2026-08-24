@@ -784,7 +784,7 @@ function renderAssistantBlock(
   })
   const append = (rendered: ProgressiveAssistantLines): void => {
     const start = lines.length
-    lines.push(...rendered.lines)
+    appendLines(lines, rendered.lines)
     if (stablePrefixLines === start) stablePrefixLines += rendered.stablePrefixLines
   }
   if (block.reasoning !== '') {
@@ -1127,7 +1127,7 @@ function renderTranscriptBody(
     }
     const blockStart = lines.length
     blockStarts.push(blockStart)
-    lines.push(...rendered.lines)
+    appendLines(lines, rendered.lines)
     if (pending) {
       pendingStart = rendered.stablePrefixLines > 0
         ? blockStart + Math.min(rendered.stablePrefixLines, rendered.lines.length)
@@ -1149,6 +1149,10 @@ function renderTranscriptBody(
     ...(pendingStart === undefined ? {} : { pendingStart }),
   })
   return { lines, blockStarts, ...(pendingStart === undefined ? {} : { pendingStart }) }
+}
+
+function appendLines(target: string[], source: readonly string[]): void {
+  for (const line of source) target.push(line)
 }
 
 function commandSurfaceName(block: Block | undefined): string | undefined {
@@ -1600,7 +1604,7 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
   if (transcript.lines.length > 0) {
     if (body.length > 0) body.push('')
     transcriptStart = body.length
-    body.push(...transcript.lines)
+    appendLines(body, transcript.lines)
   }
 
   const working = state.status === 'running'
@@ -1704,7 +1708,7 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
     : windowTranscript(body, budget, requestedStart, theme)
   const visible = windowed?.lines ?? body
 
-  const lines: string[] = [...visible]
+  const lines: string[] = visible.slice()
   if (visible.length > 0) lines.push('')
   const bottomRows = working.length + inspect.length + subagents.length + todos.length + queuedSubmissions.length + inputLines.length + autocomplete.length + statusFooter.length
   const fill = Math.max(0, height - lines.length - bottomRows)
