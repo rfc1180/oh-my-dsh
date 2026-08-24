@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first; recent-session, model-info, and skill catalogs now hydrate after the target transcript and composer are ready.
 - Advance busy and Loop spinners only on real Agent or roster events, eliminating cosmetic full-frame timers that periodically stalled raw-key input in long sessions.
 - Sanitize only the mutable terminal suffix after frozen transcript rows enter native scrollback, and keep memoized status footers isolated by theme so long sessions stay responsive without cross-theme paint reuse.
+- Coalesce concurrent session-index startup work, validate only recent journal candidates, and read only the bounded viewport suffix during background hydration instead of restatting the full catalog and materializing the complete active journal.
 - Replace exponential telemetry subset enumeration with a bounded dynamic program so status layout cost no longer grows as 2^n.
 - Keep interleaved assistant and tool streaming attached to the correct turn and step, coalesce transcript/footer paints in production, and discard stale terminal frames while stdout is backpressured.
 - Keep composer typing and submit responsive during long assistant replies by using a cheap plain streaming preview, bounding repaint frequency, and reusing the last painted transcript for raw-key frames; full Markdown appears when the reply settles.

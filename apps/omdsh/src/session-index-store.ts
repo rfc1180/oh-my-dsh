@@ -239,7 +239,8 @@ export class DurableSessionIndex {
   readonly #viewportGeneration: string
   readonly #persistence: IndexedPersistence
   #loaded: PersistedIndex | undefined
-  #loadAttempted = false
+  #loadPromise: Promise<PersistedIndex | undefined> | undefined
+  #currentPromise: Promise<PersistedIndex> | undefined
   #writeChain: Promise<void> = Promise.resolve()
 
   constructor(root: string, compression: string, persistence: IndexedPersistence) {
@@ -306,41 +307,48 @@ export class DurableSessionIndex {
     limit: number,
     signal?: AbortSignal,
   ): Promise<IndexedRecentSession[]> {
-    const snapshots = (await this.listSnapshots(fallback, signal))
-      .filter(snapshot => snapshot.header.origin !== 'subagent')
-      .sort((left, right) => right.header.createdAt - left.header.createdAt)
-    const index = this.#loaded
-    if (index === undefined) throw new Error('session index was not loaded')
-    const rows: IndexedRecentSession[] = []
-    let changed = false
-    for (const snapshot of snapshots) {
-      signal?.throwIfAborted()
-      const entry = index.entries[snapshot.header.id]
-      if (entry === undefined) throw new Error(`session index lost "${snapshot.header.id}"`)
-      const revision = String(snapshot.revision)
-      let checkpoint = entry.checkpoint
-      if (checkpoint?.revision !== revision) {
-        const fromSeq = checkpoint?.nextSeq ?? 0
-        const before = await this.#persistence.readStoredRevision(snapshot.header.id, signal)
-        if (String(before) !== revision) throw new Error(`session "${snapshot.header.id}" changed before projection read`)
-        const suffix = await this.#persistence.readFrom(snapshot.header.id, fromSeq, signal)
-        if (suffix.meta.id !== snapshot.header.id) throw new Error(`session "${snapshot.header.id}" suffix identity mismatch`)
-        const after = await this.#persistence.readStoredRevision(snapshot.header.id, signal)
-        if (String(after) !== revision) throw new Error(`session "${snapshot.header.id}" changed during projection read`)
-        const projection = foldEvents(checkpoint?.projection, suffix.events)
-        let nextSeq = fromSeq
-        for (const event of suffix.events) nextSeq = Math.max(nextSeq, event.seq + 1)
-        checkpoint = { revision, nextSeq, projection }
-        entry.checkpoint = checkpoint
-        entry.revision = revision
-        changed = true
+    let index = await this.#currentIndex(fallback, signal)
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const entries = Object.values(index.entries)
+          .filter(entry => entry.header.origin !== 'subagent')
+          .sort((left, right) => right.header.createdAt - left.header.createdAt)
+        const rows: IndexedRecentSession[] = []
+        let changed = false
+        for (const entry of entries) {
+          signal?.throwIfAborted()
+          // Recent needs exact revisions only for rows it may return. Avoid the
+          // old all-catalog stat pass over hundreds of unrelated journals.
+          const revision = await sessionFileRevision(entry.path)
+          let checkpoint = entry.checkpoint
+          if (checkpoint?.revision !== revision) {
+            const fromSeq = checkpoint?.nextSeq ?? 0
+            const before = await this.#persistence.readStoredRevision(entry.header.id, signal)
+            if (String(before) !== revision) throw new Error(`session "${entry.header.id}" changed before projection read`)
+            const suffix = await this.#persistence.readFrom(entry.header.id, fromSeq, signal)
+            if (suffix.meta.id !== entry.header.id) throw new Error(`session "${entry.header.id}" suffix identity mismatch`)
+            const after = await this.#persistence.readStoredRevision(entry.header.id, signal)
+            if (String(after) !== revision) throw new Error(`session "${entry.header.id}" changed during projection read`)
+            const projection = foldEvents(checkpoint?.projection, suffix.events)
+            let nextSeq = fromSeq
+            for (const event of suffix.events) nextSeq = Math.max(nextSeq, event.seq + 1)
+            checkpoint = { revision, nextSeq, projection }
+            entry.checkpoint = checkpoint
+            entry.revision = revision
+            changed = true
+          }
+          const row = projectRecent(entry.header, checkpoint.projection)
+          if (row !== undefined) rows.push(row)
+          if (rows.length >= limit) break
+        }
+        if (changed) await this.#queueWrite(index)
+        return rows
+      } catch (error) {
+        if (attempt > 0 || signal?.aborted === true) throw error
+        index = await this.#rebuild(fallback, signal)
       }
-      const row = projectRecent(snapshot.header, checkpoint.projection)
-      if (row !== undefined) rows.push(row)
-      if (rows.length >= limit) break
     }
-    if (changed) await this.#queueWrite(index)
-    return rows
+    return []
   }
 
   /** Return only a checksum-valid snapshot still bound to the exact durable journal revision. */
@@ -368,10 +376,9 @@ export class DurableSessionIndex {
     signal?: AbortSignal,
     knownNextSeq?: number,
   ): Promise<void> {
-    await this.listSnapshots(fallback, signal)
-    const index = this.#loaded
-    const entry = index?.entries[id]
-    if (index === undefined || entry === undefined) return
+    const index = await this.#currentIndex(fallback, signal)
+    const entry = index.entries[id]
+    if (entry === undefined) return
     const boundedNextSeq = Number.isSafeInteger(knownNextSeq) && Number(knownNextSeq) >= 0
       ? Number(knownNextSeq)
       : entry.checkpoint?.nextSeq
@@ -397,18 +404,40 @@ export class DurableSessionIndex {
     }
   }
 
-  async #load(): Promise<PersistedIndex | undefined> {
-    if (this.#loadAttempted) return this.#loaded
-    this.#loadAttempted = true
+  async #currentIndex(
+    fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
+    signal?: AbortSignal,
+  ): Promise<PersistedIndex> {
+    if (this.#currentPromise !== undefined) return this.#currentPromise
+    const pending = (async () => {
+      const index = await this.#load()
+      return index !== undefined && await this.#catalogCurrent(index, signal)
+        ? index
+        : this.#rebuild(fallback, signal)
+    })()
+    this.#currentPromise = pending
     try {
-      const identity = await stat(this.#indexPath)
-      if (!identity.isFile() || (identity.mode & 0o077) !== 0) return undefined
-      const parsed: unknown = JSON.parse(await readFile(this.#indexPath, 'utf8'))
-      this.#loaded = this.#validate(parsed)
-    } catch {
-      this.#loaded = undefined
+      return await pending
+    } finally {
+      if (this.#currentPromise === pending) this.#currentPromise = undefined
     }
-    return this.#loaded
+  }
+
+  #load(): Promise<PersistedIndex | undefined> {
+    if (this.#loaded !== undefined) return Promise.resolve(this.#loaded)
+    if (this.#loadPromise !== undefined) return this.#loadPromise
+    this.#loadPromise = (async () => {
+      try {
+        const identity = await stat(this.#indexPath)
+        if (!identity.isFile() || (identity.mode & 0o077) !== 0) return undefined
+        const parsed: unknown = JSON.parse(await readFile(this.#indexPath, 'utf8'))
+        this.#loaded = this.#validate(parsed)
+      } catch {
+        this.#loaded = undefined
+      }
+      return this.#loaded
+    })()
+    return this.#loadPromise
   }
 
   #validate(value: unknown): PersistedIndex | undefined {

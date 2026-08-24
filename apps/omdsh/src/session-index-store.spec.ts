@@ -62,6 +62,16 @@ describe('DurableSessionIndex', () => {
     expect(item.fallback).toHaveBeenCalledTimes(1)
   })
 
+  it('coalesces concurrent startup index load and rebuild work', async () => {
+    const item = await fixture()
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await Promise.all([
+      index.recent(item.fallback, 8),
+      index.refreshViewportTail(item.header.id, item.fallback),
+    ])
+    expect(item.fallback).toHaveBeenCalledTimes(1)
+  })
+
   it('folds only the suffix after the journal revision changes', async () => {
     const item = await fixture()
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
