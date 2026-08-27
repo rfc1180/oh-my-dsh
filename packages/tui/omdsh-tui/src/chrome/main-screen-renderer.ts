@@ -36,6 +36,7 @@ const CLEAR_SCROLLBACK = '\x1b[3J'
 const CLEAR_SCREEN = '\x1b[2J\x1b[H'
 const CLEAR_LINE = '\x1b[2K'
 const ASSISTANT_SCROLLBAR_MARK = '\x1b]16164;assistant\x1b\\'
+const EmptyScrollbarMarks: ReadonlySet<number> = new Set()
 
 function csi(row: number, column: number): string {
   return `\x1b[${Math.max(1, row + 1)};${Math.max(1, column + 1)}H`
@@ -103,7 +104,9 @@ export class MainScreenRenderer {
   #cursorVisible = true
   #writeBlocked = false
   #pendingFrame: Frame | undefined
-  #frameMarks = new Set<number>()
+  #frameMarkOffset = 0
+  #frameMarks: ReadonlySet<number> = EmptyScrollbarMarks
+  #markSets = new WeakMap<readonly number[], ReadonlySet<number>>()
   #emittedMarks = new Set<number>()
   #finished = false
 
@@ -190,7 +193,19 @@ export class MainScreenRenderer {
       next[index] = sanitizeDisplayLine(next[index] ?? '')
     }
     const livePinned = frame.livePinned !== false
-    this.#frameMarks = new Set(frame.scrollbarMarks ?? [])
+    const marks = frame.scrollbarMarks
+    if (marks === undefined) {
+      this.#frameMarkOffset = 0
+      this.#frameMarks = EmptyScrollbarMarks
+    } else {
+      this.#frameMarkOffset = marks.offset
+      let markSet = this.#markSets.get(marks.rows)
+      if (markSet === undefined) {
+        markSet = new Set(marks.rows)
+        this.#markSets.set(marks.rows, markSet)
+      }
+      this.#frameMarks = markSet
+    }
     const cursor = frame.cursor ?? { row: next.length, column: 0 }
     const cursorVisible = frame.cursorVisible !== false
     const paint = liveStart === 0
@@ -398,7 +413,7 @@ export class MainScreenRenderer {
   }
 
   #emitMark(logical: number): string {
-    if (!this.#frameMarks.has(logical) || this.#emittedMarks.has(logical)) return ''
+    if (!this.#frameMarks.has(logical - this.#frameMarkOffset) || this.#emittedMarks.has(logical)) return ''
     this.#emittedMarks.add(logical)
     return ASSISTANT_SCROLLBAR_MARK
   }

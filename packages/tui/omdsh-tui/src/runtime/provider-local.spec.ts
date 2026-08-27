@@ -551,6 +551,22 @@ describe('LocalTui (tty)', () => {
     expect(term.destroyed).toBe(true)
   })
 
+  it('restores enhanced keyboard input after suspend and continue', () => {
+    const term = new FakeTerminal()
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const tui = new LocalTui(term, 'm', false)
+    const before = term.captured.length
+
+    press(term, '\x1a')
+    expect(term.captured.slice(before)).toContain('\x1b[>4m\x1b[?2004l')
+    expect(kill).toHaveBeenCalledWith(process.pid, 'SIGTSTP')
+
+    process.emit('SIGCONT')
+    expect(term.captured.slice(before)).toContain('\x1b[?2004h\x1b[>4;2m')
+    tui.dispose()
+    kill.mockRestore()
+  })
+
   it('starts a clean transcript epoch after direct-terminal width reflow', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { resizeDebounceMs: 0 })
@@ -1332,6 +1348,21 @@ describe('LocalTui (tty)', () => {
       text: '[Image #1, 1x1] describe this',
       images: [{ data: PNG_1X1, mediaType: 'image/png', name: 'clipboard.png', width: 1, height: 1 }],
     })
+    tui.dispose()
+  })
+
+  it('deletes a selected image draft and text together after ctrl+a', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, {
+      readClipboardImage: async () => ({ data: PNG_1X1, mediaType: 'image/png', name: 'clipboard.png' }),
+    })
+    const pending = tui.readInput()
+
+    press(term, '\x16')
+    await flushAsyncPaste()
+    press(term, ' notes\x01\x7freplacement\r')
+
+    await expect(pending).resolves.toEqual({ text: 'replacement', images: [] })
     tui.dispose()
   })
 

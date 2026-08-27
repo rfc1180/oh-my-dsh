@@ -953,8 +953,9 @@ describe('renderView', () => {
       inputCursor: 0,
       colors: false,
     })
-    expect(frame.scrollbarMarks).toHaveLength(1)
-    expect(stripAnsi(frame.lines[frame.scrollbarMarks?.[0] ?? -1] ?? '')).toContain('answer')
+    expect(frame.scrollbarMarks?.rows).toHaveLength(1)
+    const mark = (frame.scrollbarMarks?.offset ?? 0) + (frame.scrollbarMarks?.rows[0] ?? -1)
+    expect(stripAnsi(frame.lines[mark] ?? '')).toContain('answer')
   })
 
   it('shows queued submissions immediately above the composer', () => {

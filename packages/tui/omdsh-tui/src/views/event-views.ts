@@ -1801,7 +1801,7 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
     liveStart,
     livePinned,
     ...(editor === undefined ? {} : { composer: editor.scroll }),
-    scrollbarMarks: transcript.assistantStarts.map(start => transcriptStart + start),
+    scrollbarMarks: { offset: transcriptStart, rows: transcript.assistantStarts },
     transcript: windowed ?? {
       start: 0,
       maxStart: 0,

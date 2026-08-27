@@ -2,8 +2,8 @@
  * TUI capability seam — local terminal provider.
 
  * Owns the tty: raw-mode key input (editing, history, slash/tab
- * autocomplete, /settings overlay, /copy picker, live Trajectory workspace, Ctrl-R history search, PgUp/PgDn
- * and Shift+Up/Down transcript scroll, Ctrl-O tool
+ * autocomplete, /settings overlay, /copy picker, live Trajectory workspace, Ctrl-R history search,
+ * PgUp/PgDn transcript scroll, Shift+Up/Down prompt history, Ctrl-O tool
  * expand, bracketed paste, double-Escape conversation rewind, double Ctrl-C exit, Ctrl-D quit),
  * SIGWINCH reflow, and the differential renderer. In non-tty mode
  * (pipes, CI) it degrades to line-based input with plain append-only
@@ -262,6 +262,7 @@ export class LocalTui implements TuiService {
   #disposed = false
   #pendingKeys = ''
   #escapeTimer: ReturnType<typeof setTimeout> | null = null
+  #resumeAfterSuspend: (() => void) | null = null
   #autocompleteTimer: ReturnType<typeof setTimeout> | null = null
   #autocompleteAbort: AbortController | null = null
   #autocompleteRequestId = 0
@@ -916,6 +917,10 @@ export class LocalTui implements TuiService {
   dispose(): void {
     if (this.#disposed) return
     this.#disposed = true
+    if (this.#resumeAfterSuspend !== null) {
+      process.off('SIGCONT', this.#resumeAfterSuspend)
+      this.#resumeAfterSuspend = null
+    }
     if (this.#resizeTimer !== null) {
       clearTimeout(this.#resizeTimer)
       this.#resizeTimer = null
@@ -1533,7 +1538,7 @@ export class LocalTui implements TuiService {
       }
     }
     if (event.type === 'key' && (event.id === 'backspace' || event.id === 'delete')
-      && this.#removeImageAtCursor(event.id)) return
+      && this.#editor.selection === null && this.#removeImageAtCursor(event.id)) return
     if (event.type === 'key') {
       if (event.id === 'pageUp') {
         this.#scrollBy(-this.#pageSize())
@@ -2068,6 +2073,28 @@ export class LocalTui implements TuiService {
     return true
   }
 
+  #suspend(): void {
+    if (process.platform === 'win32') return
+    if (this.#resumeAfterSuspend !== null) process.off('SIGCONT', this.#resumeAfterSuspend)
+    this.#term.output.write('\x1b[>4m\x1b[?2004l')
+    const resume = (): void => {
+      this.#resumeAfterSuspend = null
+      if (this.#disposed || !this.#inputActivated) return
+      this.#term.output.write('\x1b[?2004h\x1b[>4;2m')
+      this.#renderer.reset()
+      this.#render()
+    }
+    this.#resumeAfterSuspend = resume
+    process.once('SIGCONT', resume)
+    try {
+      process.kill(process.pid, 'SIGTSTP')
+    } catch {
+      process.off('SIGCONT', resume)
+      this.#resumeAfterSuspend = null
+      this.#term.output.write('\x1b[?2004h\x1b[>4;2m')
+    }
+  }
+
   #applyCommand(command: EditorCommand): void {
     if (command.kind === 'changed') {
       this.#reconcileImageDrafts()
@@ -2115,9 +2142,7 @@ export class LocalTui implements TuiService {
       return
     }
     if (command.kind === 'suspend') {
-      if (process.platform !== 'win32') {
-        try { process.kill(process.pid, 'SIGTSTP') } catch { /* no controlling tty */ }
-      }
+      this.#suspend()
       return
     }
     if (command.kind === 'resetDisplay') {

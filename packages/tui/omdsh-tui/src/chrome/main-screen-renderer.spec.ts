@@ -166,7 +166,7 @@ describe('MainScreenRenderer', () => {
     const renderer = new MainScreenRenderer(emu, { width: 80, height: 5, synchronized: false })
     const marked: Frame = {
       ...frame(['user', 'assistant', 'composer'], 2),
-      scrollbarMarks: [1],
+      scrollbarMarks: { offset: 0, rows: [1] },
     }
 
     renderer.render(marked)

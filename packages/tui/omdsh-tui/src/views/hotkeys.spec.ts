@@ -20,6 +20,9 @@ describe('formatHotkeysText', () => {
     expect(text).toContain('/help')
     expect(text).not.toContain('/hotkeys')
     expect(text).toContain('PgUp')
+    expect(text).toContain('Shift+Up / Shift+Down')
+    expect(text).toContain('Browse sent-prompt history')
+    expect(text).toContain('Select the complete draft')
     expect(text).toContain('Ctrl+T')
     expect(text).toContain('Ctrl+O')
     expect(text).toContain('Alt+A')
@@ -37,7 +40,7 @@ describe('formatHotkeysText', () => {
 
   it('keeps the default help subset compact and honors the paste binding', () => {
     const text = formatEssentialHotkeysText({ ...DEFAULT_KEYBINDINGS, 'ctrl+g': 'paste-clipboard' })
-    expect(text.split('\n')).toHaveLength(9)
+    expect(text.split('\n')).toHaveLength(10)
     expect(text).toContain('Ctrl+V / Ctrl+G')
     expect(text).toContain('Alt+T')
     expect(text).toContain('Esc twice')

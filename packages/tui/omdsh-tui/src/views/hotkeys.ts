@@ -42,8 +42,11 @@ function sections(bindings: HotkeyBindings): readonly HotkeySection[] {
     {
       title: 'Navigation',
       rows: [
-        { keys: 'Arrow keys', action: 'Move the cursor / browse history when the editor is empty' },
-        { keys: 'Ctrl+A / Home', action: 'Move to the start of the line' },
+        { keys: 'Up / Down', action: 'Move the cursor across visible draft rows' },
+        { keys: 'Shift+Up / Shift+Down', action: 'Browse sent-prompt history' },
+        { keys: 'Left / Right', action: 'Move the cursor by one character' },
+        { keys: 'Ctrl+A', action: 'Select the complete draft' },
+        { keys: 'Home', action: 'Move to the start of the line' },
         { keys: 'Ctrl+E / End', action: 'Move to the end of the line' },
         { keys: 'Alt+B / Alt+Left', action: 'Move one word left' },
         { keys: 'Alt+F / Alt+Right', action: 'Move one word right' },
@@ -74,7 +77,6 @@ function sections(bindings: HotkeyBindings): readonly HotkeySection[] {
       title: 'Transcript',
       rows: [
         { keys: 'PgUp / PgDn', action: 'Scroll one page' },
-        { keys: 'Shift+Up / Shift+Down', action: 'Scroll quickly' },
         { keys: 'Ctrl+T', action: 'Repaint and restore the complete transcript' },
         { keys: 'Ctrl+O', action: 'Expand tool output or catalog descriptions' },
         { keys: keysForAction(bindings, 'trajectory'), action: "Open this conversation's Trajectory screen" },
@@ -117,6 +119,7 @@ export function formatEssentialHotkeysText(bindings: HotkeyBindings = DEFAULT_KE
     { keys: 'Ctrl+C twice', action: 'Interrupt or clear, then exit' },
     { keys: 'Esc twice', action: 'Rewind to an earlier conversation turn' },
     { keys: 'Ctrl+R', action: 'Search prompt history' },
+    { keys: 'Shift+Up / Shift+Down', action: 'Browse sent-prompt history' },
     { keys: 'PgUp / PgDn', action: 'Scroll the transcript' },
     { keys: 'Ctrl+O', action: 'Expand tool output or catalog descriptions' },
     { keys: keysForAction(bindings, 'trajectory'), action: "Open this conversation's Trajectory screen" },
