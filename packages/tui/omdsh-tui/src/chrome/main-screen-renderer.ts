@@ -35,6 +35,7 @@ const EXIT_ALT_SCREEN = '\x1b[?1049l'
 const CLEAR_SCROLLBACK = '\x1b[3J'
 const CLEAR_SCREEN = '\x1b[2J\x1b[H'
 const CLEAR_LINE = '\x1b[2K'
+const ASSISTANT_SCROLLBAR_MARK = '\x1b]16164;assistant\x1b\\'
 
 function csi(row: number, column: number): string {
   return `\x1b[${Math.max(1, row + 1)};${Math.max(1, column + 1)}H`
@@ -102,6 +103,8 @@ export class MainScreenRenderer {
   #cursorVisible = true
   #writeBlocked = false
   #pendingFrame: Frame | undefined
+  #frameMarks = new Set<number>()
+  #emittedMarks = new Set<number>()
   #finished = false
 
   constructor(sink: RenderSink, options: MainScreenRendererOptions) {
@@ -140,6 +143,7 @@ export class MainScreenRenderer {
     this.#clearScrollbackOnNextRender = replay !== 'tail'
     this.#reanchor = true
     this.#adoptPhysicalAfterTransient = false
+    this.#emittedMarks.clear()
   }
 
   /** Put the cursor below the UI before terminal ownership is released. */
@@ -186,6 +190,7 @@ export class MainScreenRenderer {
       next[index] = sanitizeDisplayLine(next[index] ?? '')
     }
     const livePinned = frame.livePinned !== false
+    this.#frameMarks = new Set(frame.scrollbarMarks ?? [])
     const cursor = frame.cursor ?? { row: next.length, column: 0 }
     const cursorVisible = frame.cursorVisible !== false
     const paint = liveStart === 0
@@ -331,6 +336,7 @@ export class MainScreenRenderer {
     }
 
     this.#transient = false
+    body += this.#paintTargetMarks(target, next.length)
     return this.#finishPaint(exitAlt + body, target, next.length, cursor, cursorVisible)
   }
 
@@ -343,15 +349,17 @@ export class MainScreenRenderer {
     clearScreen: boolean,
   ): string {
     const rows = [
-      ...next.slice(start, committedEnd),
-      ...next.slice(viewStart, viewStart + this.#height),
+      ...next.slice(start, committedEnd).map((line, index) => ({ line, logical: start + index })),
+      ...next.slice(viewStart, viewStart + this.#height).map((line, index) => ({ line, logical: viewStart + index })),
     ]
     let out = clearScreen ? CLEAR_SCREEN : csi(0, 0)
     if (rows.length < this.#height) out += csi(this.#height - rows.length, 0)
     for (let i = 0; i < rows.length; i += 1) {
       if (i > 0) out += '\r\n'
+      const row = rows[i]
+      if (row === undefined) continue
       // EL is required before a shorter final row scrolls into history.
-      out += CLEAR_LINE + (rows[i] ?? '')
+      out += this.#emitMark(row.logical) + CLEAR_LINE + row.line
     }
     return out
   }
@@ -387,6 +395,23 @@ export class MainScreenRenderer {
       out += CLEAR_LINE + (lines[row] ?? '')
     }
     return out
+  }
+
+  #emitMark(logical: number): string {
+    if (!this.#frameMarks.has(logical) || this.#emittedMarks.has(logical)) return ''
+    this.#emittedMarks.add(logical)
+    return ASSISTANT_SCROLLBAR_MARK
+  }
+
+  #paintTargetMarks(target: ScreenTarget, length: number): string {
+    let output = ''
+    for (let screenRow = 0; screenRow < target.rows.length; screenRow += 1) {
+      const logical = target.start + screenRow - target.offset
+      if (logical < 0 || logical >= length) continue
+      const mark = this.#emitMark(logical)
+      if (mark !== '') output += csi(screenRow, 0) + mark
+    }
+    return output
   }
 
   #target(next: readonly string[], start: number, anchor: 'top' | 'bottom'): ScreenTarget {

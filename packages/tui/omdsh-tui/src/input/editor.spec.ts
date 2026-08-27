@@ -23,7 +23,7 @@ describe('InputEditor', () => {
   it('applies emacs line motion and word motion', () => {
     const editor = new InputEditor()
     editor.handle(text('hello world'))
-    expect(editor.handle(key('ctrl+a'))).toEqual({ kind: 'changed' })
+    expect(editor.handle(key('home'))).toEqual({ kind: 'changed' })
     expect(editor.cursor).toBe(0)
     editor.handle(key('ctrl+e'))
     expect(editor.cursor).toBe(11)
@@ -46,6 +46,36 @@ describe('InputEditor', () => {
     editor.handle(key('ctrl+alt+]'))
     editor.handle(text('l'))
     expect(editor.cursor).toBe(9)
+  })
+
+  it('selects the whole buffer with ctrl+a and replaces the selection', () => {
+    const editor = new InputEditor()
+    editor.handle(text('one\ntwo'))
+    expect(editor.handle(key('ctrl+a'))).toEqual({ kind: 'changed' })
+    expect(editor.selection).toEqual({ anchor: 0, head: 7, start: 0, end: 7 })
+    expect(editor.cursor).toBe(7)
+    editor.handle(text('replacement'))
+    expect(editor.text).toBe('replacement')
+    expect(editor.cursor).toBe(11)
+    expect(editor.selection).toBeNull()
+  })
+
+  it('deletes the selection with backward and forward deletion commands', () => {
+    const backward = new InputEditor()
+    backward.setText('abcdef')
+    backward.setSelection(1, 5)
+    backward.handle(key('backspace'))
+    expect(backward.text).toBe('af')
+    expect(backward.cursor).toBe(1)
+    expect(backward.selection).toBeNull()
+
+    const forward = new InputEditor()
+    forward.setText('abcdef')
+    forward.setSelection(5, 1)
+    forward.handle(key('delete'))
+    expect(forward.text).toBe('af')
+    expect(forward.cursor).toBe(1)
+    expect(forward.selection).toBeNull()
   })
 
   it('kills words and lines, then yanks them back', () => {
@@ -86,7 +116,7 @@ describe('InputEditor', () => {
     expect(fresh.text).toBe('x\n')
   })
 
-  it('moves between lines before falling through to history', () => {
+  it('moves vertically without ever falling through to history', () => {
     const editor = new InputEditor()
     editor.handle(text('one'))
     editor.handle(key('ctrl+j'))
@@ -94,16 +124,28 @@ describe('InputEditor', () => {
     expect(editor.handle(key('up'))).toEqual({ kind: 'changed' })
     expect(editor.cursor).toBe(3)
     expect(editor.text[editor.cursor]).toBe('\n')
-    expect(editor.handle(key('up'))).toEqual({ kind: 'historyPrev' })
+    expect(editor.handle(key('up'))).toEqual({ kind: 'changed' })
+    expect(editor.cursor).toBe(3)
     editor.handle(key('down'))
-    expect(editor.handle(key('down'))).toEqual({ kind: 'historyNext' })
+    expect(editor.cursor).toBe(7)
+    expect(editor.handle(key('down'))).toEqual({ kind: 'changed' })
+    expect(editor.cursor).toBe(7)
+  })
+
+  it('routes shift+up and shift+down directly to prompt history', () => {
+    const editor = new InputEditor()
+    editor.handle(text('one\ntwo'))
+    expect(editor.handle(key('shift+up'))).toEqual({ kind: 'historyPrev' })
+    expect(editor.handle(key('shift+down'))).toEqual({ kind: 'historyNext' })
+    expect(editor.text).toBe('one\ntwo')
+    expect(editor.cursor).toBe(7)
   })
 
   it('treats empty ctrl+d as quit and non-empty as delete-forward', () => {
     const editor = new InputEditor()
     expect(editor.handle(key('ctrl+d'))).toEqual({ kind: 'quit' })
     editor.handle(text('ab'))
-    editor.handle(key('ctrl+a'))
+    editor.handle(key('home'))
     editor.handle(key('ctrl+d'))
     expect(editor.text).toBe('b')
   })

@@ -87,7 +87,6 @@ import {
   initialTranscript,
   replayEvents,
   renderView,
-  TRANSCRIPT_FAST_SCROLL,
   type Block,
   type TranscriptState,
 } from '../views/event-views.ts'
@@ -95,6 +94,7 @@ import { flushPending, parseKeys, type KeyEvent } from '../input/keys.ts'
 import { type RenderSink } from '../chrome/renderer.ts'
 import { MainScreenRenderer } from '../chrome/main-screen-renderer.ts'
 import { createTheme, detectTrueColor, parseThemeName, type ThemeName } from '../chrome/theme.ts'
+import { cursorOnWrapped, indexOnWrapped, wrapIndexed } from '../chrome/width.ts'
 import type { ToolInfo } from '../chrome/tools-list.ts'
 import type { TuiToolPresentation } from '../chrome/tool-renderers.ts'
 import { TUI_SETTINGS_NAMESPACE, TuiSettingsSchema } from '../session/tui-settings.ts'
@@ -283,6 +283,8 @@ export class LocalTui implements TuiService {
   #maxStart = 0
   #scrollBudget = 0
   #follow = true
+  #composerStart = 0
+  #verticalColumn: number | undefined
   #focusBlock: number | undefined
   #expandTools = false
   #activityDetail: ActivityDetailMode = 'standard'
@@ -459,7 +461,7 @@ export class LocalTui implements TuiService {
       }
     }) ?? null
     if (this.#reconcileGeometry()) this.#render()
-    this.#term.output.write('\x1b[?2004h')
+    this.#term.output.write('\x1b[?2004h\x1b[>4;2m')
     if (this.#hostTelemetry) {
       this.#hostTelemetryHeartbeat = setInterval(() => { this.#publishHostTelemetry(true) }, HOST_TELEMETRY_HEARTBEAT_MS)
       this.#hostTelemetryHeartbeat.unref?.()
@@ -937,10 +939,10 @@ export class LocalTui implements TuiService {
         this.#hostTelemetrySignature = undefined
       }
       // Leave the cursor on a fresh line below the last frame so the shell
-      // prompt does not overwrite the transcript. Disable bracketed paste
-      // and restore the cursor.
+      // prompt does not overwrite the transcript. Restore terminal input modes
+      // before the next shell owns the tty.
       this.#renderer.finish()
-      this.#term.output.write((this.#inputActivated ? '\x1b[?2004l' : '') + '\x1b[?25h\r\n')
+      this.#term.output.write((this.#inputActivated ? '\x1b[>4m\x1b[?2004l' : '') + '\x1b[?25h\r\n')
       if (this.#resumeHintRequested && this.#sessionId !== undefined) {
         this.#term.output.write(`\r\nResume this session with ${APP_NAME} --resume ${this.#sessionId}\r\n`)
       }
@@ -1066,6 +1068,8 @@ export class LocalTui implements TuiService {
         ...(this.#reasoningEffort === undefined ? {} : { reasoningEffort: this.#reasoningEffort }),
         input: this.#editor.text,
         inputCursor: this.#editor.cursor,
+        composerStart: this.#composerStart,
+        ...(this.#editor.selection === null ? {} : { inputSelection: this.#editor.selection }),
         inputImages: this.#images.length,
         queuedSubmissions: this.#queueEditNewer === null
           ? this.#queuedSubmissions
@@ -1105,6 +1109,7 @@ export class LocalTui implements TuiService {
       : { lines: [] }
     this.#focusBlock = undefined
     this.#promptDocument = frame.promptDocument
+    if (frame.composer !== undefined) this.#composerStart = frame.composer.start
     this.#syncScroll(frame.transcript)
     if (this.#trajectory === null) {
       const assistantStreaming = this.#state.blocks.some(block => block.kind === 'assistant' && block.streaming)
@@ -1496,6 +1501,11 @@ export class LocalTui implements TuiService {
       return
     }
     if (this.#handleSubagentLauncher(event)) return
+    if (event.type === 'key' && (event.id === 'up' || event.id === 'down')) {
+      if (this.#moveEditorVisual(event.id === 'up' ? -1 : 1)) return
+    } else {
+      this.#verticalColumn = undefined
+    }
     if (event.type === 'key' && event.id === 'escape') {
       if (this.#inspected !== undefined) {
         if (this.#inspected.writable === true && (this.#editor.text !== '' || this.#images.length > 0)) {
@@ -1531,14 +1541,6 @@ export class LocalTui implements TuiService {
       }
       if (event.id === 'pageDown') {
         this.#scrollBy(this.#pageSize())
-        return
-      }
-      if (event.id === 'shift+up') {
-        this.#scrollBy(-TRANSCRIPT_FAST_SCROLL)
-        return
-      }
-      if (event.id === 'shift+down') {
-        this.#scrollBy(TRANSCRIPT_FAST_SCROLL)
         return
       }
       if (event.id === 'ctrl+t') {
@@ -2050,6 +2052,20 @@ export class LocalTui implements TuiService {
       : applySlashCompletion(this.#editor.text, this.#editor.cursor, item)
     this.#editor.setText(next.text, next.cursor)
     this.#refreshAutocomplete()
+  }
+
+  #moveEditorVisual(direction: -1 | 1): boolean {
+    const text = this.#editor.text
+    const rows = wrapIndexed(text, Math.max(1, this.#term.width() - 4))
+    const caret = cursorOnWrapped(rows, this.#editor.cursor, text)
+    const target = rows[caret.row + direction]
+    if (target === undefined) return false
+    const column = this.#verticalColumn ?? caret.column
+    this.#verticalColumn = column
+    this.#editor.setCursor(indexOnWrapped(target, column, text))
+    this.#refreshAutocomplete()
+    this.#render()
+    return true
   }
 
   #applyCommand(command: EditorCommand): void {

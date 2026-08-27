@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Grow the composer by explicit paragraphs up to a bounded internal viewport, expose full-draft editing through Ctrl+X, support Ctrl+A selection, and publish assistant-answer marks to supporting terminal overview rulers.
 - Show an exact-revision durable viewport tail while a resumed Agent is still validating, then atomically replace it with the authoritative full transcript before enabling composer input.
 - Keep a durable revision-bound session index and recent-session summary cache so `/resume` avoids full inspection of unchanged histories.
 - Publish the complete session telemetry projection to supporting terminal hosts so narrow panes can expose it through host-native hover chrome without enabling TUI mouse tracking.
@@ -16,10 +17,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
+- Use plain Up/Down for visual-row caret navigation and Shift+Up/Down for sent-prompt history; transcript history remains on PgUp/PgDn so the composer stays writable while reviewing earlier output.
 - Compact status telemetry now switches through dense and unit-aware nano forms on narrow terminals, preserving cache, token, TTFT/rate, LLM/tool timing, context, and activity data before omitting lower-priority groups.
 
 ### Fixed
 
+- Request enhanced terminal key reporting so Shift+Enter reliably creates readable paragraphs, and separate user prompts with restrained rules instead of gray background blocks.
 - Reconcile live terminal geometry before painting so a resize missed during startup or between terminal events cannot leave the composer and status footer above blank rows.
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first; recent-session, model-info, and skill catalogs now hydrate after the target transcript and composer are ready.
 - Advance busy and Loop spinners only on real Agent or roster events, eliminating cosmetic full-frame timers that periodically stalled raw-key input in long sessions.

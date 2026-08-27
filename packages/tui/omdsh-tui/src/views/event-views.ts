@@ -477,6 +477,10 @@ export interface ViewOptions {
   input: string
   /** Cursor column inside the input buffer (0-based, before the prefix). */
   inputCursor: number
+  /** First wrapped row retained by the capped composer viewport. */
+  composerStart?: number
+  /** Active composer selection painted inside the raw-mode editor. */
+  inputSelection?: { start: number; end: number }
   /** Number of client-owned image drafts represented by input markers. */
   inputImages?: number
   /** Composer submissions accepted while the active turn is still running. */
@@ -734,13 +738,16 @@ function assistantProgressiveLines(
 }
 
 function userBubble(text: string, theme: Theme, width: number): string[] {
-  const inner = Math.max(1, width - 2)
+  const paddingX = width > 4 ? 2 : 0
+  const inner = Math.max(1, width - paddingX * 2)
   const wrapped = renderPathMentionRows(text, inner, theme)
-  const rows = ['', ...wrapped, '']
-  return rows.map((row) => {
-    const content = row === '' ? padToWidth('', width) : padToWidth(' ' + row, width)
-    return theme.colors ? theme.bg('userMessageBg', content) : content
-  })
+  const margin = ' '.repeat(paddingX)
+  const separator = theme.fg('borderMuted', margin + '─'.repeat(inner) + margin)
+  return [
+    separator,
+    ...wrapped.map(row => padToWidth(margin + row + margin, width)),
+    separator,
+  ]
 }
 
 function toolIcon(status: ToolBlockStatus, theme: Theme, spinnerFrame: number): string {
@@ -1000,6 +1007,7 @@ interface TranscriptBodyCache {
   expandedTools: string
   lines: readonly string[]
   blockStarts: readonly number[]
+  assistantStarts: readonly number[]
   pendingStart?: number
 }
 
@@ -1074,7 +1082,7 @@ function renderTranscriptBody(
   options: ViewOptions,
   theme: Theme,
   spinnerFrame: number,
-): { lines: readonly string[]; blockStarts: readonly number[]; pendingStart?: number } {
+): { lines: readonly string[]; blockStarts: readonly number[]; assistantStarts: readonly number[]; pendingStart?: number } {
   const activityDetail = options.activityDetail ?? 'standard'
   const toolsExpanded = options.toolsExpanded === true
   const expandedTools = [...(options.expandedTools ?? [])].sort().join('\0')
@@ -1098,12 +1106,14 @@ function renderTranscriptBody(
     return {
       lines: cached.lines,
       blockStarts: cached.blockStarts,
+      assistantStarts: cached.assistantStarts,
       ...(cached.pendingStart === undefined ? {} : { pendingStart: cached.pendingStart }),
     }
   }
 
   const lines: string[] = []
   const blockStarts: number[] = []
+  const assistantStarts: number[] = []
   let pendingStart: number | undefined
   let previous: Block | undefined
   for (const block of state.blocks) {
@@ -1127,6 +1137,7 @@ function renderTranscriptBody(
     }
     const blockStart = lines.length
     blockStarts.push(blockStart)
+    if (block.kind === 'assistant') assistantStarts.push(blockStart)
     appendLines(lines, rendered.lines)
     if (pending) {
       pendingStart = rendered.stablePrefixLines > 0
@@ -1146,9 +1157,10 @@ function renderTranscriptBody(
     expandedTools,
     lines,
     blockStarts,
+    assistantStarts,
     ...(pendingStart === undefined ? {} : { pendingStart }),
   })
-  return { lines, blockStarts, ...(pendingStart === undefined ? {} : { pendingStart }) }
+  return { lines, blockStarts, assistantStarts, ...(pendingStart === undefined ? {} : { pendingStart }) }
 }
 
 function appendLines(target: string[], source: readonly string[]): void {
@@ -1288,32 +1300,53 @@ function nextRangeStart(ranges: readonly { start: number; end: number }[], index
   return next
 }
 
-/** Paint a wrapped composer slice: leading `/name` plus image markers. */
-function paintComposerInputSlice(fullText: string, slice: string, sourceStart: number, theme: Theme): string {
+/** Paint a wrapped composer slice: selection, leading `/name`, and image markers. */
+function paintComposerInputSlice(
+  fullText: string,
+  slice: string,
+  sourceStart: number,
+  theme: Theme,
+  selection?: { start: number; end: number },
+): string {
   const sourceEnd = sourceStart + slice.length
   const slash = leadingSlashCommandNameRange(fullText)
   const slashRanges = slash === null ? [] : [slash]
   const images = imageMarkerRanges(fullText)
-  if (slashRanges.length === 0 && images.length === 0) return slice
+  if (slashRanges.length === 0 && images.length === 0 && selection === undefined) return slice
 
   let output = ''
   let cursor = sourceStart
   while (cursor < sourceEnd) {
+    if (selection !== undefined && selection.start <= cursor && cursor < selection.end) {
+      const end = Math.min(selection.end, sourceEnd)
+      const painted = paintComposerInputSlice(fullText, fullText.slice(cursor, end), cursor, theme)
+      output += theme.inverse(painted)
+      cursor = end
+      continue
+    }
+    const selectionStart = selection !== undefined && selection.start > cursor
+      ? selection.start
+      : Number.POSITIVE_INFINITY
     const image = coveringRange(images, cursor)
     if (image !== undefined) {
-      const end = Math.min(image.end, sourceEnd)
+      const end = Math.min(image.end, sourceEnd, selectionStart)
       output += theme.underline(theme.bold(theme.fg('accent', fullText.slice(cursor, end))))
       cursor = end
       continue
     }
     const command = coveringRange(slashRanges, cursor)
     if (command !== undefined) {
-      const end = Math.min(command.end, sourceEnd, nextRangeStart(images, cursor))
+      const end = Math.min(command.end, sourceEnd, nextRangeStart(images, cursor), selectionStart)
       output += theme.bold(theme.fg('accent', fullText.slice(cursor, end)))
       cursor = end
       continue
     }
-    const end = Math.min(sourceEnd, nextRangeStart(images, cursor), nextRangeStart(slashRanges, cursor))
+    const end = Math.min(
+      sourceEnd,
+      nextRangeStart(images, cursor),
+      nextRangeStart(slashRanges, cursor),
+      selectionStart,
+    )
     output += fullText.slice(cursor, end)
     cursor = end
   }
@@ -1630,21 +1663,33 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
     width,
   }, theme)
   const permissionBadge = renderPermissionBadge(options.sessionControls?.permission, theme)
+  const maxComposerRows = Math.max(1, Math.min(12, Math.floor(height * 0.4)))
+  const largeDraft = options.input.split('\n').length > maxComposerRows || options.input.length > width * 2
+  const composerStatusRight = [
+    permissionBadge,
+    largeDraft ? theme.fg('dim', 'Ctrl+X Full text') : '',
+  ].filter(Boolean).join(theme.fg('dim', ' · '))
   const editorOpts: Parameters<typeof renderEditor>[0] = {
     width,
     input: options.input,
     inputCursor: options.inputCursor,
     status: ' ' + theme.fg('accent', '🐳') + ' ',
-    ...(permissionBadge === '' ? {} : { statusRight: ' ' + permissionBadge + ' ' }),
+    ...(composerStatusRight === '' ? {} : { statusRight: ' ' + composerStatusRight + ' ' }),
     border: options.inspected !== undefined && options.inspected.writable !== true
       || state.status === 'idle'
       ? 'border'
       : 'accent',
+    maxBodyRows: maxComposerRows,
+    viewportStart: options.composerStart ?? 0,
     ...(theme.colors && (
       leadingSlashCommandNameRange(options.input) !== null
       || (options.inputImages !== undefined && options.inputImages !== 0)
+      || options.inputSelection !== undefined
     )
-      ? { paintInput: (text: string, start: number) => paintComposerInputSlice(options.input, text, start, theme) }
+      ? {
+          paintInput: (text: string, start: number) =>
+            paintComposerInputSlice(options.input, text, start, theme, options.inputSelection),
+        }
       : {}),
     ...(inlineHint !== null ? { inlineHint } : {}),
   }
@@ -1755,6 +1800,8 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
       : promptSelector?.cursorVisible ?? (settings === undefined && copySelector === undefined),
     liveStart,
     livePinned,
+    ...(editor === undefined ? {} : { composer: editor.scroll }),
+    scrollbarMarks: transcript.assistantStarts.map(start => transcriptStart + start),
     transcript: windowed ?? {
       start: 0,
       maxStart: 0,

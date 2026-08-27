@@ -508,7 +508,7 @@ describe('applyEvent', () => {
 describe('blockLines', () => {
   const theme = createTheme(false)
 
-  it('highlights @ paths inside the user-message bubble without breaking its background', () => {
+  it('separates user messages without a gray background and preserves @ path emphasis', () => {
     const color = createTheme(true, true)
     const lines = blockLines({ kind: 'user', text: 'open @src/index.ts, then inspect it' }, color, 40)
     const rendered = lines.join('\n')
@@ -519,6 +519,9 @@ describe('blockLines', () => {
       + color.getFgAnsi('userMessageText')
       + ',',
     )
+    expect(rendered).not.toContain(color.getBgAnsi('userMessageBg'))
+    expect(stripAnsi(lines[0] ?? '')).toBe('  ' + '─'.repeat(36) + '  ')
+    expect(stripAnsi(lines.at(-1) ?? '')).toBe('  ' + '─'.repeat(36) + '  ')
     expect(lines.every(line => visibleWidth(line) === 40)).toBe(true)
   })
 
@@ -894,6 +897,64 @@ describe('renderView', () => {
     expect(frame.lines[editorStart + 1]).toContain('abc')
     expect(frame.lines[editorStart + editorRows - 1]).toMatch(/^╰─/)
     expect(frame.lines.at(-2)).toContain('m')
+  })
+
+  it('grows only for hard paragraphs, caps height, and scrolls the caret internally', () => {
+    const base = {
+      width: 24,
+      height: 20,
+      model: 'm',
+      colors: false,
+    } as const
+    const longParagraph = 'word '.repeat(30)
+    const single = renderView(initialTranscript(), {
+      ...base,
+      input: longParagraph,
+      inputCursor: longParagraph.length,
+    })
+    const singleStart = composerStart(single.lines)
+    expect(composerRows(single.lines, singleStart)).toBe(3)
+    expect(single.composer?.hiddenAbove).toBeGreaterThan(0)
+    expect(stripAnsi(single.lines[singleStart] ?? '')).toContain('Ctrl+X')
+
+    const paragraphs = Array.from({ length: 4 }, (_, index) => `paragraph ${index}`).join('\n')
+    const grown = renderView(initialTranscript(), {
+      ...base,
+      input: paragraphs,
+      inputCursor: paragraphs.length,
+    })
+    expect(composerRows(grown.lines, composerStart(grown.lines))).toBe(6)
+
+    const large = Array.from({ length: 20 }, (_, index) => `paragraph ${index}`).join('\n')
+    const capped = renderView(initialTranscript(), {
+      ...base,
+      input: large,
+      inputCursor: large.length,
+    })
+    expect(composerRows(capped.lines, composerStart(capped.lines))).toBe(10)
+    expect(capped.composer?.pageSize).toBe(8)
+    expect(capped.composer?.hiddenAbove).toBeGreaterThan(0)
+    expect(stripAnsi(capped.lines[composerStart(capped.lines) + 1] ?? '')).toMatch(/↑$/u)
+  })
+
+  it('publishes assistant row marks for the terminal overview ruler', () => {
+    const state = {
+      ...initialTranscript(),
+      blocks: [
+        { kind: 'user' as const, text: 'question' },
+        { kind: 'assistant' as const, turn: 1, step: 1, text: 'answer', reasoning: '', streaming: false },
+      ],
+    }
+    const frame = renderView(state, {
+      width: 60,
+      height: 24,
+      model: 'm',
+      input: '',
+      inputCursor: 0,
+      colors: false,
+    })
+    expect(frame.scrollbarMarks).toHaveLength(1)
+    expect(stripAnsi(frame.lines[frame.scrollbarMarks?.[0] ?? -1] ?? '')).toContain('answer')
   })
 
   it('shows queued submissions immediately above the composer', () => {

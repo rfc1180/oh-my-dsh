@@ -228,12 +228,17 @@ export interface EditorOptions {
   inlineHint?: string
   /** Paint one wrapped input slice without changing its visible width. */
   paintInput?: (text: string, sourceStart: number) => string
+  /** Maximum body height; hard newlines grow the composer up to this cap. */
+  maxBodyRows?: number
+  /** Requested first wrapped row for the internal composer viewport. */
+  viewportStart?: number
 }
 
-/** Editor frame plus a cursor offset relative to the editor's first row. */
+/** Editor frame plus cursor and internal-scroll geometry. */
 export interface EditorFrame {
   lines: string[]
   cursor: { row: number; column: number }
+  scroll: { start: number; maxStart: number; pageSize: number; hiddenAbove: number; hiddenBelow: number }
 }
 
 /**
@@ -265,13 +270,24 @@ export function renderEditor(options: EditorOptions, theme: Theme): EditorFrame 
 
   const layout = wrapIndexed(options.input, contentWidth)
   const caret = cursorOnWrapped(layout, options.inputCursor, options.input)
-  const rows = layout.length > 0 ? layout : [{ text: '', start: 0, end: 0 }]
+  const hardRows = Math.max(1, options.input.split('\n').length)
+  const maxBodyRows = Math.max(1, options.maxBodyRows ?? hardRows)
+  const pageSize = Math.max(1, Math.min(layout.length, hardRows, maxBodyRows))
+  const maxStart = Math.max(0, layout.length - pageSize)
+  let viewportStart = Math.max(0, Math.min(Math.trunc(options.viewportStart ?? 0), maxStart))
+  if (caret.row < viewportStart) viewportStart = caret.row
+  if (caret.row >= viewportStart + pageSize) viewportStart = caret.row - pageSize + 1
+  viewportStart = Math.max(0, Math.min(viewportStart, maxStart))
+  const rows = layout.slice(viewportStart, viewportStart + pageSize)
+  const hiddenAbove = viewportStart
+  const hiddenBelow = Math.max(0, layout.length - viewportStart - rows.length)
 
   const lines = [top]
   for (let i = 0; i < rows.length; i += 1) {
     const text = rows[i]?.text ?? ''
     const hint = options.inlineHint
-    const atCaretEnd = i === caret.row && caret.column >= visibleWidth(text)
+    const sourceRow = viewportStart + i
+    const atCaretEnd = sourceRow === caret.row && caret.column >= visibleWidth(text)
     let body = options.paintInput?.(text, rows[i]?.start ?? 0) ?? text
     if (atCaretEnd && hint !== undefined && hint !== '') {
       const budget = Math.max(0, contentWidth - visibleWidth(text))
@@ -279,7 +295,12 @@ export function renderEditor(options: EditorOptions, theme: Theme): EditorFrame 
     }
     const linePad = padding(Math.max(0, contentWidth - visibleWidth(body)))
     const left = border(BOX.vertical) + padding(padX)
-    const right = padding(padX) + border(BOX.vertical)
+    const rightMarker = i === 0 && hiddenAbove > 0
+      ? '↑'
+      : i === rows.length - 1 && hiddenBelow > 0
+        ? '↓'
+        : BOX.vertical
+    const right = padding(padX) + border(rightMarker)
     lines.push(left + body + linePad + right)
   }
   const bottomLeft = border(BOX.bottomLeft + h.repeat(padX))
@@ -288,7 +309,8 @@ export function renderEditor(options: EditorOptions, theme: Theme): EditorFrame 
 
   return {
     lines,
-    cursor: { row: 1 + caret.row, column: 2 + caret.column },
+    cursor: { row: 1 + caret.row - viewportStart, column: 2 + caret.column },
+    scroll: { start: viewportStart, maxStart, pageSize, hiddenAbove, hiddenBelow },
   }
 }
 

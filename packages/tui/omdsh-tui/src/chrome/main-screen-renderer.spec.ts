@@ -34,7 +34,7 @@ class Emulator {
   write(chunk: string): void {
     this.captured += chunk
     this.writeCount += 1
-    const tokens = chunk.match(/\x1b\[[?0-9;]*[ -/]*[@-~]|\r\n|\r|\n|[^\r\n\x1b]+/g) ?? []
+    const tokens = chunk.match(/\x1b\][^\x1b]*(?:\x1b\\)|\x1b\[[?0-9;]*[ -/]*[@-~]|\r\n|\r|\n|[^\r\n\x1b]+/g) ?? []
     for (let i = 0; i < tokens.length; i += 1) {
       const token = tokens[i]!
       if (token === '\r\n' || token === '\n') {
@@ -49,6 +49,8 @@ class Emulator {
         if (cr) this.col = 0
       } else if (token === '\r') {
         this.col = 0
+      } else if (token.startsWith('\x1b]')) {
+        continue
       } else if (token.startsWith('\x1b[')) {
         const final = token[token.length - 1]!
         const inner = token.slice(2, -1)
@@ -157,6 +159,21 @@ describe('MainScreenRenderer', () => {
     const appendOutput = emu.captured.slice(beforeAppend)
     expect(appendOutput).not.toContain('\x1b[2J')
     expect(appendOutput).not.toContain('\x1b[3J')
+  })
+
+  it('emits one host scrollbar mark per assistant logical row', () => {
+    const emu = new Emulator(5)
+    const renderer = new MainScreenRenderer(emu, { width: 80, height: 5, synchronized: false })
+    const marked: Frame = {
+      ...frame(['user', 'assistant', 'composer'], 2),
+      scrollbarMarks: [1],
+    }
+
+    renderer.render(marked)
+    renderer.render(marked)
+
+    expect(emu.captured.match(/\x1b\]16164;assistant\x1b\\/gu)).toHaveLength(1)
+    expect(emu.visible()).toEqual(['', '', 'user', 'assistant', 'composer'])
   })
 
   it('does not rewrite committed rows on subsequent renders', () => {

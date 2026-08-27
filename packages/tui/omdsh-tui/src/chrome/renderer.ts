@@ -44,6 +44,10 @@ export interface Frame {
   transcript?: TranscriptScroll
   /** Full-screen prompt review document scroll state, when one is active. */
   promptDocument?: { start: number; maxStart: number; pageSize: number }
+  /** Internal composer viewport when a draft exceeds its newline-driven height. */
+  composer?: { start: number; maxStart: number; pageSize: number; hiddenAbove: number; hiddenBelow: number }
+  /** Logical assistant-answer rows exposed as terminal overview-ruler marks. */
+  scrollbarMarks?: readonly number[]
   /** First line that is still live/mutable for main-screen scrollback; rows before this are committed. */
   liveStart?: number
   /** True when the live region must stay in the viewport instead of scrolling as frozen snapshots. */

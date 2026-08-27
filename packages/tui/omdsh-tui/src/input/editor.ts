@@ -26,6 +26,14 @@ export type EditorCommand =
 interface Snapshot {
   text: string
   cursor: number
+  selectionAnchor: number | null
+}
+
+export interface EditorSelection {
+  anchor: number
+  head: number
+  start: number
+  end: number
 }
 
 /** Emacs-style kill ring (consecutive kills accumulate). */
@@ -109,6 +117,7 @@ function moveLine(text: string, cursor: number, dir: -1 | 1): number | undefined
 export class InputEditor {
   #text = ''
   #cursor = 0
+  #selectionAnchor: number | null = null
   #undo: Snapshot[] = []
   #last: 'none' | 'kill' | 'yank' | 'insert' = 'none'
   readonly #kills = new KillRing()
@@ -123,19 +132,45 @@ export class InputEditor {
     return this.#cursor
   }
 
-  /** Replace the buffer (history recall). Clears undo. */
+  get selection(): EditorSelection | null {
+    const anchor = this.#selectionAnchor
+    if (anchor === null || anchor === this.#cursor) return null
+    return {
+      anchor,
+      head: this.#cursor,
+      start: Math.min(anchor, this.#cursor),
+      end: Math.max(anchor, this.#cursor),
+    }
+  }
+
+  /** Replace the buffer (history recall). Clears undo and selection. */
   setText(text: string, cursor = text.length): void {
     this.#text = text
     this.#cursor = Math.max(0, Math.min(cursor, text.length))
+    this.#selectionAnchor = null
     this.#undo = []
     this.#last = 'none'
     this.#yankLen = 0
     this.#jump = null
   }
 
-  /** Move the caret without changing text or undo. */
+  /** Move the caret without changing text or undo, clearing selection. */
   setCursor(cursor: number): void {
     this.#cursor = Math.max(0, Math.min(cursor, this.#text.length))
+    this.#selectionAnchor = null
+    this.#last = 'none'
+  }
+
+  /** Select a buffer range, with `head` becoming the active caret. */
+  setSelection(anchor: number, head: number): void {
+    this.#selectionAnchor = Math.max(0, Math.min(anchor, this.#text.length))
+    this.#cursor = Math.max(0, Math.min(head, this.#text.length))
+    if (this.#selectionAnchor === this.#cursor) this.#selectionAnchor = null
+    this.#last = 'none'
+  }
+
+  clearSelection(): void {
+    this.#selectionAnchor = null
     this.#last = 'none'
   }
 
@@ -145,6 +180,7 @@ export class InputEditor {
     this.#pushUndo()
     this.#text = ''
     this.#cursor = 0
+    this.#selectionAnchor = null
     this.#last = 'none'
   }
 
@@ -197,6 +233,10 @@ export class InputEditor {
         return this.#vertical(-1)
       case 'down':
         return this.#vertical(1)
+      case 'shift+up':
+        return { kind: 'historyPrev' }
+      case 'shift+down':
+        return { kind: 'historyNext' }
       case 'left':
       case 'ctrl+b':
         return this.#moveTo(this.#cursor - 1)
@@ -204,8 +244,10 @@ export class InputEditor {
       case 'ctrl+f':
         return this.#moveTo(this.#cursor + 1)
       case 'home':
-      case 'ctrl+a':
         return this.#moveTo(lineStart(this.#text, this.#cursor))
+      case 'ctrl+a':
+        this.setSelection(0, this.#text.length)
+        return { kind: 'changed' }
       case 'end':
       case 'ctrl+e':
         return this.#moveTo(lineEnd(this.#text, this.#cursor))
@@ -261,12 +303,16 @@ export class InputEditor {
 
   #vertical(dir: -1 | 1): EditorCommand {
     const next = moveLine(this.#text, this.#cursor, dir)
-    if (next === undefined) return dir < 0 ? { kind: 'historyPrev' } : { kind: 'historyNext' }
+    if (next === undefined) {
+      this.clearSelection()
+      return { kind: 'changed' }
+    }
     return this.#moveTo(next)
   }
 
   #moveTo(cursor: number): EditorCommand {
     const next = Math.max(0, Math.min(this.#text.length, cursor))
+    this.#selectionAnchor = null
     if (next === this.#cursor) return { kind: 'changed' }
     this.#cursor = next
     this.#last = 'none'
@@ -274,18 +320,32 @@ export class InputEditor {
   }
 
   #pushUndo(): void {
-    this.#undo.push({ text: this.#text, cursor: this.#cursor })
+    this.#undo.push({ text: this.#text, cursor: this.#cursor, selectionAnchor: this.#selectionAnchor })
     if (this.#undo.length > MAX_UNDO) this.#undo.shift()
   }
 
   #insert(value: string): void {
     if (value === '') return
-    const coalesce = this.#last === 'insert' && value.length === 1 && value !== '\n'
+    const selection = this.selection
+    const coalesce = selection === null && this.#last === 'insert' && value.length === 1 && value !== '\n'
     if (!coalesce) this.#pushUndo()
-    this.#text = this.#text.slice(0, this.#cursor) + value + this.#text.slice(this.#cursor)
-    this.#cursor += value.length
+    if (selection === null) {
+      this.#text = this.#text.slice(0, this.#cursor) + value + this.#text.slice(this.#cursor)
+      this.#cursor += value.length
+    } else {
+      this.#text = this.#text.slice(0, selection.start) + value + this.#text.slice(selection.end)
+      this.#cursor = selection.start + value.length
+      this.#selectionAnchor = null
+    }
     this.#last = 'insert'
     this.#yankLen = 0
+  }
+
+  #deleteSelection(direction: 'forward' | 'backward'): boolean {
+    const selection = this.selection
+    if (selection === null) return false
+    this.#deleteRange(selection.start, selection.end, direction)
+    return true
   }
 
   #deleteRange(start: number, end: number, direction: 'forward' | 'backward'): void {
@@ -294,32 +354,38 @@ export class InputEditor {
     const killed = this.#text.slice(start, end)
     this.#text = this.#text.slice(0, start) + this.#text.slice(end)
     this.#cursor = start
+    this.#selectionAnchor = null
     this.#kills.push(killed, { prepend: direction === 'backward', accumulate: this.#last === 'kill' })
     this.#last = 'kill'
     this.#yankLen = 0
   }
 
   #deleteBackward(): void {
+    if (this.#deleteSelection('backward')) return
     if (this.#cursor === 0) return
     this.#deleteRange(this.#cursor - 1, this.#cursor, 'backward')
   }
 
   #deleteForward(): void {
+    if (this.#deleteSelection('forward')) return
     if (this.#cursor >= this.#text.length) return
     this.#deleteRange(this.#cursor, this.#cursor + 1, 'forward')
   }
 
   #deleteWordBackward(): void {
+    if (this.#deleteSelection('backward')) return
     if (this.#cursor === 0) return
     this.#deleteRange(moveWordLeft(this.#text, this.#cursor), this.#cursor, 'backward')
   }
 
   #deleteWordForward(): void {
+    if (this.#deleteSelection('forward')) return
     if (this.#cursor >= this.#text.length) return
     this.#deleteRange(this.#cursor, moveWordRight(this.#text, this.#cursor), 'forward')
   }
 
   #deleteToLineStart(): void {
+    if (this.#deleteSelection('backward')) return
     const start = lineStart(this.#text, this.#cursor)
     if (this.#cursor > start) {
       this.#deleteRange(start, this.#cursor, 'backward')
@@ -329,6 +395,7 @@ export class InputEditor {
   }
 
   #deleteToLineEnd(): void {
+    if (this.#deleteSelection('forward')) return
     const end = lineEnd(this.#text, this.#cursor)
     if (this.#cursor < end) {
       this.#deleteRange(this.#cursor, end, 'forward')
@@ -378,6 +445,7 @@ export class InputEditor {
     if (snap === undefined) return
     this.#text = snap.text
     this.#cursor = snap.cursor
+    this.#selectionAnchor = snap.selectionAnchor
     this.#last = 'none'
     this.#yankLen = 0
   }

@@ -536,7 +536,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('does not emit any mouse mode sequence from startup through disposal', () => {
+  it('keeps native mouse selection and restores enhanced keyboard modes', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
     tui.dispose()
@@ -544,6 +544,8 @@ describe('LocalTui (tty)', () => {
     expect(term.captured).not.toContain('\x1b[?1006h')
     expect(term.captured).not.toContain('\x1b[?1000l')
     expect(term.captured).not.toContain('\x1b[?1006l')
+    expect(term.captured).toContain('\x1b[>4;2m')
+    expect(term.captured).toContain('\x1b[>4m')
     expect(term.captured).toContain('\x1b[?2004l')
     expect(term.raw).toBe(false)
     expect(term.destroyed).toBe(true)
@@ -864,12 +866,12 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('restores the newest queued line into an empty composer with up arrow', async () => {
+  it('restores the newest queued line into an empty composer with shift+up', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
     press(term, 'first queued\rsecond queued\r')
     expect(stripAnsi(term.captured)).toContain('Queued · 2')
-    press(term, '\x1b[A')
+    press(term, '\x1b[1;2A')
     const restored = stripAnsi(term.captured)
     expect(restored).toContain('│ Queued · first queued')
     expect(restored).toContain('second queued')
@@ -878,12 +880,12 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('walks backward through queued lines with repeated up arrows without reordering them', async () => {
+  it('walks backward through queued lines with repeated shift+up without reordering them', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
     press(term, 'first queued\rsecond queued\rthird queued\r')
 
-    press(term, '\x1b[A\x1b[A!\r')
+    press(term, '\x1b[1;2A\x1b[1;2A!\r')
 
     expect(await tui.readline()).toBe('first queued')
     expect(await tui.readline()).toBe('second queued!')
@@ -891,7 +893,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('recalls history with the up arrow', async () => {
+  it('recalls history with shift+up while plain up remains caret motion', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
     const first = tui.readline()
@@ -899,6 +901,8 @@ describe('LocalTui (tty)', () => {
     await first
     void tui.readline()
     press(term, '\x1b[A')
+    expect(emulatedScreenRows(term.captured).map(stripAnsi).join('\n')).not.toContain('│ one')
+    press(term, '\x1b[1;2A')
     expect(term.captured).toContain('one')
     expect(term.captured).toContain('╰─')
     tui.dispose()
@@ -979,7 +983,7 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('requests editing the latest durable follow-up when Up is pressed in an empty composer', async () => {
+  it('requests editing the latest durable follow-up when Shift+Up is pressed in an empty composer', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
     const pending = tui.readline()
@@ -994,7 +998,7 @@ describe('LocalTui (tty)', () => {
       ],
     }, 2))
 
-    press(term, '\x1b[A')
+    press(term, '\x1b[1;2A')
 
     expect(edits).toBe(1)
     off()
@@ -1034,7 +1038,7 @@ describe('LocalTui (tty)', () => {
       tui.resolveQueueEdit({ text, images: [] })
     })
 
-    press(term, '\x1b[A\x1b[A!\r')
+    press(term, '\x1b[1;2A\x1b[1;2A!\r')
 
     expect(edits).toBe(2)
     expect(await tui.readline()).toBe('second durable!')
@@ -1253,16 +1257,17 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('moves to line start and end with ctrl+a / ctrl+e', () => {
+  it('selects the whole composer with ctrl+a and replaces it on input', () => {
     const term = new FakeTerminal()
-    const tui = new LocalTui(term, 'm', false)
+    const tui = new LocalTui(term, 'm', true)
     press(term, 'hello')
     press(term, '\x01')
+    expect(term.captured).toContain('\x1b[7mhello')
     press(term, 'X')
-    expect(term.captured).toContain('Xhello')
     press(term, '\x05')
     press(term, '!')
-    expect(term.captured).toContain('Xhello!')
+    expect(stripAnsi(term.captured)).toContain('X!')
+    expect(stripAnsi(term.captured)).not.toContain('Xhello')
     tui.dispose()
   })
 
@@ -1272,6 +1277,29 @@ describe('LocalTui (tty)', () => {
     press(term, 'hello world')
     press(term, '\x17')
     expect(term.captured).toContain('hello')
+    tui.dispose()
+  })
+
+  it('moves up and down by visible wrapped rows without recalling history', async () => {
+    const term = new FakeTerminal()
+    term.columns = 12
+    const tui = new LocalTui(term, 'm', false)
+    const pending = tui.readline()
+    press(term, 'abcdefghijklmnop')
+    press(term, '\x1b[A')
+    press(term, 'X\r')
+    expect(await pending).toBe('abcdefghXijklmnop')
+    tui.dispose()
+  })
+
+  it('inserts a newline with shift+enter and submits the multiline buffer', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const pending = tui.readline()
+    press(term, 'one')
+    press(term, '\x1b[13;2u')
+    press(term, 'two\r')
+    expect(await pending).toBe('one\ntwo')
     tui.dispose()
   })
 
@@ -1487,7 +1515,7 @@ describe('LocalTui (tty)', () => {
     press(term, '[Image #1] /goal literal\r')
     await first
     void tui.readline()
-    press(term, '\x1b[A')
+    press(term, '\x1b[1;2A')
     expect(emulatedScreenRows(term.captured).map(stripAnsi).join('\n')).toContain('[Image #1] /goal literal')
     tui.dispose()
   })
@@ -1503,7 +1531,7 @@ describe('LocalTui (tty)', () => {
     press(term, 'see [Image #2] notes\r')
     await pending
     void tui.readInput()
-    press(term, '\x1b[A')
+    press(term, '\x1b[1;2A')
     const screen = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
     expect(screen).toContain('[Image #2] notes')
     expect(screen).not.toContain('[Image #1, 1x1]')
@@ -2169,6 +2197,9 @@ describe('LocalTui (tty)', () => {
     expect(term.captured).not.toContain('later line')
     press(term, '\x1b[5~')
     expect(term.captured).toContain('later line')
+    const beforeDraft = term.captured.length
+    press(term, 'draft while reading history')
+    expect(stripAnsi(term.captured.slice(beforeDraft))).toContain('draft while reading history')
     const before = term.captured.length
     tui.event(ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'NEW-TAIL' }] }, 99))
     expect(term.captured.slice(before)).not.toContain('NEW-TAIL')
@@ -2356,14 +2387,20 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('scrolls a few lines with shift+up', () => {
+  it('reserves shift+up for sent-prompt history instead of transcript scroll', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
+    const submitted = tui.readline()
+    press(term, 'saved prompt\r')
+    await submitted
+    void tui.readline()
     for (let i = 0; i < 16; i += 1) {
       tui.event(ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'row-' + i }] }, i))
     }
+    const before = term.captured.length
     press(term, '\x1b[1;2A')
-    expect(term.captured).toContain('later line')
+    expect(stripAnsi(term.captured.slice(before))).toContain('saved prompt')
+    expect(stripAnsi(term.captured.slice(before))).not.toContain('later line')
     tui.dispose()
   })
 
