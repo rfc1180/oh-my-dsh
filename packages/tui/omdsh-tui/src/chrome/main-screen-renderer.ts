@@ -36,10 +36,23 @@ const CLEAR_SCROLLBACK = '\x1b[3J'
 const CLEAR_SCREEN = '\x1b[2J\x1b[H'
 const CLEAR_LINE = '\x1b[2K'
 const ASSISTANT_SCROLLBAR_MARK = '\x1b]16164;assistant\x1b\\'
-const EmptyScrollbarMarks: ReadonlySet<number> = new Set()
+const EmptyScrollbarMarks: readonly number[] = []
 
 function csi(row: number, column: number): string {
   return `\x1b[${Math.max(1, row + 1)};${Math.max(1, column + 1)}H`
+}
+
+function includesSorted(rows: readonly number[], target: number): boolean {
+  let low = 0
+  let high = rows.length - 1
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    const value = rows[middle]
+    if (value === target) return true
+    if (value === undefined || value > target) high = middle - 1
+    else low = middle + 1
+  }
+  return false
 }
 
 export interface MainScreenRendererOptions {
@@ -105,8 +118,7 @@ export class MainScreenRenderer {
   #writeBlocked = false
   #pendingFrame: Frame | undefined
   #frameMarkOffset = 0
-  #frameMarks: ReadonlySet<number> = EmptyScrollbarMarks
-  #markSets = new WeakMap<readonly number[], ReadonlySet<number>>()
+  #frameMarks: readonly number[] = EmptyScrollbarMarks
   #emittedMarks = new Set<number>()
   #finished = false
 
@@ -199,12 +211,7 @@ export class MainScreenRenderer {
       this.#frameMarks = EmptyScrollbarMarks
     } else {
       this.#frameMarkOffset = marks.offset
-      let markSet = this.#markSets.get(marks.rows)
-      if (markSet === undefined) {
-        markSet = new Set(marks.rows)
-        this.#markSets.set(marks.rows, markSet)
-      }
-      this.#frameMarks = markSet
+      this.#frameMarks = marks.rows
     }
     const cursor = frame.cursor ?? { row: next.length, column: 0 }
     const cursorVisible = frame.cursorVisible !== false
@@ -413,7 +420,7 @@ export class MainScreenRenderer {
   }
 
   #emitMark(logical: number): string {
-    if (!this.#frameMarks.has(logical - this.#frameMarkOffset) || this.#emittedMarks.has(logical)) return ''
+    if (!includesSorted(this.#frameMarks, logical - this.#frameMarkOffset) || this.#emittedMarks.has(logical)) return ''
     this.#emittedMarks.add(logical)
     return ASSISTANT_SCROLLBAR_MARK
   }
