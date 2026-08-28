@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep Markdown tables compact at normal widths, honor column alignment, and switch crowded multi-column tables to a lossless responsive record layout instead of crushing words into unreadable cells.
 - Request enhanced terminal key reporting so Shift+Enter reliably creates readable paragraphs, and separate user prompts with restrained rules instead of gray background blocks.
 - Reconcile live terminal geometry before painting so a resize missed during startup or between terminal events cannot leave the composer and status footer above blank rows.
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first; recent-session, model-info, and skill catalogs now hydrate after the target transcript and composer are ready.

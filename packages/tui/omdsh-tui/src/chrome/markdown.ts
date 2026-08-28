@@ -325,6 +325,62 @@ function flowLines(token: Token, theme: Theme, width: number, style?: MarkdownSt
   return renderBlock(token, theme, width, 0, style)
 }
 
+type TableAlignment = 'center' | 'left' | 'right' | null
+
+function padAligned(text: string, width: number, alignment: TableAlignment): string {
+  const missing = Math.max(0, width - visibleWidth(text))
+  if (alignment === 'right') return ' '.repeat(missing) + text
+  if (alignment === 'center') {
+    const left = Math.floor(missing / 2)
+    return ' '.repeat(left) + text + ' '.repeat(missing - left)
+  }
+  return text + ' '.repeat(missing)
+}
+
+function renderResponsiveTable(
+  header: readonly string[],
+  rows: readonly (readonly string[])[],
+  theme: Theme,
+  width: number,
+): string[] {
+  const innerWidth = Math.max(1, width - 4)
+  const labelWidth = Math.max(4, ...header.map(visibleWidth))
+  const sideBySide = innerWidth >= labelWidth + 14
+  const valueWidth = Math.max(1, innerWidth - labelWidth - 2)
+  const v = theme.fg('borderMuted', BOX.vertical)
+  const rule = (left: string, right: string, index?: number): string => {
+    const label = index === undefined ? '' : ` ${index + 1} `
+    return theme.fg('borderMuted', left + label + BOX.horizontal.repeat(Math.max(0, width - 2 - visibleWidth(label))) + right)
+  }
+  const lines: string[] = []
+  const records: readonly (readonly string[])[] = rows.length === 0 ? [[]] : rows
+  for (let rowIndex = 0; rowIndex < records.length; rowIndex += 1) {
+    lines.push(rule(rowIndex === 0 ? BOX.topLeft : BOX.teeRight, rowIndex === 0 ? BOX.topRight : BOX.teeLeft, rowIndex))
+    const row = records[rowIndex] ?? []
+    for (let col = 0; col < header.length; col += 1) {
+      if (!sideBySide) {
+        for (const label of wrapText(header[col] ?? '', innerWidth)) {
+          lines.push(v + ' ' + padToWidth(theme.bold(label), innerWidth) + ' ' + v)
+        }
+        const indentedWidth = Math.max(1, innerWidth - 2)
+        for (const value of wrapText(row[col] ?? '', indentedWidth)) {
+          lines.push(v + '   ' + padToWidth(value, indentedWidth) + ' ' + v)
+        }
+        continue
+      }
+      const label = padToWidth(header[col] ?? '', labelWidth)
+      const wrapped = wrapText(row[col] ?? '', valueWidth)
+      for (let part = 0; part < wrapped.length; part += 1) {
+        const key = part === 0 ? theme.bold(label) : ' '.repeat(labelWidth)
+        const value = padToWidth(wrapped[part] ?? '', valueWidth)
+        lines.push(v + ' ' + key + '  ' + value + ' ' + v)
+      }
+    }
+  }
+  lines.push(rule(BOX.bottomLeft, BOX.bottomRight))
+  return lines
+}
+
 function renderTable(token: Tokens.Table, theme: Theme, width: number): string[] {
   const header = token.header.map(cell => theme.bold(renderInlineTokens(cell.tokens, theme)))
   const rows = token.rows.map(row => row.map(cell => renderInlineTokens(cell.tokens, theme)))
@@ -339,6 +395,7 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     ]
     return raw.flatMap(line => wrapStyled(theme.fg('dim', line), width))
   }
+  if (cols >= 3 && available < cols * 10) return renderResponsiveTable(header, rows, theme, width)
 
   const natural = Array.from({ length: cols }, (_, i) => {
     let max = visibleWidth(header[i] ?? '')
@@ -390,6 +447,10 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     }
   }
 
+  const alignments = Array.from({ length: cols }, (_, i): TableAlignment => {
+    const alignment = token.align[i]
+    return alignment === 'center' || alignment === 'right' ? alignment : 'left'
+  })
   const h = BOX.horizontal
   const v = theme.fg('borderMuted', BOX.vertical)
   const join = (left: string, fill: string[], mid: string, right: string): string =>
@@ -401,7 +462,7 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     for (let row = 0; row < height; row += 1) {
       const parts = cells.map((parts, i) => {
         const text = parts[row] ?? ''
-        const padded = padToWidth(text, widths[i] ?? 1)
+        const padded = padAligned(text, widths[i] ?? 1, alignments[i] ?? 'left')
         return emphasize ? theme.bold(padded) : padded
       })
       out.push(v + ' ' + parts.join(' ' + v + ' ') + ' ' + v)
@@ -415,13 +476,7 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     ...paintRow(header.map((cell, i) => wrapCell(cell, i)), true),
     join(BOX.teeRight, fills, BOX.cross, BOX.teeLeft),
   ]
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex] ?? []
-    lines.push(...paintRow(row.map((cell, i) => wrapCell(cell, i)), false))
-    if (rowIndex < rows.length - 1) {
-      lines.push(join(BOX.teeRight, fills, BOX.cross, BOX.teeLeft))
-    }
-  }
+  for (const row of rows) lines.push(...paintRow(row.map((cell, i) => wrapCell(cell, i)), false))
   lines.push(join(BOX.bottomLeft, fills, BOX.teeUp, BOX.bottomRight))
   return lines
 }

@@ -78,6 +78,33 @@ describe('renderMarkdown', () => {
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(24)
   })
 
+  it('uses a readable record layout instead of crushing wide tables into narrow columns', () => {
+    const lines = renderMarkdown(
+      '| Область | Что сделали | Статус |\n| --- | --- | ---: |\n| Многострочный ввод | Shift+Enter создаёт новый абзац | ✅ |',
+      theme,
+      25,
+    )
+    const text = lines.map(stripAnsi).join('\n')
+    expect(text).toContain('╭ 1 ')
+    expect(text).toContain('Что сделали')
+    expect(text).toContain('Shift+Enter')
+    expect(text).not.toContain('…')
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(25)
+  })
+
+  it('keeps long tables compact and honors column alignment', () => {
+    const lines = renderMarkdown(
+      '| Name | Value |\n| :--- | ---: |\n| first | 12 |\n| second | 3 |\n| third | 900 |',
+      theme,
+      32,
+    )
+    const text = lines.map(stripAnsi).join('\n')
+    expect(text.match(/^├/gmu) ?? []).toHaveLength(1)
+    expect(text).toMatch(/│ first\s+│\s+12 │/u)
+    expect(text).toMatch(/│ second\s+│\s+3 │/u)
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(32)
+  })
+
   it('normalizes HTML and renders inline/block math', () => {
     const text = plain('<p>Hello<br>world &amp; friends</p>\n$x^2 \\le 4$\n$$\n\\sum x^2\n$$')
     expect(text).toContain('Hello\nworld & friends')
