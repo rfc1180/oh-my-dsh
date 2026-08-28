@@ -92,14 +92,44 @@ describe('renderMarkdown', () => {
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(25)
   })
 
-  it('keeps long tables compact and honors column alignment', () => {
+  it('preserves every cell across width and column-count boundaries', () => {
+    for (const width of [12, 16, 24, 40, 80]) {
+      for (const columns of [2, 3, 8]) {
+        const headers = Array.from({ length: columns }, (_, index) => `H${index + 1}`)
+        const values = Array.from({ length: columns }, (_, index) => `v${index + 1}`)
+        const source = `| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |\n| ${values.join(' | ')} |`
+        const lines = renderMarkdown(source, theme, width)
+        const text = lines.map(stripAnsi).join('\n')
+        for (const value of [...headers, ...values]) expect(text).toContain(value)
+        expect(text).not.toContain('…')
+        for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+      }
+    }
+  })
+
+  it('fits wide glyphs in narrow two-column tables', () => {
+    const lines = renderMarkdown('| A | B |\n| --- | --- |\n| ✅ | 漢 |', theme, 9)
+    const text = lines.map(stripAnsi).join('\n')
+    expect(text).toContain('✅')
+    expect(text).toContain('漢')
+    expect(text).not.toContain('…')
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(9)
+  })
+
+  it('does not invent a record for a header-only responsive table', () => {
+    const text = plain('| Long header | Other header | Third header |\n| --- | --- | --- |', 20)
+    expect(text).toContain('Long header')
+    expect(text).not.toContain('╭ 1 ')
+  })
+
+  it('keeps long tables aligned and preserves clear row boundaries', () => {
     const lines = renderMarkdown(
       '| Name | Value |\n| :--- | ---: |\n| first | 12 |\n| second | 3 |\n| third | 900 |',
       theme,
       32,
     )
     const text = lines.map(stripAnsi).join('\n')
-    expect(text.match(/^├/gmu) ?? []).toHaveLength(1)
+    expect(text.match(/^├/gmu) ?? []).toHaveLength(3)
     expect(text).toMatch(/│ first\s+│\s+12 │/u)
     expect(text).toMatch(/│ second\s+│\s+3 │/u)
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(32)

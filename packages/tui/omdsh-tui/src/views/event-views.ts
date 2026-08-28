@@ -713,6 +713,15 @@ function cachedStableAssistantMarkdown(
   return lines
 }
 
+function hasCompleteMarkdownTableHeader(source: string): boolean {
+  const lines = source.split('\n')
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!(lines[index] ?? '').includes('|')) continue
+    if (/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/u.test(lines[index + 1] ?? '')) return true
+  }
+  return false
+}
+
 function isAppendStablePlainParagraph(source: string): boolean {
   if (source.includes('\n') || /[*_`~#[\]<>|\\]/u.test(source)) return false
   return !/^\s*(?:[-+>]|\d+[.)])\s/u.test(source)
@@ -727,13 +736,19 @@ function assistantProgressiveLines(
 ): ProgressiveAssistantLines {
   const prefixEnd = stableMarkdownPrefixEnd(source)
   if (prefixEnd === 0) {
-    const lines = assistantStreamingLines(source, theme, width, style)
+    const lines = hasCompleteMarkdownTableHeader(source)
+      ? assistantMarkdown(source, theme, width, style)
+      : assistantStreamingLines(source, theme, width, style)
     const stablePrefixLines = isAppendStablePlainParagraph(source) ? Math.max(0, lines.length - 1) : 0
     return { lines, stablePrefixLines }
   }
   const stable = cachedStableAssistantMarkdown(source.slice(0, prefixEnd), theme, width, style)
   const activeSource = source.slice(prefixEnd)
-  const active = activeSource === '' ? [] : assistantStreamingLines(activeSource, theme, width, style)
+  const active = activeSource === ''
+    ? []
+    : hasCompleteMarkdownTableHeader(activeSource)
+      ? assistantMarkdown(activeSource, theme, width, style)
+      : assistantStreamingLines(activeSource, theme, width, style)
   return { lines: [...stable, ...active], stablePrefixLines: stable.length }
 }
 

@@ -687,6 +687,30 @@ describe('blockLines', () => {
     expect(settled).not.toContain('**bold**')
   })
 
+  it('renders a completed table header richly while its final row is still streaming', () => {
+    const source = '| Name | Value |\n| --- | ---: |\n| alpha | 12 |'
+    const streaming = blockLines({
+      kind: 'assistant',
+      turn: 1,
+      step: 1,
+      text: source,
+      reasoning: '',
+      streaming: true,
+    }, theme, 40).map(stripAnsi).join('\n')
+    const settled = blockLines({
+      kind: 'assistant',
+      turn: 1,
+      step: 1,
+      text: source,
+      reasoning: '',
+      streaming: false,
+    }, theme, 40).map(stripAnsi).join('\n')
+
+    expect(streaming).toContain('╭')
+    expect(streaming).not.toContain('| --- |')
+    expect(streaming).toBe(settled)
+  })
+
   it('does not freeze a blank line inside an open Markdown fence', () => {
     const streaming = blockLines({
       kind: 'assistant',

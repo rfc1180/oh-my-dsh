@@ -6,7 +6,7 @@
 
 import { Lexer, Marked, type Token, type Tokens, type TokenizerAndRendererExtension } from 'marked'
 import { BOX, SYMBOL, type Theme, type ThemeColor } from './theme.ts'
-import { padToWidth, visibleWidth, wrapText } from './width.ts'
+import { padToWidth, stripAnsi, visibleWidth, wrapText } from './width.ts'
 
 /** Optional surrounding style restored after inline code and emphasis. */
 export interface MarkdownStyle {
@@ -353,10 +353,17 @@ function renderResponsiveTable(
     return theme.fg('borderMuted', left + label + BOX.horizontal.repeat(Math.max(0, width - 2 - visibleWidth(label))) + right)
   }
   const lines: string[] = []
-  const records: readonly (readonly string[])[] = rows.length === 0 ? [[]] : rows
-  for (let rowIndex = 0; rowIndex < records.length; rowIndex += 1) {
+  if (rows.length === 0) {
+    lines.push(rule(BOX.topLeft, BOX.topRight))
+    for (const cell of header) {
+      for (const label of wrapText(cell, innerWidth)) lines.push(v + ' ' + padToWidth(label, innerWidth) + ' ' + v)
+    }
+    lines.push(rule(BOX.bottomLeft, BOX.bottomRight))
+    return lines
+  }
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     lines.push(rule(rowIndex === 0 ? BOX.topLeft : BOX.teeRight, rowIndex === 0 ? BOX.topRight : BOX.teeLeft, rowIndex))
-    const row = records[rowIndex] ?? []
+    const row = rows[rowIndex] ?? []
     for (let col = 0; col < header.length; col += 1) {
       if (!sideBySide) {
         for (const label of wrapText(header[col] ?? '', innerWidth)) {
@@ -388,47 +395,35 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
   if (cols === 0) return []
   const borderOverhead = 3 * cols + 1
   const available = width - borderOverhead
-  if (available < cols) {
-    const raw = [
-      '| ' + token.header.map(cell => cell.text).join(' | ') + ' |',
-      ...token.rows.map(row => '| ' + row.map(cell => cell.text).join(' | ') + ' |'),
-    ]
-    return raw.flatMap(line => wrapStyled(theme.fg('dim', line), width))
-  }
-  if (cols >= 3 && available < cols * 10) return renderResponsiveTable(header, rows, theme, width)
-
+  const longestWord = (text: string): number => Math.max(
+    1,
+    ...text.split(/\s+/u).filter(Boolean).map(word => visibleWidth(word)),
+  )
+  const widestGlyph = (text: string): number => Math.max(
+    1,
+    ...[...stripAnsi(text)].map(glyph => visibleWidth(glyph)),
+  )
   const natural = Array.from({ length: cols }, (_, i) => {
     let max = visibleWidth(header[i] ?? '')
     for (const row of rows) max = Math.max(max, visibleWidth(row[i] ?? ''))
     return Math.max(1, max)
   })
-  const longestWord = (text: string): number => Math.min(
-    30,
-    Math.max(1, ...text.split(/\s+/u).filter(Boolean).map(word => visibleWidth(word))),
-  )
-  let minimums = Array.from({ length: cols }, (_, i) => {
-    let max = longestWord(header[i] ?? '')
-    for (const row of rows) max = Math.max(max, longestWord(row[i] ?? ''))
-    return max
+  const minimums = Array.from({ length: cols }, (_, i) => {
+    const cells = [header[i] ?? '', ...rows.map(row => row[i] ?? '')]
+    return Math.max(
+      4,
+      ...cells.map(widestGlyph),
+      Math.min(10, Math.max(...cells.map(longestWord))),
+    )
   })
-  let minimumTotal = minimums.reduce((total, value) => total + value, 0)
-  if (minimumTotal > available) {
-    const remaining = available - cols
-    const weight = minimums.reduce((total, value) => total + Math.max(0, value - 1), 0)
-    minimums = minimums.map(value => 1 + (weight > 0
-      ? Math.floor((Math.max(0, value - 1) / weight) * remaining)
-      : 0))
-    let leftover = available - minimums.reduce((total, value) => total + value, 0)
-    for (let i = 0; leftover > 0 && i < cols; i += 1, leftover -= 1) {
-      minimums[i] = (minimums[i] ?? 1) + 1
-    }
-    minimumTotal = minimums.reduce((total, value) => total + value, 0)
-  }
+  const minimumTotal = minimums.reduce((total, value) => total + value, 0)
+  if (available < minimumTotal) return renderResponsiveTable(header, rows, theme, width)
 
-  const totalNatural = natural.reduce((total, value) => total + value, 0)
-  let widths = natural.map((value, i) => Math.max(value, minimums[i] ?? 1))
-  if (totalNatural > available) {
-    const growth = natural.map((value, i) => Math.max(0, value - (minimums[i] ?? 1)))
+  const preferred = natural.map((value, i) => Math.max(value, minimums[i] ?? 1))
+  const preferredTotal = preferred.reduce((total, value) => total + value, 0)
+  let widths = [...preferred]
+  if (preferredTotal > available) {
+    const growth = preferred.map((value, i) => Math.max(0, value - (minimums[i] ?? 1)))
     const totalGrowth = growth.reduce((total, value) => total + value, 0)
     const extra = Math.max(0, available - minimumTotal)
     widths = minimums.map((value, i) => value + (totalGrowth > 0
@@ -438,7 +433,7 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     while (leftover > 0) {
       let grew = false
       for (let i = 0; i < cols && leftover > 0; i += 1) {
-        if ((widths[i] ?? 1) >= (natural[i] ?? 1)) continue
+        if ((widths[i] ?? 1) >= (preferred[i] ?? 1)) continue
         widths[i] = (widths[i] ?? 1) + 1
         leftover -= 1
         grew = true
@@ -476,7 +471,11 @@ function renderTable(token: Tokens.Table, theme: Theme, width: number): string[]
     ...paintRow(header.map((cell, i) => wrapCell(cell, i)), true),
     join(BOX.teeRight, fills, BOX.cross, BOX.teeLeft),
   ]
-  for (const row of rows) lines.push(...paintRow(row.map((cell, i) => wrapCell(cell, i)), false))
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] ?? []
+    lines.push(...paintRow(row.map((cell, i) => wrapCell(cell, i)), false))
+    if (rowIndex < rows.length - 1) lines.push(join(BOX.teeRight, fills, BOX.cross, BOX.teeLeft))
+  }
   lines.push(join(BOX.bottomLeft, fills, BOX.teeUp, BOX.bottomRight))
   return lines
 }
