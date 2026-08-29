@@ -12,6 +12,7 @@ import {
   encodeComposerImages,
   modelStatus,
   recentSessionContent,
+  recentSessionStatus,
   resolveDurableModelSelection,
   restoreSubmissionMessage,
   SessionRuntime,
@@ -279,6 +280,17 @@ describe('recentSessionContent', () => {
     ] as unknown as SessionEvent[]
 
     expect(recentSessionContent(events)).toEqual({ title: 'Only message' })
+  })
+})
+
+describe('recentSessionStatus', () => {
+  it('treats a newer open turn as interrupted even when the bounded tail contains an older completed turn', () => {
+    const events = [
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'turn/start', data: { turn: 2 } },
+    ] as unknown as SessionEvent[]
+
+    expect(recentSessionStatus(events)).toBe('interrupted')
   })
 })
 

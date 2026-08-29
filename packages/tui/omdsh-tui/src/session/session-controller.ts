@@ -46,6 +46,8 @@ import type {
   TuiInspectedSubagent,
   TuiRecentSession,
   TuiService,
+  TuiSessionManagerSource,
+  TuiSessionManagerSession,
   TuiSessionControls,
   TuiSessionStats,
   TuiSubmission,
@@ -413,13 +415,17 @@ export function recentSessionContent(events: readonly SessionEvent[]): { title: 
   }
 }
 
-function recentSessionStatus(events: readonly SessionEvent[]): TuiRecentSession['status'] {
-  const end = events.findLast(event => event.type === 'turn/end')
-  if (end?.type !== 'turn/end') return undefined
-  if (end.data.reason.kind === 'completed') return 'done'
-  if (end.data.reason.kind === 'error') return 'failed'
-  if (end.data.reason.kind === 'blocked' || end.data.reason.kind === 'max-tokens') return 'blocked'
-  return 'interrupted'
+export function recentSessionStatus(events: readonly SessionEvent[]): TuiRecentSession['status'] {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type === 'turn/start') return 'interrupted'
+    if (event?.type !== 'turn/end') continue
+    if (event.data.reason.kind === 'completed') return 'done'
+    if (event.data.reason.kind === 'error') return 'failed'
+    if (event.data.reason.kind === 'blocked' || event.data.reason.kind === 'max-tokens') return 'blocked'
+    return 'interrupted'
+  }
+  return undefined
 }
 
 /** Convert the human-visible part of a skill catalog into slash commands. */
@@ -984,6 +990,65 @@ export class SessionRuntime {
     await this.#refreshSessions(8, expected)
   }
 
+  sessionManagerSource(agent: Agent): TuiSessionManagerSource {
+    this.assertActive(agent)
+    const active = this.#requiredActive()
+    const persistence = this.#ctx.get('sessionPersistence')
+    if (persistence === undefined) throw new Error('Session persistence is not configured.')
+    const accelerated = persistence as typeof persistence & {
+      omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<TuiRecentSession[]>
+      omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<{ events: readonly SessionEvent[] } | undefined>
+    }
+    const hydrateCatalog = accelerated.omdshHydrateSessionCatalog
+    let rows: readonly TuiRecentSession[] = []
+    return {
+      activeSessionId: agent.id,
+      list: async (signal) => {
+        signal?.throwIfAborted()
+        await this.refreshAllSessions(active)
+        signal?.throwIfAborted()
+        rows = this.#recent.map(row => ({ ...row }))
+        return rows
+      },
+      ...(hydrateCatalog === undefined ? {} : {
+        hydrate: async (signal?: AbortSignal) => {
+          const hydrated = await hydrateCatalog.call(persistence, signal)
+          signal?.throwIfAborted()
+          const summaries = new Map(hydrated.map(row => [row.id, row]))
+          rows = rows.map(row => {
+            const summary = summaries.get(row.id)
+            return summary === undefined ? { ...row } : { ...row, ...summary }
+          })
+          return rows
+        },
+      }),
+      inspect: async (id, signal): Promise<TuiSessionManagerSession> => {
+        signal?.throwIfAborted()
+        const tail = await accelerated.omdshViewportTail?.(id, signal)
+        const events = tail?.events ?? (await persistence.inspect(SessionId(id), signal)).events
+        signal?.throwIfAborted()
+        const existing = rows.find(row => row.id === id)
+        const content = recentSessionContent(events)
+        const createdAt = existing?.createdAt ?? events[0]?.time ?? Date.now()
+        const status = recentSessionStatus(events)
+        const indexedTitle = existing?.title === id ? undefined : existing?.title
+        const title = indexedTitle ?? content?.title ?? id
+        const preview = content?.preview ?? (content?.title === title ? undefined : content?.title) ?? existing?.preview
+        return {
+          id,
+          title,
+          ...(preview === undefined ? {} : { preview }),
+          ...(existing?.cwd === undefined ? {} : { cwd: existing.cwd }),
+          createdAt,
+          updatedAt: events.at(-1)?.time ?? existing?.updatedAt ?? createdAt,
+          eventCount: Math.max(existing?.eventCount ?? 0, events.length),
+          ...(status === undefined ? existing?.status === undefined ? {} : { status: existing.status } : { status }),
+          events,
+        }
+      },
+    }
+  }
+
   async refreshAllSessions(expected: ActiveSession | undefined = this.#active): Promise<void> {
     const persistence = this.#ctx.get('sessionPersistence')
     const accelerated = persistence as typeof persistence & {
@@ -1037,6 +1102,7 @@ export class SessionRuntime {
         rows.push({
           id: header.id,
           ...content,
+          ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
           createdAt: header.createdAt,
           updatedAt: inspected.events.at(-1)?.time ?? header.createdAt,
           eventCount: inspected.events.length,
@@ -1044,7 +1110,12 @@ export class SessionRuntime {
         })
         if (limit !== undefined && rows.length >= limit) break
       } catch {
-        rows.push({ id: header.id, title: '(unavailable session)', createdAt: header.createdAt })
+        rows.push({
+          id: header.id,
+          title: '(unavailable session)',
+          ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+          createdAt: header.createdAt,
+        })
         if (limit !== undefined && rows.length >= limit) break
       }
     }

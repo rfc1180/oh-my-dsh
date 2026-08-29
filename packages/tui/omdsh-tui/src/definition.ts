@@ -137,10 +137,34 @@ export interface TuiRecentSession {
   id: string
   title: string
   preview?: string
+  cwd?: string
   createdAt: number
   updatedAt?: number
   eventCount?: number
   status?: 'done' | 'interrupted' | 'blocked' | 'failed'
+}
+
+/** Indexed row rendered by the full-screen durable session manager. */
+export interface TuiSessionManagerEntry extends TuiRecentSession {}
+
+/** Lazily inspected manager row with a bounded source transcript. */
+export interface TuiSessionManagerSession extends TuiSessionManagerEntry {
+  readonly events: readonly SessionEvent[]
+}
+
+/** Data source kept outside the session manager renderer. */
+export interface TuiSessionManagerSource {
+  readonly activeSessionId: string
+  list(signal?: AbortSignal): Promise<readonly TuiSessionManagerEntry[]>
+  /** Complete missing index summaries in the background after the first fast paint. */
+  hydrate?(signal?: AbortSignal): Promise<readonly TuiSessionManagerEntry[]>
+  inspect(id: string, signal?: AbortSignal): Promise<TuiSessionManagerSession>
+}
+
+/** Safe action returned by the session manager workspace. */
+export interface TuiSessionManagerResult {
+  readonly kind: 'resume'
+  readonly id: string
 }
 
 /** Event filter offered by the terminal Trajectory workspace. */
@@ -257,6 +281,8 @@ export interface TuiService {
   setTrajectorySource(source?: TuiTrajectorySource): void
   /** Open the read-only live Trajectory workspace until the human closes it. */
   openTrajectory(source: TuiTrajectorySource, options?: TuiTrajectoryOptions): Promise<void>
+  /** Browse indexed durable sessions and return one safe resume action. */
+  openSessionManager(source: TuiSessionManagerSource, signal?: AbortSignal): Promise<TuiSessionManagerResult | null>
   /** Stage a read-only durable tail while the authoritative Agent is still validating. */
   replaceViewportTail(events: readonly SessionEvent[]): void
   /** Replace the transcript atomically when a new or resumed session becomes authoritative. */

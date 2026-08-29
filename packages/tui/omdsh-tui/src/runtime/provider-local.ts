@@ -25,6 +25,8 @@ import {
   type TuiService,
   type TuiSessionControls,
   type TuiSessionStats,
+  type TuiSessionManagerResult,
+  type TuiSessionManagerSource,
   type TuiStatus,
   type TuiInputImage,
   type TuiInspectedSubagent,
@@ -113,6 +115,17 @@ import {
   setTrajectorySnapshot,
   type TrajectoryState,
 } from '../views/trajectory.ts'
+import {
+  applySessionManagerEvent,
+  createSessionManagerState,
+  renderSessionManager,
+  setSessionManagerHydrating,
+  setSessionManagerLoading,
+  setSessionManagerSessions,
+  setSessionManagerSnapshot,
+  visibleManagerSessions,
+  type SessionManagerState,
+} from '../views/session-manager.ts'
 import { loadKeybindings, type TuiAction } from '../input/keybindings-config.ts'
 import { editExternally } from '../input/external-editor.ts'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -244,6 +257,13 @@ export class LocalTui implements TuiService {
   #trajectoryAbort: AbortController | null = null
   #trajectoryRequestId = 0
   #trajectoryPoll: ReturnType<typeof setInterval> | null = null
+  #sessionManager: SessionManagerState | null = null
+  #sessionManagerSource: TuiSessionManagerSource | null = null
+  #sessionManagerResolve: ((result: TuiSessionManagerResult | null) => void) | null = null
+  #sessionManagerAbort: AbortController | null = null
+  #sessionManagerHydrateAbort: AbortController | null = null
+  #sessionManagerSignalCleanup: (() => void) | null = null
+  #sessionManagerRequestId = 0
   #pending: PendingRead | null = null
   #queuedSubmissions: TuiSubmission[] = []
   /** Newer queue entries temporarily detached while Up browses backward. */
@@ -585,7 +605,9 @@ export class LocalTui implements TuiService {
   }
 
   prompt(request: TuiPrompt): Promise<string | null> {
-    if (this.#trajectory !== null) return Promise.reject(new Error('omdsh-tui: Trajectory owns the terminal'))
+    if (this.#trajectory !== null || this.#sessionManager !== null) {
+      return Promise.reject(new Error('omdsh-tui: a full-screen workspace owns the terminal'))
+    }
     if (this.#prompt !== null) return Promise.reject(new Error('omdsh-tui: prompt already in flight'))
     if (this.#disposed || request.signal?.aborted === true) return Promise.resolve(null)
     this.#editor.setText('')
@@ -628,7 +650,7 @@ export class LocalTui implements TuiService {
     if (!this.#tty) return Promise.reject(new Error('Trajectory requires an interactive terminal'))
     if (this.#disposed) return Promise.resolve()
     if (this.#trajectory !== null) return Promise.reject(new Error('Trajectory is already open'))
-    if (this.#prompt !== null || this.#settings !== null || this.#copySelector !== null) {
+    if (this.#sessionManager !== null || this.#prompt !== null || this.#settings !== null || this.#copySelector !== null) {
       return Promise.reject(new Error('Close the current terminal overlay before opening Trajectory'))
     }
     this.#search = null
@@ -642,6 +664,29 @@ export class LocalTui implements TuiService {
     this.#trajectoryPoll = setInterval(() => { void this.#refreshTrajectory(true) }, pollMs)
     this.#trajectoryPoll.unref?.()
     return new Promise((resolve) => { this.#trajectoryResolve = resolve })
+  }
+
+  openSessionManager(source: TuiSessionManagerSource, signal?: AbortSignal): Promise<TuiSessionManagerResult | null> {
+    if (!this.#tty) return Promise.reject(new Error('Session manager requires an interactive terminal'))
+    if (this.#disposed || signal?.aborted === true) return Promise.resolve(null)
+    if (this.#sessionManager !== null) return Promise.reject(new Error('Session manager is already open'))
+    if (this.#trajectory !== null || this.#prompt !== null || this.#settings !== null || this.#copySelector !== null) {
+      return Promise.reject(new Error('Close the current terminal overlay before opening Session Manager'))
+    }
+    const pending = new Promise<TuiSessionManagerResult | null>((resolve) => { this.#sessionManagerResolve = resolve })
+    this.#search = null
+    this.#ac = null
+    this.#sessionManagerSource = source
+    this.#sessionManager = createSessionManagerState(source.activeSessionId)
+    if (signal !== undefined) {
+      const onAbort = () => this.#closeSessionManager(null)
+      signal.addEventListener('abort', onAbort, { once: true })
+      this.#sessionManagerSignalCleanup = () => signal.removeEventListener('abort', onAbort)
+    }
+    this.#deferInitialRender = false
+    this.#render()
+    void this.#refreshSessionManager(true)
+    return pending
   }
 
   replaceViewportTail(events: readonly SessionEvent[]): void {
@@ -869,6 +914,137 @@ export class LocalTui implements TuiService {
     if (render && !this.#disposed) this.#render()
   }
 
+  async #refreshSessionManager(reloadList: boolean, requestedId?: string): Promise<void> {
+    const source = this.#sessionManagerSource
+    const current = this.#sessionManager
+    if (source === null || current === null || this.#disposed) return
+    const requestId = ++this.#sessionManagerRequestId
+    this.#sessionManagerAbort?.abort()
+    const controller = new AbortController()
+    this.#sessionManagerAbort = controller
+    this.#sessionManager = setSessionManagerLoading(current, true)
+    this.#render()
+    try {
+      let next = this.#sessionManager
+      if (next === null) return
+      if (reloadList) {
+        next = setSessionManagerSessions(next, await source.list(controller.signal))
+        if (requestId !== this.#sessionManagerRequestId || controller.signal.aborted || this.#sessionManager === null) return
+      }
+      const rows = visibleManagerSessions(next)
+      if (rows.length === 0) {
+        this.#sessionManager = setSessionManagerLoading(next, false)
+        this.#sessionManagerAbort = null
+        this.#render()
+        if (reloadList) void this.#hydrateSessionManager()
+        return
+      }
+      const id = requestedId ?? rows[next.selected]!.id
+      const selected = rows.findIndex(session => session.id === id)
+      next = { ...next, ...(selected < 0 ? {} : { selected }), loading: true, error: undefined }
+      this.#sessionManager = next
+      const snapshot = await source.inspect(id, controller.signal)
+      if (requestId !== this.#sessionManagerRequestId || controller.signal.aborted || this.#sessionManager === null) return
+      this.#sessionManager = setSessionManagerSnapshot(this.#sessionManager, snapshot)
+      this.#sessionManagerAbort = null
+      this.#render()
+      if (reloadList) void this.#hydrateSessionManager()
+    } catch (error: unknown) {
+      if (requestId !== this.#sessionManagerRequestId || controller.signal.aborted || this.#sessionManager === null) return
+      this.#sessionManager = setSessionManagerLoading(
+        this.#sessionManager,
+        false,
+        error instanceof Error ? error.message : String(error),
+      )
+      this.#sessionManagerAbort = null
+      this.#render()
+    }
+  }
+
+  async #hydrateSessionManager(): Promise<void> {
+    const source = this.#sessionManagerSource
+    if (source?.hydrate === undefined || this.#sessionManager === null || this.#disposed) return
+    this.#sessionManagerHydrateAbort?.abort()
+    const controller = new AbortController()
+    this.#sessionManagerHydrateAbort = controller
+    this.#sessionManager = setSessionManagerHydrating(this.#sessionManager, true)
+    this.#render()
+    try {
+      const rows = await source.hydrate(controller.signal)
+      if (controller.signal.aborted || this.#sessionManager === null || source !== this.#sessionManagerSource) return
+      this.#sessionManager = setSessionManagerHydrating(
+        setSessionManagerSessions(this.#sessionManager, rows),
+        false,
+      )
+      this.#sessionManagerHydrateAbort = null
+      this.#render()
+    } catch {
+      if (!controller.signal.aborted && this.#sessionManager !== null) {
+        this.#sessionManager = setSessionManagerHydrating(this.#sessionManager, false)
+        this.#sessionManagerHydrateAbort = null
+        this.#render()
+      }
+    }
+  }
+
+  #applySessionManager(event: KeyEvent): void {
+    const state = this.#sessionManager
+    if (state === null) return
+    const command = applySessionManagerEvent(state, event, Math.max(1, this.#term.height() - 8))
+    if (command.kind === 'update') {
+      this.#sessionManager = command.state
+      this.#render()
+      return
+    }
+    if (command.kind === 'inspect') {
+      this.#sessionManager = command.state
+      this.#render()
+      void this.#refreshSessionManager(false, command.id)
+      return
+    }
+    if (command.kind === 'refresh') {
+      this.#sessionManager = command.state
+      this.#render()
+      void this.#refreshSessionManager(true)
+      return
+    }
+    if (command.kind === 'copy') {
+      this.#sessionManager = command.state
+      void this.#copy(command.text).catch((error: unknown) => {
+        if (this.#sessionManager === null) return
+        this.#sessionManager = setSessionManagerLoading(
+          this.#sessionManager,
+          false,
+          'Copy failed: ' + (error instanceof Error ? error.message : String(error)),
+        )
+        this.#render()
+      })
+      return
+    }
+    if (command.kind === 'resume') {
+      this.#closeSessionManager({ kind: 'resume', id: command.id })
+      return
+    }
+    if (command.kind === 'close') this.#closeSessionManager(null)
+  }
+
+  #closeSessionManager(result: TuiSessionManagerResult | null, render = true): void {
+    if (this.#sessionManager === null && this.#sessionManagerResolve === null) return
+    this.#sessionManagerRequestId += 1
+    this.#sessionManagerAbort?.abort()
+    this.#sessionManagerAbort = null
+    this.#sessionManagerHydrateAbort?.abort()
+    this.#sessionManagerHydrateAbort = null
+    this.#sessionManagerSignalCleanup?.()
+    this.#sessionManagerSignalCleanup = null
+    this.#sessionManager = null
+    this.#sessionManagerSource = null
+    const resolve = this.#sessionManagerResolve
+    this.#sessionManagerResolve = null
+    resolve?.(result)
+    if (render && !this.#disposed) this.#render()
+  }
+
   #currentSubmission(): TuiSubmission {
     return {
       text: this.#editor.text,
@@ -933,6 +1109,7 @@ export class LocalTui implements TuiService {
       clearInterval(this.#hostTelemetryHeartbeat)
       this.#hostTelemetryHeartbeat = null
     }
+    this.#closeSessionManager(null, false)
     this.#closeTrajectory(false)
     this.#trajectorySource = null
     if (this.#tty) {
@@ -1056,17 +1233,27 @@ export class LocalTui implements TuiService {
     const renderState = deferStreamBlocks
       ? { ...this.#state, blocks: this.#renderedBlocks }
       : this.#state
+    const theme = createTheme(this.#colors, this.#trueColor, this.#themeName)
     const frame = this.#tty
-      ? this.#trajectory !== null
-        ? renderTrajectory(
-          this.#trajectory,
-          createTheme(this.#colors, this.#trueColor, this.#themeName),
+      ? this.#sessionManager !== null
+        ? renderSessionManager(
+          this.#sessionManager,
+          theme,
           width,
           this.#term.height(),
           APP_NAME,
           this.#spinner,
         )
-        : renderView(renderState, {
+        : this.#trajectory !== null
+          ? renderTrajectory(
+            this.#trajectory,
+            theme,
+            width,
+            this.#term.height(),
+            APP_NAME,
+            this.#spinner,
+          )
+          : renderView(renderState, {
         width,
         height: this.#term.height(),
         model: this.#model,
@@ -1116,7 +1303,7 @@ export class LocalTui implements TuiService {
     this.#promptDocument = frame.promptDocument
     if (frame.composer !== undefined) this.#composerStart = frame.composer.start
     this.#syncScroll(frame.transcript)
-    if (this.#trajectory === null) {
+    if (this.#trajectory === null && this.#sessionManager === null) {
       const assistantStreaming = this.#state.blocks.some(block => block.kind === 'assistant' && block.streaming)
       const pendingSpan = frame.livePinned === true
         ? frame.lines.length - (frame.liveStart ?? frame.lines.length)
@@ -1130,7 +1317,7 @@ export class LocalTui implements TuiService {
     }
     this.#renderer.render(frame)
     this.#publishHostTelemetry()
-    if (!deferStreamBlocks && this.#trajectory === null) {
+    if (!deferStreamBlocks && this.#trajectory === null && this.#sessionManager === null) {
       this.#renderedBlocks = this.#state.blocks
     }
   }
@@ -1400,6 +1587,10 @@ export class LocalTui implements TuiService {
         return
       }
       if (event.type !== 'key' || event.id !== 'ctrl+c') return
+    }
+    if (this.#sessionManager !== null) {
+      this.#applySessionManager(event)
+      return
     }
     if (this.#trajectory !== null) {
       this.#applyTrajectory(event)
