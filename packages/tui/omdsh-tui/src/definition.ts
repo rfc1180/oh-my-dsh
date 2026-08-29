@@ -272,8 +272,8 @@ export interface TuiSessionManagerResult {
   readonly id: string
 }
 
-/** Event filter offered by the terminal Trajectory workspace. */
-export type TuiTrajectoryMode = 'summary' | 'all' | 'tools' | 'errors'
+/** Canonical projection offered by the terminal Trajectory workspace. */
+export type TuiTrajectoryMode = 'overview' | 'flow' | 'runs' | 'tools' | 'changes' | 'problems' | 'raw'
 
 /** One durable root or child session in the Trajectory workspace. */
 export interface TuiTrajectorySessionSummary {
