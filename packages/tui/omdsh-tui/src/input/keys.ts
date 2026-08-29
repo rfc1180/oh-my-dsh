@@ -11,6 +11,7 @@ export type KeyEvent =
   | { type: 'text'; value: string }
   | { type: 'paste-start' }
   | { type: 'paste-end' }
+  | { type: 'mouse'; action: 'wheel-up' | 'wheel-down'; column: number; row: number }
 
 const CTRL: Record<number, string> = {
   0x01: 'ctrl+a',
@@ -130,13 +131,27 @@ function parseCsi(seq: string): EscapeParseResult {
   const sequenceLength = csiSequenceLength(body)
   if (sequenceLength === 'partial' || sequenceLength === null) return sequenceLength
   const sequence = body.slice(0, sequenceLength)
+  const used = 1 + sequenceLength
+  const mouse = /^<(\d+);(\d+);(\d+)([Mm])$/u.exec(sequence)
+  if (mouse !== null) {
+    const button = Number(mouse[1])
+    const column = Number(mouse[2])
+    const row = Number(mouse[3])
+    const baseButton = button & ~0x1c
+    const action = baseButton === 64 ? 'wheel-up' : baseButton === 65 ? 'wheel-down' : undefined
+    return {
+      event: mouse[4] !== 'M' || action === undefined || !Number.isSafeInteger(column) || !Number.isSafeInteger(row) || column < 1 || row < 1
+        ? undefined
+        : { type: 'mouse', action, column, row },
+      used,
+    }
+  }
   const privateMarker = sequence.charCodeAt(0)
   if (privateMarker >= 0x3c && privateMarker <= 0x3f) {
-    return { event: undefined, used: 1 + sequenceLength }
+    return { event: undefined, used }
   }
   const match = /^(?:(\d+)?(?:;(\d+))?(?:;(\d+))?)?([A-Za-z~u])/.exec(sequence)
-  if (match === null) return { event: undefined, used: 1 + sequenceLength }
-  const used = 1 + sequenceLength
+  if (match === null) return { event: undefined, used }
   const p1 = match[1] === undefined || match[1] === '' ? 1 : Number(match[1])
   const p2 = match[2] === undefined || match[2] === '' ? 1 : Number(match[2])
   const p3 = match[3] === undefined || match[3] === '' ? undefined : Number(match[3])
