@@ -28,18 +28,27 @@ interface EventLike {
   readonly data?: unknown
 }
 
+export type TrajectoryLane = 'conversation' | 'execution' | 'orchestration'
+
 export interface TrajectoryEventRow {
   readonly event: SessionEvent
   readonly seq: number
   readonly time: number
   readonly type: string
   readonly category: 'turn' | 'model' | 'message' | 'tool' | 'workflow' | 'goal' | 'system' | 'error'
+  readonly lane: TrajectoryLane
   readonly tone: TrajectoryTone
   readonly glyph: string
   readonly label: string
   readonly summary: string
   readonly error: boolean
   readonly tool: boolean
+  readonly problem: boolean
+  readonly change?: string | undefined
+  readonly turnId?: string | undefined
+  readonly stepId?: string | undefined
+  readonly callId?: string | undefined
+  readonly runId?: string | undefined
   readonly defaultVisible: boolean
   readonly searchText: string
 }
@@ -71,7 +80,12 @@ export type TrajectoryCommand =
   | { kind: 'close' }
   | { kind: 'ignore' }
 
-const MODES: readonly TuiTrajectoryMode[] = ['summary', 'all', 'tools', 'errors']
+const MODES: readonly TuiTrajectoryMode[] = ['overview', 'flow', 'runs', 'tools', 'changes', 'problems', 'raw']
+const MODE_ALIASES: Readonly<Record<string, TuiTrajectoryMode>> = {
+  summary: 'overview',
+  all: 'raw',
+  errors: 'problems',
+}
 const DEFAULT_LIMIT = 2_000
 const MAX_LIMIT = 10_000
 
@@ -79,11 +93,12 @@ const MAX_LIMIT = 10_000
 export function parseTrajectoryOptions(rawInput = ''): TuiTrajectoryOptions {
   const words = rawInput.trim().split(/\s+/u).filter(Boolean)
   if (words[0] === 'screen' || words[0] === 'browse') words.shift()
-  let mode: TuiTrajectoryMode = 'summary'
+  let mode: TuiTrajectoryMode = 'overview'
   let limit: number | undefined
   for (const word of words) {
-    if (MODES.includes(word as TuiTrajectoryMode)) {
-      mode = word as TuiTrajectoryMode
+    const canonical = MODE_ALIASES[word] ?? (MODES.includes(word as TuiTrajectoryMode) ? word as TuiTrajectoryMode : undefined)
+    if (canonical !== undefined) {
+      mode = canonical
       continue
     }
     if (/^\d+$/u.test(word)) {
@@ -94,7 +109,7 @@ export function parseTrajectoryOptions(rawInput = ''): TuiTrajectoryOptions {
       limit = parsed
       continue
     }
-    throw new Error('Usage: /trajectory [summary|all|tools|errors] [limit]')
+    throw new Error('Usage: /trajectory [overview|flow|runs|tools|changes|problems|raw] [limit]')
   }
   return { mode, ...(limit === undefined ? {} : { limit }) }
 }
@@ -138,6 +153,20 @@ function safeJson(value: unknown): string {
   } catch {
     return text(value)
   }
+}
+
+function safeEventJson(value: unknown): string {
+  const scrub = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.filter(item => record(item).type !== 'reasoning').map(scrub)
+    if (candidate === null || typeof candidate !== 'object') return candidate
+    const output: Record<string, unknown> = {}
+    for (const [key, nested] of Object.entries(candidate)) {
+      if (/reasoning|thinking/iu.test(key)) continue
+      output[key] = scrub(nested)
+    }
+    return output
+  }
+  return safeJson(scrub(value))
 }
 
 function contentText(value: unknown, reasoning = false): string {
@@ -201,20 +230,67 @@ function toolResult(event: EventLike): { callId: string; failed: boolean; output
   }
 }
 
-function isErrorEvent(event: EventLike): boolean {
+function isProblemEvent(event: EventLike): boolean {
   if (event.type === 'tool/result') return toolResult(event).failed
   const data = eventData(event)
   if (event.type === 'assistant/message') return data.interrupted === true
   if (event.type === 'llm/retry' || event.type === 'llm/retry-started') return true
   if (event.type === 'turn/end') {
     const reason = record(data.reason)
-    return text(reason.kind || data.reason) !== 'completed'
+    const outcome = text(reason.kind || data.reason).toLocaleLowerCase()
+    return outcome !== '' && outcome !== 'completed'
   }
-  return /error|failed|abort|interrupt|reject/iu.test(event.type)
+  return /error|failed|abort|interrupt|reject|max[-_/ ]?tokens|retry/iu.test(event.type)
 }
 
 function isToolEvent(event: EventLike): boolean {
   return event.type.startsWith('tool/') || event.type.startsWith('tool-workflow/') || event.type.startsWith('subagent/')
+}
+
+function laneFor(event: EventLike): TrajectoryLane {
+  if (event.type.startsWith('tool/') || event.type.startsWith('command/')) return 'execution'
+  if (/^(?:tool-workflow|subagent|workflow|agent|goal|todo|compaction|inbox|llm\/retry)/u.test(event.type)) return 'orchestration'
+  return 'conversation'
+}
+
+function explicitIds(event: EventLike): Pick<TrajectoryEventRow, 'turnId' | 'stepId' | 'callId' | 'runId'> {
+  const data = eventData(event)
+  const message = record(data.message)
+  const source = record(message.source)
+  const first = record(Array.isArray(message.content) ? message.content[0] : undefined)
+  const turnId = text(data.turnId || data.turn)
+  const stepId = text(data.stepId || data.step)
+  const callId = text(data.callId || data.toolCallId || first.toolCallId || source.callId)
+  const runId = text(data.runId)
+  return {
+    ...(turnId === '' ? {} : { turnId }),
+    ...(stepId === '' ? {} : { stepId }),
+    ...(callId === '' ? {} : { callId }),
+    ...(runId === '' ? {} : { runId }),
+  }
+}
+
+function confirmedChange(event: EventLike): string | undefined {
+  if (event.type !== 'tool/result') return undefined
+  const data = eventData(event)
+  const message = record(data.message)
+  const content = Array.isArray(message.content) ? message.content.map(record) : []
+  const first = content[0] ?? {}
+  const nestedContent = Array.isArray(first.content) ? first.content.map(record) : []
+  const metadata = [data.metadata, message.metadata, first.metadata, ...nestedContent.map(block => block.metadata)].map(record)
+  const summaries: string[] = []
+  for (const value of metadata) {
+    const diff = text(value.diff || value.patch)
+    if (diff !== '') summaries.push(compact(diff, 240))
+    const changes = Array.isArray(value.changes) ? value.changes : Array.isArray(value.filesChanged) ? value.filesChanged : []
+    for (const item of changes) {
+      const change = record(item)
+      const path = text(change.path || change.file)
+      const status = text(change.status || change.kind || change.operation)
+      if (path !== '') summaries.push([status, path].filter(Boolean).join(' '))
+    }
+  }
+  return summaries.length === 0 ? undefined : summaries.join(' · ')
 }
 
 interface Timings {
@@ -230,15 +306,19 @@ function timingKey(...parts: unknown[]): string {
 }
 
 function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEventRow, 'event' | 'searchText'> | undefined {
-  if (event.type === 'assistant/chunk') return undefined
   const data = eventData(event)
-  const failed = isErrorEvent(event)
+  const failed = isProblemEvent(event)
+  const change = confirmedChange(event)
   const base = {
     seq: event.seq,
     time: event.time,
     type: event.type,
+    lane: laneFor(event),
     error: failed,
+    problem: failed,
     tool: isToolEvent(event),
+    ...(change === undefined ? {} : { change }),
+    ...explicitIds(event),
   }
   switch (event.type) {
     case 'turn/start': {
@@ -397,7 +477,7 @@ export function createTrajectoryState(activeSessionId: string, options: TuiTraje
     rows: [],
     selectedEvent: 0,
     focus: 'sessions',
-    mode: options.mode ?? 'summary',
+    mode: options.mode ?? 'overview',
     query: '',
     searchActive: false,
     follow: true,
@@ -412,7 +492,7 @@ export function setTrajectorySessions(
   sessions: readonly TuiTrajectorySessionSummary[],
 ): TrajectoryState {
   const ordered = orderTrajectorySessions(sessions)
-  const currentId = state.snapshot?.id || state.sessions[state.selectedSession]?.id || state.activeSessionId
+  const currentId = state.sessions[state.selectedSession]?.id || state.snapshot?.id || state.activeSessionId
   const selectedSession = Math.max(0, ordered.findIndex(session => session.id === currentId))
   return { ...state, sessions: ordered, selectedSession, loading: state.snapshot === undefined, error: undefined }
 }
@@ -424,11 +504,15 @@ export function setTrajectorySnapshot(state: TrajectoryState, snapshot: TuiTraje
     summary,
   ])
   const selectedSession = Math.max(0, sessions.findIndex(session => session.id === snapshot.id))
+  const previous = selectedRow(state)
   const rows = buildTrajectoryRows(snapshot.events)
   const visible = filteredTrajectoryRows({ ...state, snapshot, sessions, selectedSession, rows })
+  const stableIndex = previous === undefined ? -1 : visible.findIndex(row => row.seq === previous.seq && row.type === previous.type)
   const selectedEvent = state.follow || visible.length === 0
     ? Math.max(0, visible.length - 1)
-    : Math.max(0, Math.min(state.selectedEvent, visible.length - 1))
+    : stableIndex >= 0
+      ? stableIndex
+      : Math.max(0, Math.min(state.selectedEvent, visible.length - 1))
   return {
     ...state,
     sessions,
@@ -438,7 +522,7 @@ export function setTrajectorySnapshot(state: TrajectoryState, snapshot: TuiTraje
     selectedEvent,
     loading: false,
     error: undefined,
-    detailScroll: 0,
+    detailScroll: state.follow ? 0 : state.detailScroll,
     updatedAt: Date.now(),
   }
 }
@@ -464,8 +548,10 @@ export function setTrajectoryLoading(state: TrajectoryState, loading: boolean, e
 
 function modeMatches(row: TrajectoryEventRow, mode: TuiTrajectoryMode): boolean {
   if (mode === 'tools') return row.tool
-  if (mode === 'errors') return row.error
-  if (mode === 'all') return true
+  if (mode === 'changes') return row.change !== undefined
+  if (mode === 'problems') return row.problem
+  if (mode === 'runs') return row.lane === 'orchestration'
+  if (mode === 'raw' || mode === 'flow') return true
   return row.defaultVisible
 }
 
@@ -503,8 +589,37 @@ function nextFocus(focus: TrajectoryFocus, direction: 1 | -1): TrajectoryFocus {
   return order[(index + direction + order.length) % order.length] ?? 'timeline'
 }
 
-/** Apply one key without touching persistence or the terminal. */
-export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent): TrajectoryCommand {
+/** Resolve a 1-based SGR coordinate to a visible pane, including blank pane rows. */
+export function trajectoryPaneAt(state: TrajectoryState, width: number, height: number, column: number, row: number): TrajectoryFocus | undefined {
+  if (width < 28 || height < 10 || column <= 1 || column >= width || row < 4) return undefined
+  const contentHeight = Math.max(1, height - 6)
+  const y = row - 4
+  if (y < 0 || y >= contentHeight) return undefined
+  const innerWidth = Math.max(1, width - 2)
+  if (innerWidth >= 92) {
+    const leftWidth = Math.max(26, Math.min(38, Math.floor(innerWidth * 0.28)))
+    const x = column - 2
+    if (x < leftWidth) return 'sessions'
+    if (x === leftWidth) return undefined
+    const timelineHeight = Math.max(5, Math.floor(contentHeight * 0.58))
+    return y < timelineHeight ? 'timeline' : y === timelineHeight ? undefined : 'details'
+  }
+  if (state.focus === 'sessions') return 'sessions'
+  const detailHeight = state.focus === 'details' ? Math.max(5, Math.floor(contentHeight * 0.5)) : Math.max(4, Math.floor(contentHeight * 0.34))
+  const timelineHeight = Math.max(3, contentHeight - detailHeight - 1)
+  return y < timelineHeight ? 'timeline' : y === timelineHeight ? undefined : 'details'
+}
+
+/** Apply one input event without touching persistence or the terminal. */
+export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, width = 0, height = 0): TrajectoryCommand {
+  if (event.type === 'mouse') {
+    const pane = trajectoryPaneAt(state, width, height, event.column, event.row)
+    if (pane === undefined) return { kind: 'ignore' }
+    const focused = { ...state, focus: pane }
+    const direction = event.action === 'wheel-up' ? 'up' : 'down'
+    const moved = applyTrajectoryEvent(focused, { type: 'key', id: direction }, width, height)
+    return moved.kind === 'ignore' ? { kind: 'update', state: focused } : moved
+  }
   if (state.searchActive) {
     if (event.type === 'key' && (event.id === 'escape' || event.id === 'enter' || event.id === 'ctrl+j')) {
       return { kind: 'update', state: { ...state, searchActive: false, selectedEvent: 0, follow: false } }
@@ -521,13 +636,13 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent): T
   if (event.type === 'text') {
     if (event.value === '/') return { kind: 'update', state: { ...state, searchActive: true, query: '', focus: 'timeline' } }
     if (event.value === 'q') return { kind: 'close' }
-    if (/^[1-4]$/u.test(event.value)) {
-      const mode = MODES[Number(event.value) - 1] ?? 'summary'
+    if (/^[1-7]$/u.test(event.value)) {
+      const mode = MODES[Number(event.value) - 1] ?? 'overview'
       return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
     }
     if (event.value === 'f') {
       const index = MODES.indexOf(state.mode)
-      const mode = MODES[(index + 1) % MODES.length] ?? 'summary'
+      const mode = MODES[(index + 1) % MODES.length] ?? 'overview'
       return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
     }
     if (event.value === 'l') {
@@ -539,7 +654,7 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent): T
       const row = selectedRow(state)
       return row === undefined
         ? { kind: 'ignore' }
-        : { kind: 'copy', state, text: safeJson(row.event), label: `event #${row.seq}` }
+        : { kind: 'copy', state, text: safeEventJson(row.event), label: `event #${row.seq}` }
     }
     return { kind: 'ignore' }
   }
@@ -623,7 +738,8 @@ function statusGlyph(session: TuiTrajectorySessionSummary, active: boolean, them
 
 function sessionLabel(session: TuiTrajectorySessionSummary): string {
   const depth = Math.max(0, session.delegationDepth ?? (session.parentSession === undefined ? 0 : 1))
-  return `${'  '.repeat(Math.min(depth, 4))}${depth > 0 ? '↳ ' : ''}${session.title || session.id}`
+  const branch = depth === 0 ? 'root ' : session.origin === 'subagent' ? 'agent ' : 'child '
+  return `${'  '.repeat(Math.min(depth, 4))}${depth > 0 ? '└─ ' : ''}${branch}${session.title || session.id}`
 }
 
 function sessionRows(state: TrajectoryState, theme: Theme, width: number, height: number, spinnerFrame: number): string[] {
@@ -657,8 +773,70 @@ function sessionRows(state: TrajectoryState, theme: Theme, width: number, height
   return rows.map(row => truncateToWidth(row, width))
 }
 
+function aggregateUsage(rows: readonly TrajectoryEventRow[]): string {
+  let input = 0
+  let output = 0
+  let cache = 0
+  for (const row of rows) {
+    if (row.type !== 'assistant/message') continue
+    const usage = record(eventData(row.event as EventLike).usage)
+    input += number(usage.inputTokens) ?? 0
+    output += number(usage.outputTokens) ?? 0
+    cache += number(usage.cacheReadTokens) ?? 0
+  }
+  return [`in:${input}`, `out:${output}`, cache > 0 ? `cache:${cache}` : undefined].filter((value): value is string => value !== undefined).join(' · ')
+}
+
+function overviewRows(state: TrajectoryState, theme: Theme, width: number, height: number): string[] {
+  if (height <= 0) return []
+  const selected = selectedRow(state)
+  const problems = state.rows.filter(row => row.problem).length
+  const tools = state.rows.filter(row => row.tool).length
+  const status = state.snapshot?.status ?? (state.loading ? 'refreshing' : 'snapshot')
+  const lines = [
+    truncateToWidth(`  Status: ${status} · ${state.rows.length} events · ${tools} tool events · ${problems} problems`, width),
+    truncateToWidth(`  Usage: ${aggregateUsage(state.rows)} · sequence order (time is shown in details)`, width),
+  ]
+  const labelWidth = Math.min(15, Math.max(12, Math.floor(width * 0.2)))
+  const barWidth = Math.max(1, width - labelWidth - 3)
+  const lanes: readonly [TrajectoryLane, string, string][] = [
+    ['conversation', 'Conversation', 'C'],
+    ['execution', 'Execution', 'E'],
+    ['orchestration', 'Orchestration', 'O'],
+  ]
+  for (const [lane, label, symbol] of lanes) {
+    const cells = Array.from({ length: barWidth }, () => '─')
+    for (let index = 0; index < state.rows.length; index += 1) {
+      const row = state.rows[index]
+      if (row?.lane !== lane) continue
+      const cell = state.rows.length <= 1 ? 0 : Math.round(index * (barWidth - 1) / (state.rows.length - 1))
+      cells[cell] = row.problem ? '!' : symbol
+    }
+    if (selected?.lane === lane) {
+      const index = state.rows.findIndex(row => row.seq === selected.seq && row.type === selected.type)
+      const cell = state.rows.length <= 1 ? 0 : Math.round(Math.max(0, index) * (barWidth - 1) / Math.max(1, state.rows.length - 1))
+      cells[cell] = '◆'
+    }
+    const painted = cells.map(cell => cell === '◆' ? theme.fg('accent', cell) : cell === '!' ? theme.fg('error', cell) : theme.fg('dim', cell)).join('')
+    lines.push(`${fit(theme.bold(label), labelWidth)} ${painted}`)
+  }
+  if (selected !== undefined) lines.push(truncateToWidth(`  Selected #${selected.seq} ${selected.type} · ${selected.summary}`, width))
+  return lines.slice(0, height)
+}
+
+function flowRail(row: TrajectoryEventRow): string {
+  const turn = row.turnId === undefined ? '' : `T${row.turnId}`
+  const step = row.stepId === undefined ? '' : `S${row.stepId}`
+  const call = row.callId === undefined ? '' : `C:${row.callId}`
+  const run = row.runId === undefined ? '' : `R:${row.runId}`
+  const ids = [turn, step, call, run].filter(Boolean).join('/')
+  const joint = row.type.endsWith('/start') ? '┌' : row.type.endsWith('/end') ? '└' : ids === '' ? '·' : '│'
+  return `${joint}${ids === '' ? ' flat' : ids}`
+}
+
 function eventRows(state: TrajectoryState, theme: Theme, width: number, height: number): string[] {
   if (height <= 0) return []
+  if (state.mode === 'overview') return overviewRows(state, theme, width, height)
   const rows = filteredTrajectoryRows(state)
   if (rows.length === 0) {
     const message = state.loading ? 'Loading session events…' : state.error ?? 'No events match this view.'
@@ -678,10 +856,13 @@ function eventRows(state: TrajectoryState, theme: Theme, width: number, height: 
     const marker = active && state.focus === 'timeline' ? theme.fg('accent', SYMBOL.cursor) : ' '
     const elapsed = theme.fg('dim', relativeTime(row.time - origin))
     const glyph = paintTone(theme, row.tone, row.glyph)
-    const labelWidth = Math.min(18, Math.max(10, Math.floor(width * 0.22)))
-    const label = fit(paintTone(theme, row.tone, row.label), labelWidth)
+    const railText = state.mode === 'flow' ? flowRail(row) : ''
+    const labelText = railText === '' ? row.label : `${railText} ${row.label}`
+    const labelWidth = Math.min(state.mode === 'flow' ? 28 : 18, Math.max(10, Math.floor(width * (state.mode === 'flow' ? 0.38 : 0.22))))
+    const label = fit(paintTone(theme, row.tone, labelText), labelWidth)
+    const summaryText = state.mode === 'changes' ? row.change ?? '' : row.summary
     const summaryWidth = Math.max(0, width - 2 - 6 - 2 - labelWidth - 1)
-    const summary = truncateToWidth(paintTone(theme, row.tone === 'accent' ? 'normal' : row.tone, row.summary), summaryWidth)
+    const summary = truncateToWidth(paintTone(theme, row.tone === 'accent' ? 'normal' : row.tone, summaryText), summaryWidth)
     const line = `${marker} ${elapsed} ${glyph} ${label} ${summary}`
     visible.push(active ? theme.inverse(fit(line, width)) : fit(line, width))
   }
@@ -693,7 +874,7 @@ function detailRows(state: TrajectoryState, theme: Theme, width: number, height:
   const row = selectedRow(state)
   if (row === undefined) return [theme.fg('muted', '  Select an event to inspect its payload.')]
   const heading = `${row.glyph} #${row.seq} · ${row.type} · ${clock(row.time)}`
-  const raw = safeJson(row.event)
+  const raw = safeEventJson(row.event)
   const body = raw.split('\n').flatMap(line => wrapText(line, Math.max(1, width - 2)).map(part => '  ' + part))
   const maxStart = Math.max(0, body.length - Math.max(0, height - 1))
   const start = Math.max(0, Math.min(state.detailScroll, maxStart))
@@ -767,7 +948,7 @@ export function renderTrajectory(
     const timelineHeight = Math.max(5, Math.floor(contentHeight * 0.58))
     const detailHeight = Math.max(1, contentHeight - timelineHeight - 1)
     const sessions = [
-      panelHeader('Conversation', state.focus === 'sessions', `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, leftWidth),
+      panelHeader(state.mode === 'runs' ? 'Runs · root → descendants' : 'Conversation', state.focus === 'sessions', `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, leftWidth),
       ...sessionRows(state, theme, leftWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
     const timeline = [
@@ -781,7 +962,7 @@ export function renderTrajectory(
     content = combineColumns(sessions, leftWidth, timeline, rightWidth, theme, contentHeight)
   } else if (state.focus === 'sessions') {
     content = [
-      panelHeader('Conversation', true, `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, innerWidth),
+      panelHeader(state.mode === 'runs' ? 'Runs · root → descendants' : 'Conversation', true, `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, innerWidth),
       ...sessionRows(state, theme, innerWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
   } else {
@@ -803,8 +984,8 @@ export function renderTrajectory(
   const hints = state.searchActive
     ? 'Type to filter · Enter apply · Esc leave search · Ctrl+C close'
     : pageWidth >= 112
-      ? 'Tab · ↑↓ move · 1 summary · 2 all · 3 tools · 4 errors · / search · f next · l follow · r refresh · c copy · q close'
-      : '1 summary · 2 all · 3 tools · 4 errors · / search · q close'
+      ? 'Tab · ↑↓/wheel move · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · f next · l follow · r refresh · c copy · q close'
+      : '1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · q close'
   lines.push(borderRow(theme, ' ' + theme.fg('dim', hints), pageWidth), bottomBorder(theme, pageWidth))
   return {
     lines: lines.slice(0, pageHeight),

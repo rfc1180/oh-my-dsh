@@ -199,10 +199,14 @@ describe('LocalTui (tty)', () => {
     await flushAsyncPaste()
     const opened = term.captured.slice(before)
     expect(opened).toContain('\x1b[?1049h')
+    expect(opened).toContain('\x1b[?1000h\x1b[?1006h')
     expect(emulatedScreenRows(opened).map(stripAnsi).join('\n')).toContain('Trajectory')
 
+    press(term, '\x1b[<64;70;8M')
+    expect(emulatedScreenRows(term.captured.slice(before)).map(stripAnsi).join('\n')).toContain('paused')
     press(term, 'q')
     await closed
+    expect(term.captured.slice(before)).toContain('\x1b[?1006l\x1b[?1000l')
     expect(term.captured.slice(before)).toContain('\x1b[?1049l')
     tui.dispose()
   })
@@ -292,7 +296,7 @@ describe('LocalTui (tty)', () => {
     await flushAsyncPaste()
 
     const beforeScreen = term.captured.length
-    press(term, '/trajectory screen summary\r')
+    press(term, '/trajectory screen overview\r')
     await flushAsyncPaste()
     expect(term.captured.slice(beforeScreen)).toContain('\x1b[?1049h')
     expect(openCompanion).not.toHaveBeenCalled()
@@ -302,11 +306,11 @@ describe('LocalTui (tty)', () => {
     const beforeCompanion = term.captured.length
     press(term, '/trajectory companion errors 30\r')
     await flushAsyncPaste()
-    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'errors', limit: 30 })
+    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'problems', limit: 30 })
     expect(term.captured.slice(beforeCompanion)).not.toContain('\x1b[?1049h')
 
-    press(term, '/trajectory text summary 20\r')
-    await expect(pending).resolves.toEqual({ text: '/trajectory text summary 20', images: [] })
+    press(term, '/trajectory text overview 20\r')
+    await expect(pending).resolves.toEqual({ text: '/trajectory text overview 20', images: [] })
     tui.dispose()
   })
 
@@ -324,7 +328,7 @@ describe('LocalTui (tty)', () => {
         eventCount: 1,
         events: [ev('assistant/message', { message: { content: [{ type: 'text', text: 'rich detached event' }] } }, 1)],
       }),
-    }, { mode: 'summary' }, {
+    }, { mode: 'overview' }, {
       terminal: term,
       colors: false,
       copy: async () => {},
