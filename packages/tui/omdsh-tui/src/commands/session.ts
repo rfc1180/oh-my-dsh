@@ -6,7 +6,6 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '../runtime/session-runtime.ts'
 import { registerCommands } from './registration.ts'
-import { formatRelativeAge } from '../chrome/relative-time.ts'
 import { formatPermission, formatTokens } from '../chrome/status-line.ts'
 import { formatAgentPreset, formatToolPresentation } from '../session/session-configuration.ts'
 
@@ -31,48 +30,17 @@ async function newSession(ctx: Context, invocation: CommandInvocation): Promise<
   return { kind: 'success', text: 'Started a new session.' }
 }
 
-async function resumeSession(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+async function browseSessions(ctx: Context, invocation: CommandInvocation, directId: boolean): Promise<CommandResult> {
   if (ctx.get('sessionPersistence') === undefined) return { kind: 'error', text: 'Session persistence is not configured.' }
   if (invocation.agent.status === 'running') {
     return { kind: 'error', text: 'Finish or interrupt the active turn before resuming another session.' }
   }
-  await ctx.omdshSession.refreshAllSessions()
   let id = invocation.rawInput.trim()
+  if (!directId && id !== '') return { kind: 'error', text: 'Usage: /sessions' }
   if (id === '') {
-    const recent = ctx.omdshSession.recentSessions
-    if (recent.length === 0) return { kind: 'success', text: 'No durable sessions found.' }
-    const answer = await ctx.tui.prompt({
-      title: 'Resume Session',
-      question: '',
-      options: recent.map(row => ({
-        label: row.title,
-        value: row.id,
-        ...(row.preview === undefined ? {} : { preview: row.preview }),
-        description: [
-          formatRelativeAge(row.updatedAt ?? row.createdAt),
-          ...(row.eventCount === undefined ? [] : [`${row.eventCount} events`]),
-        ].join(' · '),
-        ...(row.status === undefined
-          ? {}
-          : {
-              badge: {
-                label: row.status,
-                tone: row.status === 'done'
-                  ? 'success' as const
-                  : row.status === 'failed'
-                    ? 'error' as const
-                    : 'warning' as const,
-              },
-            }),
-      })),
-      presentation: 'fullscreen-list',
-      filterable: true,
-      allowCustom: false,
-      signal: invocation.signal,
-    })
-    if (answer === null) return { kind: 'success' }
-    const index = /^\d+$/u.test(answer) ? Number(answer) - 1 : -1
-    id = index >= 0 ? (recent[index]?.id ?? answer) : answer
+    const result = await ctx.tui.openSessionManager(ctx.omdshSession.sessionManagerSource(invocation.agent))
+    if (result === null) return { kind: 'success' }
+    id = result.id
   }
   if (id === invocation.agent.id) return { kind: 'success', text: 'That session is already active.' }
   try {
@@ -82,6 +50,14 @@ async function resumeSession(ctx: Context, invocation: CommandInvocation): Promi
     if (invocation.signal.aborted) return { kind: 'error', text: 'Resume cancelled.' }
     return { kind: 'error', text: 'Resume failed: ' + (error instanceof Error ? error.message : String(error)) }
   }
+}
+
+async function resumeSession(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+  return await browseSessions(ctx, invocation, true)
+}
+
+async function sessions(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+  return await browseSessions(ctx, invocation, false)
 }
 
 function showSession(ctx: Context, invocation: CommandInvocation): CommandResult {
@@ -145,6 +121,7 @@ function showTodo(invocation: CommandInvocation): CommandResult {
 export function apply(ctx: Context): void {
   registerCommands(ctx, [
     { name: 'new', description: 'Start a new session', handler: invocation => newSession(ctx, invocation) },
+    { name: 'sessions', description: 'Browse durable sessions', handler: invocation => sessions(ctx, invocation) },
     {
       name: 'resume',
       description: 'Resume a durable session',

@@ -98,12 +98,13 @@ describe('omdsh command plugins', () => {
     await ctx.plugin(CommandRuntime)
     ctx.provide('sessionPersistence', {} as never)
     const newSession = vi.fn(async () => undefined)
-    const refreshAllSessions = vi.fn(async () => undefined)
+    const resumeSession = vi.fn(async () => undefined)
+    const source = { activeSessionId: 'command-plugin-test', list: vi.fn(), inspect: vi.fn() }
     const runtime = {
       newSession,
+      resumeSession,
       refreshRecent: vi.fn(async () => undefined),
-      refreshAllSessions,
-      recentSessions: [],
+      sessionManagerSource: vi.fn(() => source),
       selection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }),
       reasoningEffort: () => 'high',
       stats: () => ({ turns: 0, steps: 0, inputTokens: 0, outputTokens: 0 }),
@@ -115,7 +116,8 @@ describe('omdsh command plugins', () => {
       }),
       send: vi.fn(),
     } as unknown as SessionRuntime
-    const tui = { prompt: vi.fn() } as unknown as TuiService
+    const openSessionManager = vi.fn(async () => null)
+    const tui = { prompt: vi.fn(), openSessionManager } as unknown as TuiService
     ctx.provide('omdshSession', runtime)
     ctx.provide('tui', tui)
     const fiber = await ctx.plugin(commandSession)
@@ -127,7 +129,7 @@ describe('omdsh command plugins', () => {
       inbox: { nextTurn: [], nextStep: [] },
     } as unknown as Agent
 
-    expect(ctx.commands.list(agent).map(command => command.name)).toEqual(['new', 'resume', 'retry', 'session', 'todo'])
+    expect(ctx.commands.list(agent).map(command => command.name)).toEqual(['new', 'resume', 'retry', 'session', 'sessions', 'todo'])
     await expect(ctx.commands.execute(agent, '/new', [], new AbortController().signal))
       .resolves.toMatchObject({ result: { kind: 'success', text: 'Started a new session.' } })
     expect(newSession).toHaveBeenCalledWith(agent)
@@ -135,8 +137,20 @@ describe('omdsh command plugins', () => {
       .toEqual(['command/run', 'command/done'])
 
     await expect(ctx.commands.execute(agent, '/resume', [], new AbortController().signal))
-      .resolves.toMatchObject({ result: { kind: 'success', text: 'No durable sessions found.' } })
-    expect(refreshAllSessions).toHaveBeenCalledOnce()
+      .resolves.toMatchObject({ result: { kind: 'success' } })
+    await expect(ctx.commands.execute(agent, '/sessions', [], new AbortController().signal))
+      .resolves.toMatchObject({ result: { kind: 'success' } })
+    expect(openSessionManager).toHaveBeenCalledTimes(2)
+    expect(openSessionManager).toHaveBeenLastCalledWith(source)
+
+    openSessionManager.mockResolvedValueOnce({ kind: 'resume', id: 'session-picked' })
+    await expect(ctx.commands.execute(agent, '/sessions', [], new AbortController().signal))
+      .resolves.toMatchObject({ result: { kind: 'success', text: 'Resumed session-picked.' } })
+    expect(resumeSession).toHaveBeenLastCalledWith(agent, 'session-picked', expect.any(AbortSignal))
+    await expect(ctx.commands.execute(agent, '/resume session-direct', [], new AbortController().signal))
+      .resolves.toMatchObject({ result: { kind: 'success', text: 'Resumed session-direct.' } })
+    expect(openSessionManager).toHaveBeenCalledTimes(3)
+    expect(resumeSession).toHaveBeenLastCalledWith(agent, 'session-direct', expect.any(AbortSignal))
 
     const details = await ctx.commands.execute(agent, '/session', [], new AbortController().signal)
     expect(details).toBeDefined()
