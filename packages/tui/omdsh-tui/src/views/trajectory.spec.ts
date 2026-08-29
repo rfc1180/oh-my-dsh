@@ -14,6 +14,7 @@ import {
   renderTrajectory,
   setTrajectorySessions,
   setTrajectorySnapshot,
+  trajectoryPaneAt,
 } from './trajectory.ts'
 
 const key = (id: string): KeyEvent => ({ type: 'key', id })
@@ -22,59 +23,89 @@ const event = (type: string, seq: number, time: number, data: unknown): SessionE
 
 const events: SessionEvent[] = [
   event('turn/start', 0, 1_000, { turn: 1 }),
-  event('user/message', 1, 1_010, { source: { kind: 'user' }, content: [{ type: 'text', text: 'Ship the terminal trajectory' }] }),
+  event('user/message', 1, 1_010, { turn: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'Ship the terminal trajectory' }] }),
   event('step/start', 2, 1_020, { turn: 1, step: 1 }),
-  event('tool/call', 3, 1_030, { callId: 'call-1', name: 'bash', arguments: '{"command":"pnpm test"}' }),
+  event('tool/call', 3, 1_030, { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"pnpm test"}' }),
   event('tool/result', 4, 1_080, {
     message: {
       source: { callId: 'call-1' },
-      content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: '37 tests passed' }] }],
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        content: [{ type: 'text', text: '37 tests passed' }],
+        metadata: { changes: [{ status: 'modified', path: 'src/trajectory.ts' }] },
+      }],
     },
   }),
   event('assistant/message', 5, 1_100, {
-    message: { source: { provider: 'openai', model: 'gpt' }, content: [{ type: 'text', text: 'Implemented.' }] },
+    turn: 1,
+    step: 1,
+    message: { source: { provider: 'openai', model: 'gpt' }, content: [{ type: 'text', text: 'Implemented.' }, { type: 'reasoning', text: 'private chain' }] },
     usage: { inputTokens: 100, outputTokens: 20 },
   }),
   event('step/end', 6, 1_110, { turn: 1, step: 1 }),
   event('turn/end', 7, 1_120, { turn: 1, reason: { kind: 'completed' } }),
   event('llm/retry', 8, 1_130, { reason: 'temporary transport error' }),
+  event('assistant/chunk', 9, 1_140, { reasoning: 'must stay private', chunk: { type: 'reasoning', text: 'hidden' } }),
 ]
 
-function snapshot(): TuiTrajectorySession {
+function snapshot(sourceEvents = events): TuiTrajectorySession {
   return {
     id: 'root',
     title: 'Terminal trajectory',
     cwd: '/repo',
-    updatedAt: 1_130,
-    eventCount: events.length,
-    events,
+    updatedAt: sourceEvents.at(-1)?.time,
+    eventCount: sourceEvents.length,
+    events: sourceEvents,
   }
 }
 
 function readyState() {
   const listed = setTrajectorySessions(createTrajectoryState('root'), [
     { id: 'other', title: 'Other root', updatedAt: 900 },
-    { id: 'child', title: 'Review child', parentSession: 'root', delegationDepth: 1, updatedAt: 1_120 },
+    { id: 'child', title: 'Review child', origin: 'subagent', parentSession: 'root', delegationDepth: 1, updatedAt: 1_120 },
     { id: 'root', title: 'Terminal trajectory', updatedAt: 1_130 },
   ])
   return setTrajectorySnapshot(listed, snapshot())
 }
 
 describe('Trajectory projection', () => {
-  it('parses screen aliases, filters, and explicit bounded history limits', () => {
-    expect(parseTrajectoryOptions('screen errors 250')).toEqual({ mode: 'errors', limit: 250 })
-    expect(parseTrajectoryOptions('tools')).toEqual({ mode: 'tools' })
+  it('parses canonical modes, legacy aliases, and bounded limits', () => {
+    const modes = ['overview', 'flow', 'runs', 'tools', 'changes', 'problems', 'raw'] as const
+    for (const mode of modes) expect(parseTrajectoryOptions(mode)).toEqual({ mode })
+    expect(parseTrajectoryOptions('screen errors 250')).toEqual({ mode: 'problems', limit: 250 })
+    expect(parseTrajectoryOptions('summary')).toEqual({ mode: 'overview' })
+    expect(parseTrajectoryOptions('all')).toEqual({ mode: 'raw' })
     expect(() => parseTrajectoryOptions('unknown')).toThrow(/Usage: \/trajectory/u)
     expect(() => parseTrajectoryOptions('10001')).toThrow(/between 1 and 10000/u)
   })
 
-  it('projects readable model, tool, turn, and failure rows', () => {
+  it('projects explicit rails, safe confirmed changes, problems, and raw chunks', () => {
     const rows = buildTrajectoryRows(events)
-    expect(rows.map(row => row.label)).toContain('You')
-    expect(rows.find(row => row.label === 'bash')?.summary).toContain('pnpm test')
-    expect(rows.find(row => row.label === 'Result')?.summary).toContain('37 tests passed')
-    expect(rows.find(row => row.label === 'Assistant')?.summary).toContain('openai/gpt')
-    expect(rows.find(row => row.label === 'Retry')?.error).toBe(true)
+    expect(rows.find(row => row.label === 'bash')).toMatchObject({ lane: 'execution', turnId: '1', stepId: '1', callId: 'call-1' })
+    expect(rows.find(row => row.label === 'Result')?.change).toContain('modified src/trajectory.ts')
+    expect(rows.find(row => row.label === 'Retry')).toMatchObject({ problem: true, lane: 'orchestration' })
+    expect(rows.some(row => row.type === 'assistant/chunk')).toBe(true)
+    expect(rows.find(row => row.type === 'assistant/message')?.summary).not.toContain('private chain')
+  })
+
+  it('keeps problem classification explicit instead of guessing from event names', () => {
+    const rows = buildTrajectoryRows([
+      event('llm/retry', 1, 1, { reason: 'busy' }),
+      event('assistant/message', 2, 2, { interrupted: true, message: { content: [] } }),
+      event('not-an-error-looking-name', 3, 3, {}),
+      event('turn/end', 4, 4, { turn: 1, reason: { kind: 'max-tokens' } }),
+    ])
+    expect(rows.filter(row => row.problem).map(row => row.seq)).toEqual([1, 2, 4])
+  })
+
+  it('shows changes only from whitelisted tool-result metadata', () => {
+    const rows = buildTrajectoryRows([
+      event('tool/result', 1, 1, { message: { content: [{ type: 'tool-result', toolCallId: 'a', content: [{ type: 'text', text: 'wrote file' }] }] }, guessedDiff: 'not trusted' }),
+      event('tool/result', 2, 2, { metadata: { patch: '@@ -old +new' }, message: { content: [{ type: 'tool-result', toolCallId: 'b', content: [] }] } }),
+    ])
+    expect(rows[0]?.change).toBeUndefined()
+    expect(rows[1]?.change).toContain('@@ -old +new')
   })
 
   it('keeps descendants directly below their durable parent', () => {
@@ -86,16 +117,18 @@ describe('Trajectory projection', () => {
     expect(ordered.map(session => session.id)).toEqual(['other', 'root', 'child'])
   })
 
-  it('cycles filters and applies an in-workspace search', () => {
+  it('maps keys 1-7, cycles modes, searches, and disables follow on manual scroll', () => {
     let state = readyState()
-    const all = applyTrajectoryEvent(state, typed('f'))
-    expect(all.kind).toBe('update')
-    state = all.kind === 'update' ? all.state : state
-    expect(state.mode).toBe('all')
-    const tools = applyTrajectoryEvent(state, typed('3'))
-    state = tools.kind === 'update' ? tools.state : state
-    expect(state.mode).toBe('tools')
-    expect(filteredTrajectoryRows(state).map(row => row.label)).toEqual(['bash', 'Result'])
+    const modes = ['overview', 'flow', 'runs', 'tools', 'changes', 'problems', 'raw'] as const
+    for (let index = 0; index < modes.length; index += 1) {
+      const command = applyTrajectoryEvent(state, typed(String(index + 1)))
+      expect(command.kind).toBe('update')
+      state = command.kind === 'update' ? command.state : state
+      expect(state.mode).toBe(modes[index])
+    }
+    const cycle = applyTrajectoryEvent(state, typed('f'))
+    state = cycle.kind === 'update' ? cycle.state : state
+    expect(state.mode).toBe('overview')
 
     const search = applyTrajectoryEvent(state, typed('/'))
     state = search.kind === 'update' ? search.state : state
@@ -104,34 +137,84 @@ describe('Trajectory projection', () => {
       state = update.kind === 'update' ? update.state : state
     }
     expect(filteredTrajectoryRows(state).map(row => row.label)).toEqual(['Result'])
+    expect(state.follow).toBe(false)
     expect(applyTrajectoryEvent(state, key('ctrl+c'))).toEqual({ kind: 'close' })
+  })
+
+  it('preserves a paused event by stable seq/type across snapshot refresh', () => {
+    let state = readyState()
+    const raw = applyTrajectoryEvent(state, typed('7'))
+    state = raw.kind === 'update' ? { ...raw.state, focus: 'timeline' } : state
+    const up = applyTrajectoryEvent(state, key('up'))
+    state = up.kind === 'update' ? up.state : state
+    expect(state.follow).toBe(false)
+    const before = filteredTrajectoryRows(state)[state.selectedEvent]
+    state = setTrajectorySnapshot(state, snapshot([...events, event('goal/change', 10, 1_150, { phase: 'active' })]))
+    const after = filteredTrajectoryRows(state)[state.selectedEvent]
+    expect({ seq: after?.seq, type: after?.type }).toEqual({ seq: before?.seq, type: before?.type })
+    expect(state.follow).toBe(false)
+  })
+
+  it('routes wheel by pane geometry, including blank pane space', () => {
+    let state = readyState()
+    expect(trajectoryPaneAt(state, 120, 32, 10, 15)).toBe('sessions')
+    expect(trajectoryPaneAt(state, 120, 32, 70, 8)).toBe('timeline')
+    expect(trajectoryPaneAt(state, 120, 32, 70, 25)).toBe('details')
+    const wheel = applyTrajectoryEvent(state, { type: 'mouse', action: 'wheel-up', column: 70, row: 8 }, 120, 32)
+    expect(wheel.kind).toBe('update')
+    state = wheel.kind === 'update' ? wheel.state : state
+    expect(state.focus).toBe('timeline')
+    expect(state.follow).toBe(false)
+    const emptyDetails = applyTrajectoryEvent({ ...state, rows: [] }, { type: 'mouse', action: 'wheel-down', column: 70, row: 25 }, 120, 32)
+    expect(emptyDetails.kind === 'update' && emptyDetails.state.focus).toBe('details')
   })
 })
 
 describe('renderTrajectory', () => {
-  it('renders a bounded wide session tree, timeline, details, and hotkeys', () => {
+  it('renders a distinct three-lane overview with status, usage, and selection', () => {
     const frame = renderTrajectory(readyState(), createTheme(false), 120, 32, 'omdsh', 0)
     const output = frame.lines.map(stripAnsi).join('\n')
     expect(frame.lines).toHaveLength(32)
     expect(frame.lines.every(line => visibleWidth(line) <= 120)).toBe(true)
     expect(output).toContain('omdsh · Trajectory')
     expect(output).toContain('Conversation')
+    expect(output).toContain('Execution')
+    expect(output).toContain('Orchestration')
+    expect(output).toContain('Status:')
+    expect(output).toContain('Usage: in:100 · out:20')
+    expect(output).toContain('◆')
     expect(output).toContain('Review child')
-    expect(output).toContain('Timeline')
-    expect(output).toContain('Details')
-    expect(output).toContain('Ship the terminal trajectory')
-    expect(output).toContain('1 summary')
-    expect(output).toContain('4 errors')
+    expect(output).toContain('1 overview')
+    expect(output).toContain('7 raw')
   })
 
-  it('switches to a focused session page at narrow widths', () => {
+  it('renders explicit turn/step-aware vertical rails in flow mode', () => {
+    const state = { ...readyState(), mode: 'flow' as const, selectedEvent: 3, follow: false, focus: 'timeline' as const }
+    const output = renderTrajectory(state, createTheme(false), 120, 32).lines.map(stripAnsi).join('\n')
+    expect(output).toContain('T1/S1/C:call-1')
+    expect(output).toMatch(/[┌│└]T1/u)
+    expect(output).toContain('Ship the terminal trajectory')
+  })
+
+  it('redacts reasoning blocks and nested chunk objects from raw details', () => {
+    const base = { ...readyState(), mode: 'raw' as const, follow: false, focus: 'details' as const }
+    const messageOutput = renderTrajectory({ ...base, selectedEvent: 5 }, createTheme(false), 120, 32).lines.map(stripAnsi).join('\n')
+    expect(messageOutput).toContain('assistant/message')
+    expect(messageOutput).not.toContain('private chain')
+    const chunkOutput = renderTrajectory({ ...base, selectedEvent: 9 }, createTheme(false), 120, 32).lines.map(stripAnsi).join('\n')
+    expect(chunkOutput).toContain('assistant/chunk')
+    expect(chunkOutput).not.toContain('must stay private')
+    expect(chunkOutput).not.toContain('"text": "hidden"')
+  })
+
+  it('keeps responsive narrow layout and terminal-cell width safety', () => {
     const frame = renderTrajectory(readyState(), createTheme(false), 70, 22)
     const output = frame.lines.map(stripAnsi).join('\n')
     expect(frame.lines).toHaveLength(22)
+    expect(frame.lines.every(line => visibleWidth(line) <= 70)).toBe(true)
     expect(output).toContain('Conversation')
     expect(output).toContain('Review child')
-    expect(output).toContain('1 summary')
-    expect(output).toContain('4 errors')
+    expect(output).toContain('1 overview')
     expect(output).not.toContain('Timeline')
   })
 })

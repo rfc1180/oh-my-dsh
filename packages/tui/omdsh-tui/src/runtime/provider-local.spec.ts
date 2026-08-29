@@ -199,11 +199,59 @@ describe('LocalTui (tty)', () => {
     await flushAsyncPaste()
     const opened = term.captured.slice(before)
     expect(opened).toContain('\x1b[?1049h')
+    expect(opened).toContain('\x1b[?1000h\x1b[?1006h')
     expect(emulatedScreenRows(opened).map(stripAnsi).join('\n')).toContain('Trajectory')
+
+    press(term, '\x1b[<64;70;8M')
+    expect(emulatedScreenRows(term.captured.slice(before)).map(stripAnsi).join('\n')).toContain('paused')
+    press(term, 'q')
+    await closed
+    expect(term.captured.slice(before)).toContain('\x1b[?1006l\x1b[?1000l')
+    expect(term.captured.slice(before)).toContain('\x1b[?1049l')
+    tui.dispose()
+  })
+
+  it('keeps a wheel-paused Trajectory selection stable across polling refresh', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 32
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { alternateScreenOverlays: true })
+    tui.setSession({ id: 'session-root', recent: [] })
+    const sourceEvents = [
+      ev('turn/start', { turn: 1 }, 1),
+      ev('user/message', { turn: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'keep selected' }] }, 2),
+      ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3),
+    ]
+    let listCalls = 0
+    let releaseList: (() => void) | undefined
+    const closed = tui.openTrajectory({
+      activeSessionId: 'session-root',
+      pollIntervalMs: 500,
+      list: async () => {
+        listCalls += 1
+        if (listCalls === 2) await new Promise<void>(resolve => { releaseList = resolve })
+        return [{ id: 'session-root', title: 'Polling task', eventCount: sourceEvents.length }]
+      },
+      inspect: async () => ({ id: 'session-root', title: 'Polling task', eventCount: sourceEvents.length, events: sourceEvents }),
+    })
+    await vi.waitFor(() => {
+      expect(emulatedScreenRows(term.captured).map(stripAnsi).join('\n')).toContain('#3')
+    })
+
+    await vi.waitFor(() => { expect(listCalls).toBe(2) }, { timeout: 1_500 })
+    press(term, '\x1b[<64;70;8M')
+    expect(emulatedScreenRows(term.captured).map(stripAnsi).join('\n')).toContain('#2')
+    tui.event(ev('goal/change', { phase: 'active' }, 4))
+    releaseList?.()
+    await vi.waitFor(() => {
+      const rendered = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
+      expect(rendered).toContain('4/4 events')
+      expect(rendered).toContain('paused')
+      expect(rendered).toContain('#2')
+    }, { timeout: 1_500 })
 
     press(term, 'q')
     await closed
-    expect(term.captured.slice(before)).toContain('\x1b[?1049l')
     tui.dispose()
   })
 
@@ -292,7 +340,7 @@ describe('LocalTui (tty)', () => {
     await flushAsyncPaste()
 
     const beforeScreen = term.captured.length
-    press(term, '/trajectory screen summary\r')
+    press(term, '/trajectory screen overview\r')
     await flushAsyncPaste()
     expect(term.captured.slice(beforeScreen)).toContain('\x1b[?1049h')
     expect(openCompanion).not.toHaveBeenCalled()
@@ -302,11 +350,11 @@ describe('LocalTui (tty)', () => {
     const beforeCompanion = term.captured.length
     press(term, '/trajectory companion errors 30\r')
     await flushAsyncPaste()
-    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'errors', limit: 30 })
+    expect(openCompanion).toHaveBeenLastCalledWith({ mode: 'problems', limit: 30 })
     expect(term.captured.slice(beforeCompanion)).not.toContain('\x1b[?1049h')
 
-    press(term, '/trajectory text summary 20\r')
-    await expect(pending).resolves.toEqual({ text: '/trajectory text summary 20', images: [] })
+    press(term, '/trajectory text overview 20\r')
+    await expect(pending).resolves.toEqual({ text: '/trajectory text overview 20', images: [] })
     tui.dispose()
   })
 
@@ -324,7 +372,7 @@ describe('LocalTui (tty)', () => {
         eventCount: 1,
         events: [ev('assistant/message', { message: { content: [{ type: 'text', text: 'rich detached event' }] } }, 1)],
       }),
-    }, { mode: 'summary' }, {
+    }, { mode: 'overview' }, {
       terminal: term,
       colors: false,
       copy: async () => {},
@@ -333,10 +381,12 @@ describe('LocalTui (tty)', () => {
     await flushAsyncPaste()
     const rendered = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
     expect(term.captured).toContain('\x1b[?1049h')
+    expect(term.captured).toContain('\x1b[?1000h\x1b[?1006h')
     expect(rendered).toContain('Trajectory')
     expect(rendered).toContain('Live task')
     press(term, 'q')
     await running
+    expect(term.captured).toContain('\x1b[?1006l\x1b[?1000l')
     expect(term.captured).toContain('\x1b[?1049l')
     expect(term.destroyed).toBe(true)
   })
@@ -1184,7 +1234,8 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
 
     const rows = emulatedScreenRows(term.captured)
-    const statusRow = rows.findIndex(line => line.includes(shortenedWorkspaceRoot()))
+    const workspacePrefix = shortenedWorkspaceRoot().slice(0, 32)
+    const statusRow = rows.findIndex(line => line.includes(workspacePrefix))
     const resumeRow = rows.findIndex(line => line.includes('Resume this session with omdsh --resume'))
     expect(statusRow).toBeGreaterThanOrEqual(0)
     expect(resumeRow).toBeGreaterThan(statusRow)

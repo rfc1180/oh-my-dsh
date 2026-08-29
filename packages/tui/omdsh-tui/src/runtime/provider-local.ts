@@ -257,6 +257,7 @@ export class LocalTui implements TuiService {
   #trajectoryAbort: AbortController | null = null
   #trajectoryRequestId = 0
   #trajectoryPoll: ReturnType<typeof setInterval> | null = null
+  #trajectoryMouseEnabled = false
   #sessionManager: SessionManagerState | null = null
   #sessionManagerSource: TuiSessionManagerSource | null = null
   #sessionManagerResolve: ((result: TuiSessionManagerResult | null) => void) | null = null
@@ -646,6 +647,12 @@ export class LocalTui implements TuiService {
     if (source === undefined && this.#trajectory !== null) this.#closeTrajectory()
   }
 
+  #setTrajectoryMouse(enabled: boolean): void {
+    if (!this.#tty || this.#trajectoryMouseEnabled === enabled) return
+    this.#trajectoryMouseEnabled = enabled
+    this.#term.output.write(enabled ? '\x1b[?1000h\x1b[?1006h' : '\x1b[?1006l\x1b[?1000l')
+  }
+
   openTrajectory(source: TuiTrajectorySource, options: TuiTrajectoryOptions = {}): Promise<void> {
     if (!this.#tty) return Promise.reject(new Error('Trajectory requires an interactive terminal'))
     if (this.#disposed) return Promise.resolve()
@@ -657,11 +664,14 @@ export class LocalTui implements TuiService {
     this.#ac = null
     this.#trajectorySource = source
     this.#trajectory = createTrajectoryState(source.activeSessionId, options)
+    this.#setTrajectoryMouse(true)
     this.#deferInitialRender = false
     this.#render()
     void this.#refreshTrajectory(true, source.activeSessionId)
     const pollMs = Math.max(500, Math.min(30_000, source.pollIntervalMs ?? 1_500))
-    this.#trajectoryPoll = setInterval(() => { void this.#refreshTrajectory(true) }, pollMs)
+    this.#trajectoryPoll = setInterval(() => {
+      if (this.#trajectoryAbort === null) void this.#refreshTrajectory(true)
+    }, pollMs)
     this.#trajectoryPoll.unref?.()
     return new Promise((resolve) => { this.#trajectoryResolve = resolve })
   }
@@ -827,6 +837,11 @@ export class LocalTui implements TuiService {
     const source = this.#trajectorySource
     const current = this.#trajectory
     if (source === null || current === null || this.#disposed) return
+    const preferredId = requestedId
+      ?? current.sessions[current.selectedSession]?.id
+      ?? current.snapshot?.id
+      ?? source.activeSessionId
+    const baselineSeq = current.snapshot?.events.reduce((maximum, event) => Math.max(maximum, event.seq), -1) ?? -1
     const requestId = ++this.#trajectoryRequestId
     this.#trajectoryAbort?.abort()
     const controller = new AbortController()
@@ -837,10 +852,14 @@ export class LocalTui implements TuiService {
       let next = this.#trajectory
       if (next === null) return
       if (reloadList) {
-        next = setTrajectorySessions(next, await source.list(controller.signal))
+        const sessions = await source.list(controller.signal)
         if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
+        next = setTrajectorySessions(this.#trajectory, sessions)
       }
-      const id = requestedId ?? next.snapshot?.id ?? next.sessions[next.selectedSession]?.id ?? source.activeSessionId
+      const preferredIndex = next.sessions.findIndex(session => session.id === preferredId)
+      const id = preferredIndex >= 0
+        ? preferredId
+        : next.sessions[next.selectedSession]?.id ?? next.snapshot?.id ?? source.activeSessionId
       const selectedSession = next.sessions.findIndex(session => session.id === id)
       next = {
         ...next,
@@ -851,7 +870,19 @@ export class LocalTui implements TuiService {
       this.#trajectory = next
       const snapshot = await source.inspect(id, controller.signal)
       if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
-      this.#trajectory = setTrajectorySnapshot(this.#trajectory, snapshot)
+      const latest = this.#trajectory
+      const liveEvents = latest.snapshot?.id === snapshot.id
+        ? latest.snapshot.events.filter(event => event.seq > baselineSeq && !snapshot.events.some(candidate => candidate.seq === event.seq && candidate.type === event.type))
+        : []
+      const mergedSnapshot = liveEvents.length === 0
+        ? snapshot
+        : {
+            ...snapshot,
+            events: [...snapshot.events, ...liveEvents].sort((left, right) => left.seq - right.seq),
+            eventCount: snapshot.events.length + liveEvents.length,
+            updatedAt: Math.max(snapshot.updatedAt ?? 0, ...liveEvents.map(event => event.time)),
+          }
+      this.#trajectory = setTrajectorySnapshot(latest, mergedSnapshot)
       this.#trajectoryAbort = null
       this.#render()
     } catch (error: unknown) {
@@ -866,7 +897,7 @@ export class LocalTui implements TuiService {
   #applyTrajectory(event: KeyEvent): void {
     const state = this.#trajectory
     if (state === null) return
-    const command = applyTrajectoryEvent(state, event)
+    const command = applyTrajectoryEvent(state, event, this.#term.width(), this.#term.height())
     if (command.kind === 'update') {
       this.#trajectory = command.state
       this.#render()
@@ -901,7 +932,8 @@ export class LocalTui implements TuiService {
   }
 
   #closeTrajectory(render = true): void {
-    if (this.#trajectory === null && this.#trajectoryResolve === null) return
+    if (this.#trajectory === null && this.#trajectoryResolve === null && !this.#trajectoryMouseEnabled) return
+    this.#setTrajectoryMouse(false)
     this.#trajectoryRequestId += 1
     this.#trajectoryAbort?.abort()
     this.#trajectoryAbort = null
