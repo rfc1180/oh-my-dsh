@@ -301,10 +301,10 @@ export class DurableSessionIndex {
     return snapshots
   }
 
-  /** Read at most `limit` summaries, refolding only suffixes past exact persisted checkpoints. */
+  /** Read summaries, refolding only suffixes past exact persisted checkpoints. */
   async recent(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
-    limit: number,
+    limit?: number,
     signal?: AbortSignal,
   ): Promise<IndexedRecentSession[]> {
     let index = await this.#currentIndex(fallback, signal)
@@ -339,7 +339,7 @@ export class DurableSessionIndex {
           }
           const row = projectRecent(entry.header, checkpoint.projection)
           if (row !== undefined) rows.push(row)
-          if (rows.length >= limit) break
+          if (limit !== undefined && rows.length >= limit) break
         }
         if (changed) await this.#queueWrite(index)
         return rows

@@ -981,6 +981,14 @@ export class SessionRuntime {
   }
 
   async refreshRecent(expected: ActiveSession | undefined = this.#active): Promise<void> {
+    await this.#refreshSessions(8, expected)
+  }
+
+  async refreshAllSessions(expected: ActiveSession | undefined = this.#active): Promise<void> {
+    await this.#refreshSessions(undefined, expected)
+  }
+
+  async #refreshSessions(limit: number | undefined, expected: ActiveSession | undefined): Promise<void> {
     const persistence = this.#ctx.get('sessionPersistence')
     if (persistence === undefined) {
       if (expected !== this.#active) return
@@ -989,11 +997,11 @@ export class SessionRuntime {
       return
     }
     const accelerated = persistence as typeof persistence & {
-      omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
+      omdshRecentSessions?: (limit?: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
     }
     if (accelerated.omdshRecentSessions !== undefined) {
       try {
-        this.#recent = await accelerated.omdshRecentSessions(8)
+        this.#recent = await accelerated.omdshRecentSessions(limit)
         this.#pushSessionInfo()
         return
       } catch {
@@ -1017,10 +1025,10 @@ export class SessionRuntime {
           eventCount: inspected.events.length,
           ...(status === undefined ? {} : { status }),
         })
-        if (rows.length >= 8) break
+        if (limit !== undefined && rows.length >= limit) break
       } catch {
         rows.push({ id: header.id, title: '(unavailable session)', createdAt: header.createdAt })
-        if (rows.length >= 8) break
+        if (limit !== undefined && rows.length >= limit) break
       }
     }
     if (expected !== this.#active) return

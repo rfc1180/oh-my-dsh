@@ -14,7 +14,7 @@ interface AcceleratedPrototype extends IndexedPersistence {
   findLog: (id: string, signal?: AbortSignal) => Promise<string | undefined>
   list: (signal?: AbortSignal) => Promise<SessionHeader[]>
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
-  omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
+  omdshRecentSessions?: (limit?: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
 }

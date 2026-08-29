@@ -36,7 +36,7 @@ async function resumeSession(ctx: Context, invocation: CommandInvocation): Promi
   if (invocation.agent.status === 'running') {
     return { kind: 'error', text: 'Finish or interrupt the active turn before resuming another session.' }
   }
-  await ctx.omdshSession.refreshRecent()
+  await ctx.omdshSession.refreshAllSessions()
   let id = invocation.rawInput.trim()
   if (id === '') {
     const recent = ctx.omdshSession.recentSessions

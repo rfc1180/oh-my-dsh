@@ -346,6 +346,33 @@ describe('SessionRuntime.refreshRecent', () => {
     await runtime.dispose()
     await ctx.fiber.dispose()
   })
+
+  it('keeps every resumable top-level session in the fallback list', async () => {
+    const ctx = new Context()
+    const headers = Array.from({ length: 12 }, (_, index) => ({
+      id: `session-${index}`,
+      createdAt: index + 1,
+    }))
+    ctx.provide('sessionPersistence', {
+      list: vi.fn(async () => headers),
+      inspect: vi.fn(async (id: string) => ({
+        events: [{
+          type: 'user/message',
+          seq: 1,
+          time: Number(id.slice('session-'.length)) + 1,
+          data: { source: { kind: 'user' }, content: [{ type: 'text', text: id }] },
+        }],
+      })),
+    } as never)
+    const runtime = new SessionRuntime(ctx, stubTui())
+
+    await runtime.refreshAllSessions()
+
+    expect(runtime.recentSessions).toHaveLength(12)
+    expect(runtime.recentSessions.map(session => session.id)).toEqual(headers.reverse().map(header => header.id))
+    await runtime.dispose()
+    await ctx.fiber.dispose()
+  })
 })
 
 describe('SessionRuntime.execute', () => {

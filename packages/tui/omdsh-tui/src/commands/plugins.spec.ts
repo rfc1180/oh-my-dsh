@@ -96,10 +96,13 @@ describe('omdsh command plugins', () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(CommandRuntime)
+    ctx.provide('sessionPersistence', {} as never)
     const newSession = vi.fn(async () => undefined)
+    const refreshAllSessions = vi.fn(async () => undefined)
     const runtime = {
       newSession,
       refreshRecent: vi.fn(async () => undefined),
+      refreshAllSessions,
       recentSessions: [],
       selection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }),
       reasoningEffort: () => 'high',
@@ -130,6 +133,10 @@ describe('omdsh command plugins', () => {
     expect(newSession).toHaveBeenCalledWith(agent)
     expect(session.events.filter(event => event.type === 'command/run' || event.type === 'command/done').map(event => event.type))
       .toEqual(['command/run', 'command/done'])
+
+    await expect(ctx.commands.execute(agent, '/resume', [], new AbortController().signal))
+      .resolves.toMatchObject({ result: { kind: 'success', text: 'No durable sessions found.' } })
+    expect(refreshAllSessions).toHaveBeenCalledOnce()
 
     const details = await ctx.commands.execute(agent, '/session', [], new AbortController().signal)
     expect(details).toBeDefined()
