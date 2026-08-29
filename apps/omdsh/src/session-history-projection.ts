@@ -104,6 +104,10 @@ function eventContent(event: SessionEvent): SafeHistoryContentV1 | undefined {
   return undefined
 }
 
+function sameContent(left: SafeHistoryContentV1, right: SafeHistoryContentV1): boolean {
+  return left.text === right.text && (left.imageCount ?? 0) === (right.imageCount ?? 0)
+}
+
 function eventRef(event: SessionEvent): HistoryEventRefV1 {
   if (event.type === 'tool/call') {
     return { seq: event.seq, time: event.time, type: event.type, turn: event.data.turn, step: event.data.step, name: event.data.name }
@@ -191,7 +195,9 @@ export function projectSessionHistoryV1(header: SessionHeader, events: readonly 
       const content = eventContent(event)
       if (content !== undefined) {
         const turn = openTurn
-        const steering = turn !== undefined && latestByTurn.has(turn)
+        const previous = turn === undefined ? undefined : interactions[latestByTurn.get(turn) ?? -1]
+        if (previous !== undefined && sameContent(previous.input.content, content)) continue
+        const steering = turn !== undefined && previous !== undefined
         const index = interactions.length
         interactions.push({
           id: turn === undefined ? `event:${event.seq}` : `turn:${turn}:${event.seq}`,

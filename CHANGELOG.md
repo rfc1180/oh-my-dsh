@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep `/sessions` history readable by collapsing duplicate delivery of the same prompt within one turn, and include the latest prompt preview in session search.
 - Exclude service roots without local direct-human input from the default indexed session catalog, and let authoritative hydration remove stale placeholder rows instead of preserving them.
 - Render Markdown tables richly while they stream, honor column alignment, and switch any crowded table to a lossless responsive record layout instead of crushing words into unreadable cells.
 - Request enhanced terminal key reporting so Shift+Enter reliably creates readable paragraphs, and separate user prompts with restrained rules instead of gray background blocks.

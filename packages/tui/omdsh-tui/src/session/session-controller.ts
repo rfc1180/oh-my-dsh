@@ -1072,7 +1072,7 @@ export class SessionRuntime {
       }
       const needle = request.query?.trim().toLocaleLowerCase() ?? ''
       const values = classified.filter(row => row.scope === request.scope && (needle === '' || [
-        row.title, row.id, row.cwd ?? '', row.status ?? '',
+        row.title, row.preview ?? '', row.id, row.cwd ?? '', row.status ?? '',
       ].some(value => value.toLocaleLowerCase().includes(needle))))
       const compareText = (left: string, right: string): number => left.localeCompare(right, undefined, { sensitivity: 'base' })
       values.sort((left, right) => {

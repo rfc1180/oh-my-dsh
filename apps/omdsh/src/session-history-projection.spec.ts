@@ -123,6 +123,25 @@ describe('Session History Projection v1 interactions', () => {
     expect(projection.interactions[0]?.answer).toBeUndefined()
   })
 
+  it('collapses duplicate delivery of the same direct input within one turn', () => {
+    const projection = projectSessionHistoryV1(header(), [
+      turnStart(0), human(1, 'Same prompt'), human(2, 'Same prompt'), assistant(3, 'Answer'), turnEnd(4, 'completed'),
+    ])
+    expect(projection.interactions).toHaveLength(1)
+    expect(projection.interactions[0]).toMatchObject({
+      input: { kind: 'input', content: { format: 'markdown', text: 'Same prompt' } },
+      answer: { content: { format: 'markdown', text: 'Answer' } },
+    })
+  })
+
+  it('keeps repeated text from different turns as separate interactions', () => {
+    const projection = projectSessionHistoryV1(header(), [
+      turnStart(0), human(1, 'Continue'), turnEnd(2, 'completed'),
+      turnStart(3, 2), human(4, 'Continue', 2), turnEnd(5, 'completed', 2),
+    ])
+    expect(projection.interactions).toHaveLength(2)
+  })
+
   it('infers a legacy answer only before the next direct human input', () => {
     const projection = projectSessionHistoryV1(header(), [
       human(0, 'First'), assistant(1, 'First answer'), injected(2, 'status'), human(3, 'Second'), assistant(4, 'Second answer'),
