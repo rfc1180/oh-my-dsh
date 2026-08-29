@@ -342,7 +342,7 @@ export function movePromptSelection(
   count: number = state.request.options?.length ?? 0,
 ): PromptSelectorState {
   if (count === 0) return state
-  const selected = (next % count + count) % count
+  const selected = Math.max(0, Math.min(next, count - 1))
   return selected === state.selected ? state : { ...state, selected }
 }
 

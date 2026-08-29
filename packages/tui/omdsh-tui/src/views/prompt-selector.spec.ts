@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { maskPromptSecret, renderPlanReviewPage, renderPromptSelector, renderPromptSelectorPage, type PromptSelectorState } from './prompt-selector.ts'
+import { maskPromptSecret, movePromptSelection, renderPlanReviewPage, renderPromptSelector, renderPromptSelectorPage, type PromptSelectorState } from './prompt-selector.ts'
 import { createTheme } from '../chrome/theme.ts'
 import { stripAnsi, visibleWidth } from '../chrome/width.ts'
 
@@ -89,6 +89,23 @@ describe('secret prompt', () => {
     expect(text).toContain('•'.repeat(secret.length))
     expect(text).toContain('API key · hidden')
     expect(frame.cursorVisible).toBe(true)
+  })
+})
+
+describe('prompt selection movement', () => {
+  const state: PromptSelectorState = {
+    request: {
+      title: 'Resume Session',
+      question: '',
+      options: [{ label: 'First' }, { label: 'Second' }, { label: 'Last' }],
+    },
+    selected: 0,
+    checked: new Set(),
+  }
+
+  it('stops at the first and last option instead of wrapping', () => {
+    expect(movePromptSelection(state, -1).selected).toBe(0)
+    expect(movePromptSelection({ ...state, selected: 2 }, 3).selected).toBe(2)
   })
 })
 
