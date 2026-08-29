@@ -6,6 +6,7 @@ import {
   DurableSessionIndex,
   type IndexedPersistence,
   type IndexedRecentSession,
+  type IndexedSemanticSession,
   type IndexedViewportTail,
   type SessionPersistenceSnapshot,
 } from './session-index-store.ts'
@@ -18,6 +19,7 @@ interface AcceleratedPrototype extends IndexedPersistence {
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
   omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
+  omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedSemanticSession[]>
   omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
@@ -59,6 +61,9 @@ export function installSessionPersistenceIndex(): void {
   }
   prototype.omdshSessionCatalog = function (signal) {
     return indexFor(this).catalog(candidate => listSnapshots.call(this, candidate), signal)
+  }
+  prototype.omdshSemanticSessionCatalog = function (signal) {
+    return indexFor(this).semanticCatalog(candidate => listSnapshots.call(this, candidate), signal)
   }
   prototype.omdshHydrateSessionCatalog = function (signal) {
     return indexFor(this).recent(candidate => listSnapshots.call(this, candidate), Number.MAX_SAFE_INTEGER, signal)

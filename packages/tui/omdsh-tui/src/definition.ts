@@ -141,6 +141,7 @@ export interface TuiRecentSession {
   createdAt: number
   updatedAt?: number
   eventCount?: number
+  turns?: number
   status?: 'done' | 'interrupted' | 'blocked' | 'failed'
 }
 

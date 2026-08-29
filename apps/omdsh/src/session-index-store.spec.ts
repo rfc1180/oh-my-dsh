@@ -49,7 +49,7 @@ describe('DurableSessionIndex', () => {
     const item = await fixture()
     const first = new DurableSessionIndex(item.root, 'none', item.persistence)
     await expect(first.recent(item.fallback, 8)).resolves.toEqual([expect.objectContaining({
-      id: 'session-one', title: 'First question', status: 'done', eventCount: 2,
+      id: 'session-one', title: 'First question', status: 'done', eventCount: 2, turns: 1,
     })])
     expect(item.reads).toEqual([0])
 
@@ -73,6 +73,18 @@ describe('DurableSessionIndex', () => {
     })])
     expect(item.reads).toEqual([])
     expect(item.fallback).toHaveBeenCalledOnce()
+  })
+
+  it('publishes semantic scope and turn metadata without reopening journals', async () => {
+    const item = await fixture()
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.recent(item.fallback, 8)
+    item.reads.splice(0)
+
+    await expect(index.semanticCatalog(item.fallback)).resolves.toEqual([expect.objectContaining({
+      id: 'session-one', scope: 'human', turns: 1, canResume: true,
+    })])
+    expect(item.reads).toEqual([])
   })
 
   it('coalesces concurrent startup index load and rebuild work', async () => {

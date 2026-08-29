@@ -24,7 +24,14 @@ export interface IndexedRecentSession {
   createdAt: number
   updatedAt: number
   eventCount: number
+  turns?: number
   status?: 'done' | 'failed' | 'blocked' | 'interrupted'
+}
+
+export interface IndexedSemanticSession extends IndexedRecentSession {
+  scope: 'human' | 'internal' | 'subagent' | 'legacy'
+  turns: number
+  canResume: boolean
 }
 
 interface SummaryProjection {
@@ -35,6 +42,9 @@ interface SummaryProjection {
   openTurn: boolean
   updatedAt: number
   eventCount: number
+  turnCount?: number
+  localHumanMessageCount?: number
+  hasTurnLifecycle?: boolean
 }
 
 interface ProjectionCheckpoint {
@@ -105,6 +115,9 @@ function isProjection(value: unknown): value is SummaryProjection {
     && typeof value.openTurn === 'boolean'
     && Number.isSafeInteger(value.updatedAt) && Number(value.updatedAt) >= 0
     && Number.isSafeInteger(value.eventCount) && Number(value.eventCount) >= 0
+    && (value.turnCount === undefined || (Number.isSafeInteger(value.turnCount) && Number(value.turnCount) >= 0))
+    && (value.localHumanMessageCount === undefined || (Number.isSafeInteger(value.localHumanMessageCount) && Number(value.localHumanMessageCount) >= 0))
+    && (value.hasTurnLifecycle === undefined || typeof value.hasTurnLifecycle === 'boolean')
 }
 
 function isSnapshotEvent(value: unknown): value is SessionEvent {
@@ -178,20 +191,36 @@ function eventText(event: SessionEvent, localFromSeq: number): string | undefine
 
 function foldEvents(base: SummaryProjection | undefined, events: readonly SessionEvent[], localFromSeq: number): SummaryProjection {
   const projection: SummaryProjection = base === undefined
-    ? { openTurn: false, updatedAt: 0, eventCount: 0 }
+    ? {
+        openTurn: false,
+        updatedAt: 0,
+        eventCount: 0,
+        turnCount: 0,
+        localHumanMessageCount: 0,
+        hasTurnLifecycle: false,
+      }
     : structuredClone(base)
+  projection.turnCount ??= 0
+  projection.localHumanMessageCount ??= 0
+  projection.hasTurnLifecycle ??= false
   for (const event of events) {
     projection.eventCount += 1
     projection.updatedAt = Math.max(projection.updatedAt, event.time)
     const text = eventText(event, localFromSeq)
     if (text !== undefined) {
+      projection.localHumanMessageCount += 1
       projection.firstMessage ??= text
       projection.lastMessage = text
     }
     if (event.type === 'session/title') projection.title = event.data.title
-    if (event.type === 'turn/start') projection.openTurn = true
+    if (event.type === 'turn/start') {
+      projection.openTurn = true
+      projection.hasTurnLifecycle = true
+    }
     if (event.type === 'turn/end') {
       projection.openTurn = false
+      projection.hasTurnLifecycle = true
+      projection.turnCount += 1
       const reason = event.data.reason.kind
       projection.status = reason === 'completed' ? 'done'
         : reason === 'error' ? 'failed'
@@ -213,6 +242,7 @@ function projectRecent(header: SessionHeader, projection: SummaryProjection): In
     createdAt: header.createdAt,
     updatedAt: projection.updatedAt || header.createdAt,
     eventCount: projection.eventCount,
+    turns: projection.turnCount ?? 0,
     ...(projection.openTurn ? { status: 'interrupted' as const }
       : projection.status === undefined ? {} : { status: projection.status }),
   }
@@ -319,6 +349,39 @@ export class DurableSessionIndex {
       })
   }
 
+  /** Classify the complete catalog from bounded checkpoints without exposing journal events. */
+  async semanticCatalog(
+    fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
+    signal?: AbortSignal,
+  ): Promise<IndexedSemanticSession[]> {
+    const index = await this.#currentIndex(fallback, signal)
+    return Object.values(index.entries).map(entry => {
+      const projection = entry.checkpoint?.projection
+      const human = (projection?.localHumanMessageCount ?? (projection?.firstMessage === undefined ? 0 : 1)) > 0
+      const scope: IndexedSemanticSession['scope'] = entry.header.origin === 'subagent'
+        ? 'subagent'
+        : projection?.hasTurnLifecycle === false && projection.eventCount > 0
+          ? 'legacy'
+          : human ? 'human' : 'internal'
+      const title = projection?.title ?? projection?.firstMessage ?? entry.header.id
+      return {
+        id: entry.header.id,
+        title,
+        ...(projection?.lastMessage === undefined || projection.lastMessage === title
+          ? {} : { preview: projection.lastMessage }),
+        ...(entry.header.cwd === undefined ? {} : { cwd: entry.header.cwd }),
+        createdAt: entry.header.createdAt,
+        updatedAt: projection?.updatedAt || entry.header.createdAt,
+        eventCount: projection?.eventCount ?? 0,
+        turns: projection?.turnCount ?? 0,
+        ...(projection?.openTurn === true ? { status: 'interrupted' as const }
+          : projection?.status === undefined ? {} : { status: projection.status }),
+        scope,
+        canResume: scope !== 'subagent',
+      }
+    })
+  }
+
   /** Read at most `limit` summaries, refolding only suffixes past exact persisted checkpoints. */
   async recent(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
@@ -340,6 +403,11 @@ export class DurableSessionIndex {
           // old all-catalog stat pass over hundreds of unrelated journals.
           const revision = await sessionFileRevision(entry.path)
           let checkpoint = entry.checkpoint
+          if (checkpoint !== undefined && (
+            checkpoint.projection.turnCount === undefined
+            || checkpoint.projection.localHumanMessageCount === undefined
+            || checkpoint.projection.hasTurnLifecycle === undefined
+          )) checkpoint = undefined
           if (checkpoint?.revision !== revision) {
             const fromSeq = checkpoint?.nextSeq ?? 0
             const before = await this.#persistence.readStoredRevision(entry.header.id, signal)

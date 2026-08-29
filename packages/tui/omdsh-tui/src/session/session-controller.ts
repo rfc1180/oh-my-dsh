@@ -1002,6 +1002,7 @@ export class SessionRuntime {
     const persistence = this.#ctx.get('sessionPersistence')
     if (persistence === undefined) throw new Error('Session persistence is not configured.')
     const accelerated = persistence as typeof persistence & {
+      omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<TuiSessionCatalogRow[]>
       omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<TuiRecentSession[]>
       omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<{ events: readonly SessionEvent[] } | undefined>
       omdshProjectSessionHistory?: (id: string, signal?: AbortSignal) => Promise<{
@@ -1023,35 +1024,42 @@ export class SessionRuntime {
       `history-v1:${encodeURIComponent(id)}:${beforeSeq}`
     const catalog = async (request: TuiSessionCatalogRequest, signal?: AbortSignal): Promise<TuiSessionCatalogPage> => {
       signal?.throwIfAborted()
-      await this.refreshAllSessions(active)
-      signal?.throwIfAborted()
-      rows = this.#recent.map(row => ({ ...row }))
-      const summaries = new Map(rows.map(row => [row.id, row]))
-      const headers = await persistence.list(signal)
-      signal?.throwIfAborted()
-      const classified: TuiSessionCatalogRow[] = headers.map(header => {
-        const summary = summaries.get(header.id)
-        const scope = header.origin === 'subagent' ? 'subagent' as const
-          : summary === undefined ? 'internal' as const : 'human' as const
-        return {
-          id: header.id,
-          title: summary?.title ?? header.id,
-          ...(summary?.preview === undefined ? {} : { preview: summary.preview }),
-          ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
-          createdAt: header.createdAt,
-          updatedAt: summary?.updatedAt ?? header.createdAt,
-          eventCount: summary?.eventCount ?? 0,
-          ...(summary?.status === undefined ? {} : { status: summary.status }),
-          scope,
-          turns: 0,
-          canResume: scope !== 'subagent',
-        }
-      })
+      let classified: TuiSessionCatalogRow[]
+      if (accelerated.omdshSemanticSessionCatalog !== undefined) {
+        classified = (await accelerated.omdshSemanticSessionCatalog.call(persistence, signal))
+          .map(row => ({ ...row }))
+        rows = classified.filter(row => row.scope === 'human').map(row => ({ ...row }))
+      } else {
+        await this.refreshAllSessions(active)
+        signal?.throwIfAborted()
+        rows = this.#recent.map(row => ({ ...row }))
+        const summaries = new Map(rows.map(row => [row.id, row]))
+        const headers = await persistence.list(signal)
+        signal?.throwIfAborted()
+        classified = headers.map(header => {
+          const summary = summaries.get(header.id)
+          const scope = header.origin === 'subagent' ? 'subagent' as const
+            : summary === undefined ? 'internal' as const : 'human' as const
+          return {
+            id: header.id,
+            title: summary?.title ?? header.id,
+            ...(summary?.preview === undefined ? {} : { preview: summary.preview }),
+            ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+            createdAt: header.createdAt,
+            updatedAt: summary?.updatedAt ?? header.createdAt,
+            eventCount: summary?.eventCount ?? 0,
+            ...(summary?.status === undefined ? {} : { status: summary.status }),
+            scope,
+            turns: summary?.turns ?? 0,
+            canResume: scope !== 'subagent',
+          }
+        })
+      }
       const counts = {
         human: classified.filter(row => row.scope === 'human').length,
         internal: classified.filter(row => row.scope === 'internal').length,
         subagent: classified.filter(row => row.scope === 'subagent').length,
-        legacy: 0,
+        legacy: classified.filter(row => row.scope === 'legacy').length,
       }
       const needle = request.query?.trim().toLocaleLowerCase() ?? ''
       const values = classified.filter(row => row.scope === request.scope && (needle === '' || [
