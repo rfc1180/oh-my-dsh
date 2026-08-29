@@ -20,6 +20,7 @@ export interface IndexedRecentSession {
   id: string
   title: string
   preview?: string
+  cwd?: string
   createdAt: number
   updatedAt: number
   eventCount: number
@@ -208,6 +209,7 @@ function projectRecent(header: SessionHeader, projection: SummaryProjection): In
     id: header.id,
     title,
     ...(projection.lastMessage === undefined || projection.lastMessage === title ? {} : { preview: projection.lastMessage }),
+    ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
     createdAt: header.createdAt,
     updatedAt: projection.updatedAt || header.createdAt,
     eventCount: projection.eventCount,
@@ -314,6 +316,7 @@ export class DurableSessionIndex {
         ? {
             id: entry.header.id,
             title: entry.header.id,
+            ...(entry.header.cwd === undefined ? {} : { cwd: entry.header.cwd }),
             createdAt: entry.header.createdAt,
             updatedAt: entry.header.createdAt,
             eventCount: 0,
@@ -321,6 +324,7 @@ export class DurableSessionIndex {
         : projectRecent(entry.header, entry.checkpoint.projection) ?? {
             id: entry.header.id,
             title: entry.header.id,
+            ...(entry.header.cwd === undefined ? {} : { cwd: entry.header.cwd }),
             createdAt: entry.header.createdAt,
             updatedAt: entry.header.createdAt,
             eventCount: entry.checkpoint.projection.eventCount,
