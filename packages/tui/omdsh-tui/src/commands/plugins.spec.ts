@@ -99,11 +99,14 @@ describe('omdsh command plugins', () => {
     ctx.provide('sessionPersistence', {} as never)
     const newSession = vi.fn(async () => undefined)
     const resumeSession = vi.fn(async () => undefined)
+    const refreshAllSessions = vi.fn(async () => undefined)
     const source = { activeSessionId: 'command-plugin-test', list: vi.fn(), inspect: vi.fn() }
     const runtime = {
       newSession,
       resumeSession,
       refreshRecent: vi.fn(async () => undefined),
+      refreshAllSessions,
+      recentSessions: [{ id: 'session-legacy', title: 'Legacy session', createdAt: 1 }],
       sessionManagerSource: vi.fn(() => source),
       selection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }),
       reasoningEffort: () => 'high',
@@ -151,6 +154,16 @@ describe('omdsh command plugins', () => {
       .resolves.toMatchObject({ result: { kind: 'success', text: 'Resumed session-direct.' } })
     expect(openSessionManager).toHaveBeenCalledTimes(3)
     expect(resumeSession).toHaveBeenLastCalledWith(agent, 'session-direct', expect.any(AbortSignal))
+
+    ;(tui as unknown as { openSessionManager?: unknown }).openSessionManager = undefined
+    vi.mocked(tui.prompt).mockResolvedValueOnce('session-legacy')
+    await expect(ctx.commands.execute(agent, '/sessions', [], new AbortController().signal))
+      .resolves.toMatchObject({ result: { kind: 'success', text: 'Resumed session-legacy.' } })
+    expect(refreshAllSessions).toHaveBeenCalledOnce()
+    expect(tui.prompt).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Sessions · restart OMDsh for the rich manager',
+      presentation: 'fullscreen-list',
+    }))
 
     const details = await ctx.commands.execute(agent, '/session', [], new AbortController().signal)
     expect(details).toBeDefined()

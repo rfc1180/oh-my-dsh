@@ -6,6 +6,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '../runtime/session-runtime.ts'
 import { registerCommands } from './registration.ts'
+import { formatRelativeAge } from '../chrome/relative-time.ts'
 import { formatPermission, formatTokens } from '../chrome/status-line.ts'
 import { formatAgentPreset, formatToolPresentation } from '../session/session-configuration.ts'
 
@@ -38,9 +39,42 @@ async function browseSessions(ctx: Context, invocation: CommandInvocation, direc
   let id = invocation.rawInput.trim()
   if (!directId && id !== '') return { kind: 'error', text: 'Usage: /sessions' }
   if (id === '') {
-    const result = await ctx.tui.openSessionManager(ctx.omdshSession.sessionManagerSource(invocation.agent), invocation.signal)
-    if (result === null) return { kind: 'success' }
-    id = result.id
+    const openManager = ctx.tui.openSessionManager
+    if (typeof openManager === 'function') {
+      const result = await openManager.call(
+        ctx.tui,
+        ctx.omdshSession.sessionManagerSource(invocation.agent),
+        invocation.signal,
+      )
+      if (result === null) return { kind: 'success' }
+      id = result.id
+    } else {
+      // A recovered command plugin can temporarily run against the previous
+      // process-owned TUI service. Keep session access usable until restart.
+      await ctx.omdshSession.refreshAllSessions()
+      const sessions = ctx.omdshSession.recentSessions
+      if (sessions.length === 0) return { kind: 'success', text: 'No durable sessions found.' }
+      const answer = await ctx.tui.prompt({
+        title: 'Sessions · restart OMDsh for the rich manager',
+        question: '',
+        options: sessions.map(session => ({
+          label: session.title,
+          value: session.id,
+          ...(session.preview === undefined ? {} : { preview: session.preview }),
+          description: [
+            formatRelativeAge(session.updatedAt ?? session.createdAt),
+            ...(session.eventCount === undefined ? [] : [`${session.eventCount} events`]),
+          ].join(' · '),
+        })),
+        presentation: 'fullscreen-list',
+        filterable: true,
+        allowCustom: false,
+        signal: invocation.signal,
+      })
+      if (answer === null) return { kind: 'success' }
+      const index = /^\d+$/u.test(answer) ? Number(answer) - 1 : -1
+      id = index >= 0 ? (sessions[index]?.id ?? answer) : answer
+    }
   }
   if (id === invocation.agent.id) return { kind: 'success', text: 'That session is already active.' }
   try {
