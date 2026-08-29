@@ -75,15 +75,29 @@ describe('DurableSessionIndex', () => {
     expect(item.fallback).toHaveBeenCalledOnce()
   })
 
+  it('marks an unhydrated semantic catalog stale before journal checkpoints are folded', async () => {
+    const item = await fixture()
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+
+    await expect(index.semanticCatalog(item.fallback)).resolves.toEqual({
+      sessions: [expect.objectContaining({ id: 'session-one', scope: 'internal', turns: 0 })],
+      stale: true,
+    })
+    expect(item.reads).toEqual([])
+  })
+
   it('publishes semantic scope and turn metadata without reopening journals', async () => {
     const item = await fixture()
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
     await index.recent(item.fallback, 8)
     item.reads.splice(0)
 
-    await expect(index.semanticCatalog(item.fallback)).resolves.toEqual([expect.objectContaining({
-      id: 'session-one', scope: 'human', turns: 1, canResume: true,
-    })])
+    await expect(index.semanticCatalog(item.fallback)).resolves.toEqual({
+      sessions: [expect.objectContaining({
+        id: 'session-one', scope: 'human', turns: 1, canResume: true,
+      })],
+      stale: false,
+    })
     expect(item.reads).toEqual([])
   })
 

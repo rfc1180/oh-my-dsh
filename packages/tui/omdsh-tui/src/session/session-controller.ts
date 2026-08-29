@@ -1002,7 +1002,10 @@ export class SessionRuntime {
     const persistence = this.#ctx.get('sessionPersistence')
     if (persistence === undefined) throw new Error('Session persistence is not configured.')
     const accelerated = persistence as typeof persistence & {
-      omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<TuiSessionCatalogRow[]>
+      omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<{
+        readonly sessions: readonly TuiSessionCatalogRow[]
+        readonly stale: boolean
+      }>
       omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<TuiRecentSession[]>
       omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<{ events: readonly SessionEvent[] } | undefined>
       omdshProjectSessionHistory?: (id: string, signal?: AbortSignal) => Promise<{
@@ -1025,9 +1028,15 @@ export class SessionRuntime {
     const catalog = async (request: TuiSessionCatalogRequest, signal?: AbortSignal): Promise<TuiSessionCatalogPage> => {
       signal?.throwIfAborted()
       let classified: TuiSessionCatalogRow[]
+      let stale = false
       if (accelerated.omdshSemanticSessionCatalog !== undefined) {
-        classified = (await accelerated.omdshSemanticSessionCatalog.call(persistence, signal))
-          .map(row => ({ ...row }))
+        if (request.hydrate === true && hydrateCatalog !== undefined) {
+          await hydrateCatalog.call(persistence, signal)
+          signal?.throwIfAborted()
+        }
+        const semantic = await accelerated.omdshSemanticSessionCatalog.call(persistence, signal)
+        classified = semantic.sessions.map(row => ({ ...row }))
+        stale = semantic.stale
         rows = classified.filter(row => row.scope === 'human').map(row => ({ ...row }))
       } else {
         await this.refreshAllSessions(active)
@@ -1092,6 +1101,7 @@ export class SessionRuntime {
         sessions,
         ...(hasMore && sessions.at(-1) !== undefined ? { nextCursor: catalogCursor(request, sessions.at(-1)!.id) } : {}),
         hasMore,
+        stale,
       }
     }
     const historyPage = async (request: TuiSessionHistoryPageRequest, signal?: AbortSignal): Promise<TuiSessionHistoryPage> => {

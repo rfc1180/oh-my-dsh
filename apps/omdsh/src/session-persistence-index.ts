@@ -6,7 +6,7 @@ import {
   DurableSessionIndex,
   type IndexedPersistence,
   type IndexedRecentSession,
-  type IndexedSemanticSession,
+  type IndexedSemanticCatalog,
   type IndexedViewportTail,
   type SessionPersistenceSnapshot,
 } from './session-index-store.ts'
@@ -19,7 +19,7 @@ interface AcceleratedPrototype extends IndexedPersistence {
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
   omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
-  omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedSemanticSession[]>
+  omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedSemanticCatalog>
   omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>

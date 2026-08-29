@@ -164,6 +164,8 @@ export interface TuiSessionCatalogRequest {
   readonly query?: string
   readonly cursor?: string
   readonly limit?: number
+  /** Rebuild incomplete legacy checkpoints after the first fast catalog paint. */
+  readonly hydrate?: boolean
 }
 
 export interface TuiSessionCatalogRow extends TuiSessionManagerEntry {
@@ -186,6 +188,7 @@ export interface TuiSessionCatalogPage {
   readonly sessions: readonly TuiSessionCatalogRow[]
   readonly nextCursor?: string
   readonly hasMore: boolean
+  readonly stale: boolean
 }
 
 export interface TuiSessionHistoryPageRequest {

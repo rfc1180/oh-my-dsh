@@ -34,6 +34,11 @@ export interface IndexedSemanticSession extends IndexedRecentSession {
   canResume: boolean
 }
 
+export interface IndexedSemanticCatalog {
+  sessions: IndexedSemanticSession[]
+  stale: boolean
+}
+
 interface SummaryProjection {
   firstMessage?: string
   lastMessage?: string
@@ -353,9 +358,14 @@ export class DurableSessionIndex {
   async semanticCatalog(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
     signal?: AbortSignal,
-  ): Promise<IndexedSemanticSession[]> {
+  ): Promise<IndexedSemanticCatalog> {
     const index = await this.#currentIndex(fallback, signal)
-    return Object.values(index.entries).map(entry => {
+    const entries = Object.values(index.entries)
+    const stale = entries.some(entry => entry.checkpoint === undefined
+      || entry.checkpoint.projection.turnCount === undefined
+      || entry.checkpoint.projection.localHumanMessageCount === undefined
+      || entry.checkpoint.projection.hasTurnLifecycle === undefined)
+    const sessions = entries.map(entry => {
       const projection = entry.checkpoint?.projection
       const human = (projection?.localHumanMessageCount ?? (projection?.firstMessage === undefined ? 0 : 1)) > 0
       const scope: IndexedSemanticSession['scope'] = entry.header.origin === 'subagent'
@@ -380,6 +390,7 @@ export class DurableSessionIndex {
         canResume: scope !== 'subagent',
       }
     })
+    return { sessions, stale }
   }
 
   /** Read at most `limit` summaries, refolding only suffixes past exact persisted checkpoints. */
