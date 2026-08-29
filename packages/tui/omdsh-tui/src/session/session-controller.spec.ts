@@ -347,29 +347,29 @@ describe('SessionRuntime.refreshRecent', () => {
     await ctx.fiber.dispose()
   })
 
-  it('keeps every resumable top-level session in the fallback list', async () => {
+  it('loads the complete indexed catalog without inspecting session logs', async () => {
     const ctx = new Context()
-    const headers = Array.from({ length: 12 }, (_, index) => ({
+    const catalog = Array.from({ length: 12 }, (_, index) => ({
       id: `session-${index}`,
-      createdAt: index + 1,
+      title: `Session ${index}`,
+      createdAt: 12 - index,
+      updatedAt: 12 - index,
+      eventCount: index,
     }))
+    const indexed = vi.fn(async () => catalog)
+    const inspect = vi.fn()
     ctx.provide('sessionPersistence', {
-      list: vi.fn(async () => headers),
-      inspect: vi.fn(async (id: string) => ({
-        events: [{
-          type: 'user/message',
-          seq: 1,
-          time: Number(id.slice('session-'.length)) + 1,
-          data: { source: { kind: 'user' }, content: [{ type: 'text', text: id }] },
-        }],
-      })),
+      omdshSessionCatalog: indexed,
+      list: vi.fn(async () => []),
+      inspect,
     } as never)
     const runtime = new SessionRuntime(ctx, stubTui())
 
     await runtime.refreshAllSessions()
 
-    expect(runtime.recentSessions).toHaveLength(12)
-    expect(runtime.recentSessions.map(session => session.id)).toEqual(headers.reverse().map(header => header.id))
+    expect(runtime.recentSessions).toEqual(catalog)
+    expect(indexed).toHaveBeenCalledOnce()
+    expect(inspect).not.toHaveBeenCalled()
     await runtime.dispose()
     await ctx.fiber.dispose()
   })

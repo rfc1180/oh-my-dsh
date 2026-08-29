@@ -985,6 +985,21 @@ export class SessionRuntime {
   }
 
   async refreshAllSessions(expected: ActiveSession | undefined = this.#active): Promise<void> {
+    const persistence = this.#ctx.get('sessionPersistence')
+    const accelerated = persistence as typeof persistence & {
+      omdshSessionCatalog?: (signal?: AbortSignal) => Promise<TuiRecentSession[]>
+    }
+    if (accelerated?.omdshSessionCatalog !== undefined) {
+      try {
+        const rows = await accelerated.omdshSessionCatalog()
+        if (expected !== this.#active) return
+        this.#recent = rows
+        this.#pushSessionInfo()
+        return
+      } catch {
+        // Fail closed: the rc.8 inspect path remains authoritative for stale/corrupt indexes.
+      }
+    }
     await this.#refreshSessions(undefined, expected)
   }
 
@@ -997,11 +1012,13 @@ export class SessionRuntime {
       return
     }
     const accelerated = persistence as typeof persistence & {
-      omdshRecentSessions?: (limit?: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
+      omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
     }
-    if (accelerated.omdshRecentSessions !== undefined) {
+    if (limit !== undefined && accelerated.omdshRecentSessions !== undefined) {
       try {
-        this.#recent = await accelerated.omdshRecentSessions(limit)
+        const rows = await accelerated.omdshRecentSessions(limit)
+        if (expected !== this.#active) return
+        this.#recent = rows
         this.#pushSessionInfo()
         return
       } catch {

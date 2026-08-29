@@ -301,10 +301,36 @@ export class DurableSessionIndex {
     return snapshots
   }
 
-  /** Read summaries, refolding only suffixes past exact persisted checkpoints. */
+  /** Read every top-level session from the catalog without opening its journal. */
+  async catalog(
+    fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
+    signal?: AbortSignal,
+  ): Promise<IndexedRecentSession[]> {
+    const index = await this.#currentIndex(fallback, signal)
+    return Object.values(index.entries)
+      .filter(entry => entry.header.origin !== 'subagent')
+      .sort((left, right) => right.header.createdAt - left.header.createdAt)
+      .map(entry => entry.checkpoint === undefined
+        ? {
+            id: entry.header.id,
+            title: entry.header.id,
+            createdAt: entry.header.createdAt,
+            updatedAt: entry.header.createdAt,
+            eventCount: 0,
+          }
+        : projectRecent(entry.header, entry.checkpoint.projection) ?? {
+            id: entry.header.id,
+            title: entry.header.id,
+            createdAt: entry.header.createdAt,
+            updatedAt: entry.header.createdAt,
+            eventCount: entry.checkpoint.projection.eventCount,
+          })
+  }
+
+  /** Read at most `limit` summaries, refolding only suffixes past exact persisted checkpoints. */
   async recent(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
-    limit?: number,
+    limit: number,
     signal?: AbortSignal,
   ): Promise<IndexedRecentSession[]> {
     let index = await this.#currentIndex(fallback, signal)
@@ -339,7 +365,7 @@ export class DurableSessionIndex {
           }
           const row = projectRecent(entry.header, checkpoint.projection)
           if (row !== undefined) rows.push(row)
-          if (limit !== undefined && rows.length >= limit) break
+          if (rows.length >= limit) break
         }
         if (changed) await this.#queueWrite(index)
         return rows

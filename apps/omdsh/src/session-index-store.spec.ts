@@ -62,6 +62,19 @@ describe('DurableSessionIndex', () => {
     expect(item.fallback).toHaveBeenCalledTimes(1)
   })
 
+  it('returns the complete cached catalog without reopening journals', async () => {
+    const item = await fixture()
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.recent(item.fallback, 8)
+    item.reads.splice(0)
+
+    await expect(index.catalog(item.fallback)).resolves.toEqual([expect.objectContaining({
+      id: 'session-one', title: 'First question', eventCount: 2,
+    })])
+    expect(item.reads).toEqual([])
+    expect(item.fallback).toHaveBeenCalledOnce()
+  })
+
   it('coalesces concurrent startup index load and rebuild work', async () => {
     const item = await fixture()
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)

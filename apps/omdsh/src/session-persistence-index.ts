@@ -14,7 +14,8 @@ interface AcceleratedPrototype extends IndexedPersistence {
   findLog: (id: string, signal?: AbortSignal) => Promise<string | undefined>
   list: (signal?: AbortSignal) => Promise<SessionHeader[]>
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
-  omdshRecentSessions?: (limit?: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
+  omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
+  omdshSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
 }
@@ -50,6 +51,9 @@ export function installSessionPersistenceIndex(): void {
   }
   prototype.omdshRecentSessions = function (limit, signal) {
     return indexFor(this).recent(candidate => listSnapshots.call(this, candidate), limit, signal)
+  }
+  prototype.omdshSessionCatalog = function (signal) {
+    return indexFor(this).catalog(candidate => listSnapshots.call(this, candidate), signal)
   }
   prototype.omdshViewportTail = function (id, signal) {
     return indexFor(this).viewportTail(id, signal)
