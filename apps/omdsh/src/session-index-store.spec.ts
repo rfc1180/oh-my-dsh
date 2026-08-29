@@ -69,7 +69,7 @@ describe('DurableSessionIndex', () => {
     item.reads.splice(0)
 
     await expect(index.catalog(item.fallback)).resolves.toEqual([expect.objectContaining({
-      id: 'session-one', title: 'First question', eventCount: 2,
+      id: 'session-one', title: 'First question', cwd: '/tmp/project', eventCount: 2,
     })])
     expect(item.reads).toEqual([])
     expect(item.fallback).toHaveBeenCalledOnce()

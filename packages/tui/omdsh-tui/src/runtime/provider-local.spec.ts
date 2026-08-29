@@ -207,6 +207,41 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('opens Session Manager, previews selection, and returns a bounded resume action', async () => {
+    const term = new FakeTerminal()
+    term.columns = 120
+    term.rows = 30
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { alternateScreenOverlays: true })
+    const before = term.captured.length
+    const selected = tui.openSessionManager({
+      activeSessionId: 'session-live',
+      list: async () => [
+        { id: 'session-one', title: 'First durable task', cwd: '/work/one', createdAt: 2 },
+        { id: 'session-two', title: 'Second durable task', cwd: '/work/two', createdAt: 1 },
+      ],
+      inspect: async (id) => ({
+        id,
+        title: id === 'session-one' ? 'First durable task' : 'Second durable task',
+        cwd: id === 'session-one' ? '/work/one' : '/work/two',
+        createdAt: id === 'session-one' ? 2 : 1,
+        events: [ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `Preview ${id}` }] }, 1)],
+      }),
+    })
+    await flushAsyncPaste()
+    await vi.waitFor(() => {
+      expect(emulatedScreenRows(term.captured.slice(before)).map(stripAnsi).join('\n')).toContain('Preview session-one')
+    })
+    const opened = term.captured.slice(before)
+    expect(opened).toContain('\x1b[?1049h')
+    expect(emulatedScreenRows(opened).map(stripAnsi).join('\n')).toContain('First durable task')
+
+    press(term, '\x1b[B\r')
+
+    await expect(selected).resolves.toEqual({ kind: 'resume', id: 'session-two' })
+    expect(term.captured.slice(before)).toContain('\x1b[?1049l')
+    tui.dispose()
+  })
+
   it('opens /trajectory as the native screen while keeping companion and text explicit', async () => {
     const term = new FakeTerminal()
     term.columns = 120
