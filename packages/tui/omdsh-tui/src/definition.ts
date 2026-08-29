@@ -152,11 +152,112 @@ export interface TuiSessionManagerSession extends TuiSessionManagerEntry {
   readonly events: readonly SessionEvent[]
 }
 
+export type TuiSessionCatalogScope = 'human' | 'internal' | 'subagent' | 'legacy'
+export type TuiSessionCatalogSortField = 'updated' | 'created' | 'project' | 'title' | 'status' | 'turns'
+export type TuiSessionCatalogSortDirection = 'asc' | 'desc'
+
+export interface TuiSessionCatalogRequest {
+  readonly scope: TuiSessionCatalogScope
+  readonly sortField: TuiSessionCatalogSortField
+  readonly sortDirection: TuiSessionCatalogSortDirection
+  readonly query?: string
+  readonly cursor?: string
+  readonly limit?: number
+}
+
+export interface TuiSessionCatalogRow extends TuiSessionManagerEntry {
+  readonly scope: TuiSessionCatalogScope
+  readonly turns: number
+  readonly canResume: boolean
+}
+
+export interface TuiSessionCatalogCounts {
+  readonly human: number
+  readonly internal: number
+  readonly subagent: number
+  readonly legacy: number
+}
+
+export interface TuiSessionCatalogPage {
+  readonly schemaVersion: 1
+  readonly activeSessionId: string
+  readonly counts: TuiSessionCatalogCounts
+  readonly sessions: readonly TuiSessionCatalogRow[]
+  readonly nextCursor?: string
+  readonly hasMore: boolean
+}
+
+export interface TuiSessionHistoryPageRequest {
+  readonly id: string
+  readonly cursor?: string
+  readonly limit?: number
+}
+
+export interface TuiSessionHistoryCounts {
+  readonly conversation: number
+  readonly prompts: number
+  readonly answers: number
+  readonly technical: number
+}
+
+export interface TuiSessionHistoryContent {
+  readonly format: 'markdown'
+  readonly text?: string
+  readonly imageCount?: number
+}
+
+export interface TuiSessionHistoryEventRef {
+  readonly seq: number
+  readonly time: number
+  readonly type: string
+  readonly turn?: number
+  readonly step?: number
+  readonly name?: string
+  readonly status?: 'completed' | 'failed'
+}
+
+export interface TuiSessionHistoryInput {
+  readonly kind: 'input' | 'steering'
+  readonly content: TuiSessionHistoryContent
+  readonly ref: TuiSessionHistoryEventRef
+}
+
+export interface TuiSessionHistoryAnswer {
+  readonly content: TuiSessionHistoryContent
+  readonly confidence: 'explicit' | 'inferred'
+  readonly ref: TuiSessionHistoryEventRef
+}
+
+export interface TuiSessionHistoryInteraction {
+  readonly id: string
+  readonly turn?: number
+  readonly input: TuiSessionHistoryInput
+  readonly answer?: TuiSessionHistoryAnswer
+  readonly outcome: {
+    readonly kind: 'completed' | 'failed' | 'blocked' | 'interrupted' | 'open' | 'unknown'
+    readonly ref?: TuiSessionHistoryEventRef
+  }
+  readonly technicalTrace: readonly TuiSessionHistoryEventRef[]
+}
+
+export interface TuiSessionHistoryPage {
+  readonly schemaVersion: 1
+  readonly sessionId: string
+  readonly counts: TuiSessionHistoryCounts
+  readonly interactions: readonly TuiSessionHistoryInteraction[]
+  readonly previousCursor?: string
+  readonly hasMore: boolean
+}
+
 /** Data source kept outside the session manager renderer. */
 export interface TuiSessionManagerSource {
   readonly activeSessionId: string
+  /** Semantic v1 catalog. Domain filtering, classification, sorting, and cursors stay in OMDsh. */
+  catalog?(request: TuiSessionCatalogRequest, signal?: AbortSignal): Promise<TuiSessionCatalogPage>
+  /** Semantic interaction history. Presentation providers never receive raw journal events through this path. */
+  historyPage?(request: TuiSessionHistoryPageRequest, signal?: AbortSignal): Promise<TuiSessionHistoryPage>
+  /** Legacy renderer compatibility during the v1 rollout. */
   list(signal?: AbortSignal): Promise<readonly TuiSessionManagerEntry[]>
-  /** Complete missing index summaries in the background after the first fast paint. */
   hydrate?(signal?: AbortSignal): Promise<readonly TuiSessionManagerEntry[]>
   inspect(id: string, signal?: AbortSignal): Promise<TuiSessionManagerSession>
 }

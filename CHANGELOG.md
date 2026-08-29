@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Publish the complete session telemetry projection to supporting terminal hosts so narrow panes can expose it through host-native hover chrome without enabling TUI mouse tracking.
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
 - Open the current conversation's live Trajectory as a rich native read-only TUI in the current terminal with `/trajectory`, `/trajectory screen`, or Alt+T; use `/trajectory companion` when a separate Surfterm block is preferred. Both surfaces scope the run tree to the active root and its descendants and expose numbered summary, all, tools, and errors views alongside search, follow mode, refresh, event details, and clipboard copy.
+- Project durable journals into a versioned semantic session-history model with explainable human/internal/subagent/legacy classification, safe interaction content, final-answer boundaries, and cursor-based catalog/history pages for native terminal consumers.
 
 ### Changed
 
@@ -22,6 +23,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Exclude service roots without local direct-human input from the default indexed session catalog, and let authoritative hydration remove stale placeholder rows instead of preserving them.
 - Render Markdown tables richly while they stream, honor column alignment, and switch any crowded table to a lossless responsive record layout instead of crushing words into unreadable cells.
 - Request enhanced terminal key reporting so Shift+Enter reliably creates readable paragraphs, and separate user prompts with restrained rules instead of gray background blocks.
 - Reconcile live terminal geometry before painting so a resize missed during startup or between terminal events cannot leave the composer and status footer above blank rows.

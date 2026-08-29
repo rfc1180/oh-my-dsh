@@ -1,6 +1,7 @@
 /** Product-owned acceleration hooks over the published rc.8 JSONL persistence backend. */
 import { JsonlSessionPersistence } from '@deepseek-ai/dsh-session-persistence-jsonl'
-import type { SessionHeader } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
+import { projectSessionHistoryV1, type SessionHistoryProjectionV1 } from './session-history-projection.ts'
 import {
   DurableSessionIndex,
   type IndexedPersistence,
@@ -13,12 +14,15 @@ interface AcceleratedPrototype extends IndexedPersistence {
   config: { root: string; compression?: string }
   findLog: (id: string, signal?: AbortSignal) => Promise<string | undefined>
   list: (signal?: AbortSignal) => Promise<SessionHeader[]>
+  inspect: (id: string, signal?: AbortSignal) => Promise<{ meta: SessionHeader; events: SessionEvent[] }>
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
   omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
+  /** Versioned semantic DTO source for non-TypeScript production consumers. */
+  omdshProjectSessionHistory?: (id: string, signal?: AbortSignal) => Promise<SessionHistoryProjectionV1>
 }
 
 let installed = false
@@ -64,5 +68,10 @@ export function installSessionPersistenceIndex(): void {
   }
   prototype.omdshRefreshViewportTail = function (id, knownNextSeq, signal) {
     return indexFor(this).refreshViewportTail(id, candidate => listSnapshots.call(this, candidate), signal, knownNextSeq)
+  }
+  prototype.omdshProjectSessionHistory = async function (id, signal) {
+    const inspected = await this.inspect(id, signal)
+    signal?.throwIfAborted()
+    return projectSessionHistoryV1(inspected.meta, inspected.events)
   }
 }

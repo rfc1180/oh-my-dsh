@@ -163,8 +163,8 @@ function buildViewportTail(
   return { ...payload, digest: viewportDigest(payload) }
 }
 
-function eventText(event: SessionEvent): string | undefined {
-  if (event.type !== 'user/message' || event.data.source.kind !== 'user') return undefined
+function eventText(event: SessionEvent, localFromSeq: number): string | undefined {
+  if (event.seq < localFromSeq || event.type !== 'user/message' || event.data.source.kind !== 'user') return undefined
   const text = event.data.content
     .filter((block): block is Extract<(typeof event.data.content)[number], { type: 'text' }> => block.type === 'text')
     .map(block => block.text)
@@ -176,14 +176,14 @@ function eventText(event: SessionEvent): string | undefined {
   return images === 0 ? undefined : images === 1 ? 'Image' : `${images} images`
 }
 
-function foldEvents(base: SummaryProjection | undefined, events: readonly SessionEvent[]): SummaryProjection {
+function foldEvents(base: SummaryProjection | undefined, events: readonly SessionEvent[], localFromSeq: number): SummaryProjection {
   const projection: SummaryProjection = base === undefined
     ? { openTurn: false, updatedAt: 0, eventCount: 0 }
     : structuredClone(base)
   for (const event of events) {
     projection.eventCount += 1
     projection.updatedAt = Math.max(projection.updatedAt, event.time)
-    const text = eventText(event)
+    const text = eventText(event, localFromSeq)
     if (text !== undefined) {
       projection.firstMessage ??= text
       projection.lastMessage = text
@@ -303,7 +303,7 @@ export class DurableSessionIndex {
     return snapshots
   }
 
-  /** Read every top-level session from the catalog without opening its journal. */
+  /** Read checkpoint-classified human sessions without opening journals or inventing placeholders. */
   async catalog(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
     signal?: AbortSignal,
@@ -312,23 +312,11 @@ export class DurableSessionIndex {
     return Object.values(index.entries)
       .filter(entry => entry.header.origin !== 'subagent')
       .sort((left, right) => right.header.createdAt - left.header.createdAt)
-      .map(entry => entry.checkpoint === undefined
-        ? {
-            id: entry.header.id,
-            title: entry.header.id,
-            ...(entry.header.cwd === undefined ? {} : { cwd: entry.header.cwd }),
-            createdAt: entry.header.createdAt,
-            updatedAt: entry.header.createdAt,
-            eventCount: 0,
-          }
-        : projectRecent(entry.header, entry.checkpoint.projection) ?? {
-            id: entry.header.id,
-            title: entry.header.id,
-            ...(entry.header.cwd === undefined ? {} : { cwd: entry.header.cwd }),
-            createdAt: entry.header.createdAt,
-            updatedAt: entry.header.createdAt,
-            eventCount: entry.checkpoint.projection.eventCount,
-          })
+      .flatMap(entry => {
+        if (entry.checkpoint === undefined) return []
+        const projected = projectRecent(entry.header, entry.checkpoint.projection)
+        return projected === undefined ? [] : [projected]
+      })
   }
 
   /** Read at most `limit` summaries, refolding only suffixes past exact persisted checkpoints. */
@@ -360,7 +348,7 @@ export class DurableSessionIndex {
             if (suffix.meta.id !== entry.header.id) throw new Error(`session "${entry.header.id}" suffix identity mismatch`)
             const after = await this.#persistence.readStoredRevision(entry.header.id, signal)
             if (String(after) !== revision) throw new Error(`session "${entry.header.id}" changed during projection read`)
-            const projection = foldEvents(checkpoint?.projection, suffix.events)
+            const projection = foldEvents(checkpoint?.projection, suffix.events, entry.header.seedLength ?? 0)
             let nextSeq = fromSeq
             for (const event of suffix.events) nextSeq = Math.max(nextSeq, event.seq + 1)
             checkpoint = { revision, nextSeq, projection }

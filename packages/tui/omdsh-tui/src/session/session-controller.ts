@@ -48,6 +48,12 @@ import type {
   TuiService,
   TuiSessionManagerSource,
   TuiSessionManagerSession,
+  TuiSessionCatalogPage,
+  TuiSessionCatalogRequest,
+  TuiSessionCatalogRow,
+  TuiSessionHistoryInteraction,
+  TuiSessionHistoryPage,
+  TuiSessionHistoryPageRequest,
   TuiSessionControls,
   TuiSessionStats,
   TuiSubmission,
@@ -998,11 +1004,120 @@ export class SessionRuntime {
     const accelerated = persistence as typeof persistence & {
       omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<TuiRecentSession[]>
       omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<{ events: readonly SessionEvent[] } | undefined>
+      omdshProjectSessionHistory?: (id: string, signal?: AbortSignal) => Promise<{
+        readonly version: 1
+        readonly sessionId: string
+        readonly title: string
+        readonly createdAt: number
+        readonly updatedAt: number
+        readonly status?: 'completed' | 'failed' | 'blocked' | 'interrupted'
+        readonly classification: { readonly bucket: 'human' | 'internal' | 'subagent' | 'legacy' }
+        readonly interactions: readonly TuiSessionHistoryInteraction[]
+      }>
     }
     const hydrateCatalog = accelerated.omdshHydrateSessionCatalog
     let rows: readonly TuiRecentSession[] = []
+    const catalogCursor = (request: TuiSessionCatalogRequest, id: string): string =>
+      `catalog-v1:${request.scope}:${request.sortField}:${request.sortDirection}:${encodeURIComponent(request.query ?? '')}:${encodeURIComponent(id)}`
+    const historyCursor = (id: string, beforeSeq: number): string =>
+      `history-v1:${encodeURIComponent(id)}:${beforeSeq}`
+    const catalog = async (request: TuiSessionCatalogRequest, signal?: AbortSignal): Promise<TuiSessionCatalogPage> => {
+      signal?.throwIfAborted()
+      await this.refreshAllSessions(active)
+      signal?.throwIfAborted()
+      rows = this.#recent.map(row => ({ ...row }))
+      const summaries = new Map(rows.map(row => [row.id, row]))
+      const headers = await persistence.list(signal)
+      signal?.throwIfAborted()
+      const classified: TuiSessionCatalogRow[] = headers.map(header => {
+        const summary = summaries.get(header.id)
+        const scope = header.origin === 'subagent' ? 'subagent' as const
+          : summary === undefined ? 'internal' as const : 'human' as const
+        return {
+          id: header.id,
+          title: summary?.title ?? header.id,
+          ...(summary?.preview === undefined ? {} : { preview: summary.preview }),
+          ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+          createdAt: header.createdAt,
+          updatedAt: summary?.updatedAt ?? header.createdAt,
+          eventCount: summary?.eventCount ?? 0,
+          ...(summary?.status === undefined ? {} : { status: summary.status }),
+          scope,
+          turns: 0,
+          canResume: scope !== 'subagent',
+        }
+      })
+      const counts = {
+        human: classified.filter(row => row.scope === 'human').length,
+        internal: classified.filter(row => row.scope === 'internal').length,
+        subagent: classified.filter(row => row.scope === 'subagent').length,
+        legacy: 0,
+      }
+      const needle = request.query?.trim().toLocaleLowerCase() ?? ''
+      const values = classified.filter(row => row.scope === request.scope && (needle === '' || [
+        row.title, row.id, row.cwd ?? '', row.status ?? '',
+      ].some(value => value.toLocaleLowerCase().includes(needle))))
+      const compareText = (left: string, right: string): number => left.localeCompare(right, undefined, { sensitivity: 'base' })
+      values.sort((left, right) => {
+        const primary = request.sortField === 'updated'
+          ? (left.updatedAt ?? left.createdAt) - (right.updatedAt ?? right.createdAt)
+          : request.sortField === 'created' ? left.createdAt - right.createdAt
+            : request.sortField === 'project' ? compareText(left.cwd ?? '', right.cwd ?? '')
+              : request.sortField === 'title' ? compareText(left.title, right.title)
+                : request.sortField === 'status' ? compareText(left.status ?? '', right.status ?? '')
+                  : left.turns - right.turns
+        const directed = request.sortDirection === 'asc' ? primary : -primary
+        return directed || left.id.localeCompare(right.id)
+      })
+      const expectedPrefix = `catalog-v1:${request.scope}:${request.sortField}:${request.sortDirection}:${encodeURIComponent(request.query ?? '')}:`
+      const afterId = request.cursor?.startsWith(expectedPrefix) === true
+        ? decodeURIComponent(request.cursor.slice(expectedPrefix.length)) : undefined
+      const found = afterId === undefined ? -1 : values.findIndex(row => row.id === afterId)
+      const start = afterId === undefined ? 0 : found < 0 ? values.length : found + 1
+      const limit = Math.max(1, Math.min(request.limit ?? 50, 200))
+      const sessions = values.slice(start, start + limit)
+      const hasMore = start + sessions.length < values.length
+      return {
+        schemaVersion: 1,
+        activeSessionId: agent.id,
+        counts,
+        sessions,
+        ...(hasMore && sessions.at(-1) !== undefined ? { nextCursor: catalogCursor(request, sessions.at(-1)!.id) } : {}),
+        hasMore,
+      }
+    }
+    const historyPage = async (request: TuiSessionHistoryPageRequest, signal?: AbortSignal): Promise<TuiSessionHistoryPage> => {
+      const project = accelerated.omdshProjectSessionHistory
+      if (project === undefined) throw new Error('Semantic session history is unavailable.')
+      signal?.throwIfAborted()
+      const projection = await project.call(persistence, request.id, signal)
+      signal?.throwIfAborted()
+      const prefix = `history-v1:${encodeURIComponent(request.id)}:`
+      const parsed = request.cursor?.startsWith(prefix) === true ? Number(request.cursor.slice(prefix.length)) : undefined
+      const beforeSeq = parsed !== undefined && Number.isSafeInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+      const eligible = projection.interactions.filter(interaction => interaction.input.ref.seq < beforeSeq)
+      const limit = Math.max(1, Math.min(request.limit ?? 20, 50))
+      const interactions = eligible.slice(-limit)
+      const first = interactions[0]
+      const hasMore = first !== undefined && eligible.some(interaction => interaction.input.ref.seq < first.input.ref.seq)
+      return {
+        schemaVersion: 1,
+        sessionId: projection.sessionId,
+        counts: {
+          conversation: projection.interactions.length,
+          prompts: projection.interactions.length,
+          answers: projection.interactions.filter(interaction => interaction.answer !== undefined).length,
+          technical: projection.interactions.reduce((total, interaction) => total + interaction.technicalTrace.length, 0),
+        },
+        interactions,
+        ...(hasMore && first !== undefined ? { previousCursor: historyCursor(request.id, first.input.ref.seq) } : {}),
+        hasMore,
+      }
+    }
     return {
       activeSessionId: agent.id,
+      catalog,
+      historyPage,
       list: async (signal) => {
         signal?.throwIfAborted()
         await this.refreshAllSessions(active)
@@ -1014,11 +1129,9 @@ export class SessionRuntime {
         hydrate: async (signal?: AbortSignal) => {
           const hydrated = await hydrateCatalog.call(persistence, signal)
           signal?.throwIfAborted()
-          const summaries = new Map(hydrated.map(row => [row.id, row]))
-          rows = rows.map(row => {
-            const summary = summaries.get(row.id)
-            return summary === undefined ? { ...row } : { ...row, ...summary }
-          })
+          // Hydration is authoritative classification, not a sticky metadata merge:
+          // rows without local direct-human input must disappear instead of surviving as id placeholders.
+          rows = hydrated.map(row => ({ ...row }))
           return rows
         },
       }),
