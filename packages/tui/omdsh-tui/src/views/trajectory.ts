@@ -606,9 +606,9 @@ function nextFocus(focus: TrajectoryFocus, direction: 1 | -1): TrajectoryFocus {
 
 /** Resolve a 1-based SGR coordinate to a visible pane, including blank pane rows. */
 export function trajectoryPaneAt(state: TrajectoryState, width: number, height: number, column: number, row: number): TrajectoryFocus | undefined {
-  if (width < 28 || height < 10 || column <= 1 || column >= width || row < 4) return undefined
-  const contentHeight = Math.max(1, height - 6)
-  const y = row - 4
+  if (width < 28 || height < 10 || column <= 1 || column >= width || row < 5) return undefined
+  const contentHeight = Math.max(1, height - 7)
+  const y = row - 5
   if (y < 0 || y >= contentHeight) return undefined
   const innerWidth = Math.max(1, width - 2)
   if (innerWidth >= 92) {
@@ -628,7 +628,11 @@ export function trajectoryPaneAt(state: TrajectoryState, width: number, height: 
 /** Apply one input event without touching persistence or the terminal. */
 export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, width = 0, height = 0): TrajectoryCommand {
   if (state.guideOpen) {
-    const closesGuide = (event.type === 'text' && ['?', 'h', 'q'].includes(event.value))
+    if (event.type === 'text' && /^[1-7]$/u.test(event.value)) {
+      const mode = MODES[Number(event.value) - 1] ?? 'overview'
+      return { kind: 'update', state: { ...state, guideOpen: false, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
+    }
+    const closesGuide = (event.type === 'text' && ['0', '?', 'h', 'q'].includes(event.value))
       || (event.type === 'key' && ['escape', 'enter', 'ctrl+j'].includes(event.id))
     return closesGuide ? { kind: 'update', state: { ...state, guideOpen: false } } : { kind: 'ignore' }
   }
@@ -655,7 +659,7 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
   }
   if (event.type === 'text') {
     if (event.value === '/') return { kind: 'update', state: { ...state, searchActive: true, query: '', focus: 'timeline' } }
-    if (event.value === '?' || event.value === 'h') return { kind: 'update', state: { ...state, guideOpen: true } }
+    if (event.value === '0' || event.value === '?' || event.value === 'h') return { kind: 'update', state: { ...state, guideOpen: true } }
     if (event.value === 'q') return { kind: 'close' }
     if (/^[1-7]$/u.test(event.value)) {
       const mode = MODES[Number(event.value) - 1] ?? 'overview'
@@ -928,6 +932,17 @@ function modeTitle(mode: TuiTrajectoryMode): string {
   }[mode]
 }
 
+function modeTabs(state: TrajectoryState, theme: Theme, width: number): string {
+  const tabs: readonly [string, string, boolean][] = [
+    ['0', 'Guide', state.guideOpen],
+    ...MODES.map((mode, index): [string, string, boolean] => [String(index + 1), mode.charAt(0).toUpperCase() + mode.slice(1), !state.guideOpen && state.mode === mode]),
+  ]
+  return truncateToWidth(' ' + tabs.map(([key, label, selected]) => {
+    const value = `${key} ${label}`
+    return selected ? theme.bold(theme.fg('accent', `[${value}]`)) : theme.fg('dim', value)
+  }).join(' · '), width)
+}
+
 function guideRows(theme: Theme, width: number, height: number): string[] {
   const source = [
     ['What this block does', 'A read-only map of the current durable conversation. It does not start another agent or change the journal.'],
@@ -941,7 +956,7 @@ function guideRows(theme: Theme, width: number, height: number): string[] {
     rows.push('  ' + theme.bold(theme.fg('accent', heading)))
     rows.push(...wrapText(body, Math.max(1, width - 4)).map(line => '    ' + theme.fg('muted', line)))
   }
-  rows.push('', '  ' + theme.fg('dim', '? / h / Esc / Enter returns to Trajectory'))
+  rows.push('', '  ' + theme.fg('dim', '0 / ? / h / Esc / Enter returns to Trajectory'))
   return rows.slice(0, height).map(row => truncateToWidth(row, width))
 }
 
@@ -991,8 +1006,9 @@ export function renderTrajectory(
       ? theme.bold('How to read Trajectory') + theme.fg('dim', ` · ${status}`)
       : theme.bold(truncateToWidth(selectedTitle, Math.max(1, pageWidth - 8))) + theme.fg('dim', ` · ${status}`)
   const lines: string[] = [
-    topBorder(theme, `${appName} · Trajectory · ? guide`, pageWidth),
+    topBorder(theme, `${appName} · Trajectory`, pageWidth),
     borderRow(theme, ' ' + search, pageWidth),
+    borderRow(theme, modeTabs(state, theme, Math.max(1, pageWidth - 2)), pageWidth),
     divider(theme, pageWidth),
   ]
   const footerRows = 3
@@ -1046,12 +1062,12 @@ export function renderTrajectory(
   lines.push(...content.map(line => borderRow(theme, line, pageWidth)))
   lines.push(divider(theme, pageWidth))
   const hints = state.guideOpen
-    ? '? / h / Esc / Enter back to Trajectory'
+    ? '0 / ? / h / Esc / Enter back to Trajectory'
     : state.searchActive
       ? 'Type to filter · Enter apply · Esc leave search · Ctrl+C close'
       : pageWidth >= 112
-        ? '? guide · Tab panes · ↑↓/wheel move · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · l follow · r refresh · c copy · q close'
-        : '? guide · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · q close'
+        ? '0 guide · Tab panes · ↑↓/wheel move · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · l follow · r refresh · c copy · q close'
+        : '0 guide · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · q close'
   lines.push(borderRow(theme, ' ' + theme.fg('dim', hints), pageWidth), bottomBorder(theme, pageWidth))
   return {
     lines: lines.slice(0, pageHeight),
