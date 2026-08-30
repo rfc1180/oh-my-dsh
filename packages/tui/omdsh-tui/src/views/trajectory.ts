@@ -41,10 +41,17 @@ export interface TrajectoryEventRow {
   readonly glyph: string
   readonly label: string
   readonly summary: string
+  readonly status: 'unknown' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted'
+  readonly durationMs?: number | undefined
+  readonly sourceSeqs: readonly number[]
+  readonly repeatCount: number
+  readonly omittedChars: number
+  readonly diagnostic?: string | undefined
   readonly error: boolean
   readonly tool: boolean
   readonly problem: boolean
   readonly change?: string | undefined
+  readonly filePaths: readonly string[]
   readonly turnId?: string | undefined
   readonly stepId?: string | undefined
   readonly callId?: string | undefined
@@ -58,7 +65,11 @@ export interface TrajectoryState {
   readonly sessions: readonly TuiTrajectorySessionSummary[]
   readonly selectedSession: number
   readonly snapshot?: TuiTrajectorySession
+  /** Human semantic rows used by modes 1-6. */
   readonly rows: readonly TrajectoryEventRow[]
+  /** Exact one-row-per-durable-event projection used only by Raw. */
+  readonly rawRows: readonly TrajectoryEventRow[]
+  readonly diagnostics: readonly string[]
   readonly selectedEvent: number
   readonly focus: TrajectoryFocus
   readonly mode: TuiTrajectoryMode
@@ -66,6 +77,7 @@ export interface TrajectoryState {
   readonly searchActive: boolean
   readonly guideOpen: boolean
   readonly follow: boolean
+  readonly pausedAtSeq?: number | undefined
   readonly loading: boolean
   readonly error?: string | undefined
   readonly detailScroll: number
@@ -130,6 +142,13 @@ function number(value: unknown): number | undefined {
 function compact(value: unknown, limit = 180): string {
   const normalized = text(value).replace(/\s+/gu, ' ').trim()
   return normalized.length <= limit ? normalized : normalized.slice(0, Math.max(0, limit - 1)) + '…'
+}
+
+function excerpt(value: unknown, limit = 300): { value: string; omittedChars: number } {
+  const normalized = text(value).replace(/\s+/gu, ' ').trim()
+  if (normalized.length <= limit) return { value: normalized, omittedChars: 0 }
+  const kept = Math.max(0, limit - 1)
+  return { value: normalized.slice(0, kept) + '…', omittedChars: normalized.length - kept }
 }
 
 function jsonForSearch(value: unknown): string {
@@ -255,7 +274,7 @@ function isProblemEvent(event: EventLike): boolean {
 }
 
 function isToolEvent(event: EventLike): boolean {
-  return event.type.startsWith('tool/') || event.type.startsWith('tool-workflow/') || event.type.startsWith('subagent/')
+  return event.type.startsWith('tool/') && !event.type.startsWith('tool-workflow/')
 }
 
 function laneFor(event: EventLike): TrajectoryLane {
@@ -281,15 +300,18 @@ function explicitIds(event: EventLike): Pick<TrajectoryEventRow, 'turnId' | 'ste
   }
 }
 
-function confirmedChange(event: EventLike): string | undefined {
+function confirmedChange(event: EventLike): { summary: string; paths: string[] } | undefined {
   if (event.type !== 'tool/result') return undefined
   const data = eventData(event)
   const message = record(data.message)
   const content = Array.isArray(message.content) ? message.content.map(record) : []
   const first = content[0] ?? {}
   const nestedContent = Array.isArray(first.content) ? first.content.map(record) : []
-  const metadata = [data.metadata, message.metadata, first.metadata, ...nestedContent.map(block => block.metadata)].map(record)
+  // `meta` is the canonical dsh-session tool/result field. The remaining
+  // explicitly named locations are retained for journals written by older tools.
+  const metadata = [data.meta, data.metadata, message.metadata, first.metadata, ...nestedContent.map(block => block.metadata)].map(record)
   const summaries: string[] = []
+  const paths: string[] = []
   for (const value of metadata) {
     const diff = text(value.diff || value.patch)
     if (diff !== '') summaries.push(compact(diff, 240))
@@ -298,10 +320,13 @@ function confirmedChange(event: EventLike): string | undefined {
       const change = record(item)
       const path = text(change.path || change.file)
       const status = text(change.status || change.kind || change.operation)
-      if (path !== '') summaries.push([status, path].filter(Boolean).join(' '))
+      if (path !== '') {
+        paths.push(path)
+        summaries.push([status, path].filter(Boolean).join(' '))
+      }
     }
   }
-  return summaries.length === 0 ? undefined : summaries.join(' · ')
+  return summaries.length === 0 ? undefined : { summary: summaries.join(' · '), paths: [...new Set(paths)] }
 }
 
 interface Timings {
@@ -325,10 +350,15 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
     time: event.time,
     type: event.type,
     lane: laneFor(event),
+    status: failed ? 'failed' as const : event.type.endsWith('/start') || event.type === 'tool/call' ? 'running' as const : event.type.endsWith('/end') || event.type === 'tool/result' ? 'completed' as const : 'unknown' as const,
+    sourceSeqs: [event.seq],
+    repeatCount: 1,
+    omittedChars: 0,
     error: failed,
     problem: failed,
     tool: isToolEvent(event),
-    ...(change === undefined ? {} : { change }),
+    filePaths: change?.paths ?? [],
+    ...(change === undefined ? {} : { change: change.summary }),
     ...explicitIds(event),
   }
   switch (event.type) {
@@ -418,14 +448,13 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
     case 'llm/retry-started':
       return { ...base, category: 'error', tone: 'warning', glyph: SYMBOL.warning, label: 'Retry', summary: compact(data.reason || data.error || jsonForSearch(data)), defaultVisible: true }
     case 'session/end-seed':
-      return { ...base, category: 'system', tone: 'muted', glyph: '↻', label: 'Resume', summary: 'new process boundary', defaultVisible: true }
+      return { ...base, category: 'system', tone: 'muted', glyph: '↻', label: 'Resume', summary: 'new process boundary', defaultVisible: false }
     default:
       return { ...base, category: failed ? 'error' : 'system', tone: failed ? 'error' : 'muted', glyph: failed ? SYMBOL.error : '·', label: event.type, summary: compact(jsonForSearch(data)), defaultVisible: failed }
   }
 }
 
-/** Project a durable event log once; render frames only filter this cache. */
-export function buildTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEventRow[] {
+function buildRawTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEventRow[] {
   const timings: Timings = {
     turns: new Map(),
     steps: new Map(),
@@ -446,6 +475,112 @@ export function buildTrajectoryRows(events: readonly SessionEvent[]): Trajectory
     })
   }
   return rows
+}
+
+type PairedLifecycle = 'tool' | 'workflow' | 'agent'
+
+function lifecycleIdentity(row: TrajectoryEventRow, lifecycle: PairedLifecycle): string | undefined {
+  const data = eventData(row.event as EventLike)
+  if (lifecycle === 'tool') return row.callId
+  if (lifecycle === 'workflow') return row.runId
+  const childId = text(data.childId || data.agentId || data.id)
+  return row.runId === undefined || childId === '' ? undefined : timingKey(row.runId, childId)
+}
+
+function lifecycleFor(row: TrajectoryEventRow): { lifecycle: PairedLifecycle; side: 'start' | 'end' } | undefined {
+  if (row.type === 'tool/call') return { lifecycle: 'tool', side: 'start' }
+  if (row.type === 'tool/result') return { lifecycle: 'tool', side: 'end' }
+  if (row.type === 'tool-workflow/run-start') return { lifecycle: 'workflow', side: 'start' }
+  if (row.type === 'tool-workflow/run-end') return { lifecycle: 'workflow', side: 'end' }
+  if (row.type === 'tool-workflow/agent-start') return { lifecycle: 'agent', side: 'start' }
+  if (row.type === 'tool-workflow/agent-end') return { lifecycle: 'agent', side: 'end' }
+  return undefined
+}
+
+function pairedStatus(row: TrajectoryEventRow): TrajectoryEventRow['status'] {
+  if (row.error) return 'failed'
+  const data = eventData(row.event as EventLike)
+  const outcome = record(data.outcome)
+  const stop = record(data.stopReason)
+  const value = text(outcome.reason || outcome.status || stop.kind || data.stopReason || 'completed').toLocaleLowerCase()
+  if (value === 'blocked') return 'blocked'
+  if (/interrupt|abort/u.test(value)) return 'interrupted'
+  return value === 'completed' || value === 'ended' ? 'completed' : 'failed'
+}
+
+function pairRows(start: TrajectoryEventRow, end: TrajectoryEventRow, lifecycle: PairedLifecycle): TrajectoryEventRow {
+  const durationMs = end.time >= start.time ? end.time - start.time : undefined
+  const fullSummary = [start.summary, end.summary].filter(Boolean).join(' → ')
+  const clipped = excerpt(fullSummary)
+  const status = pairedStatus(end)
+  return {
+    ...end,
+    type: `${lifecycle}/lifecycle`,
+    category: lifecycle === 'tool' ? 'tool' : 'workflow',
+    lane: lifecycle === 'tool' ? 'execution' : 'orchestration',
+    label: start.label,
+    summary: clipped.value,
+    status,
+    ...(durationMs === undefined ? {} : { durationMs }),
+    sourceSeqs: [start.seq, end.seq],
+    omittedChars: clipped.omittedChars,
+    ...(end.turnId === undefined && start.turnId !== undefined ? { turnId: start.turnId } : {}),
+    ...(end.stepId === undefined && start.stepId !== undefined ? { stepId: start.stepId } : {}),
+    ...(end.callId === undefined && start.callId !== undefined ? { callId: start.callId } : {}),
+    ...(end.runId === undefined && start.runId !== undefined ? { runId: start.runId } : {}),
+    tool: lifecycle === 'tool',
+    problem: status !== 'completed',
+    error: status === 'failed',
+    tone: status === 'completed' ? 'success' : status === 'blocked' || status === 'interrupted' ? 'warning' : 'error',
+    glyph: status === 'completed' ? SYMBOL.success : status === 'failed' ? SYMBOL.error : SYMBOL.warning,
+    filePaths: [...new Set([...start.filePaths, ...end.filePaths])],
+    searchText: `${lifecycle} ${start.type} ${end.type} ${start.label} ${fullSummary} ${start.searchText} ${end.searchText}`.toLocaleLowerCase(),
+  }
+}
+
+/**
+ * Two-pass projection: first preserve every durable event as a Raw row, then
+ * pair only exact tool/workflow/agent lifecycle identities for human modes.
+ */
+export function buildTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEventRow[] {
+  const rawRows = buildRawTrajectoryRows(events)
+  const starts = new Map<string, TrajectoryEventRow>()
+  const consumedStarts = new Set<number>()
+  const semantic: TrajectoryEventRow[] = []
+  for (const row of rawRows) {
+    const lifecycle = lifecycleFor(row)
+    if (lifecycle === undefined) {
+      semantic.push(row)
+      continue
+    }
+    const identity = lifecycleIdentity(row, lifecycle.lifecycle)
+    const key = identity === undefined ? undefined : `${lifecycle.lifecycle}:${identity}`
+    if (lifecycle.side === 'start') {
+      if (key === undefined) {
+        semantic.push({ ...row, diagnostic: `unmatched ${lifecycle.lifecycle} start: missing exact identity` })
+      } else if (starts.has(key)) {
+        semantic.push({ ...row, diagnostic: `duplicate ${lifecycle.lifecycle} start for ${identity}`, problem: true, tone: 'warning' })
+      } else {
+        starts.set(key, row)
+        semantic.push(row)
+      }
+      continue
+    }
+    const start = key === undefined ? undefined : starts.get(key)
+    if (start === undefined) {
+      semantic.push({ ...row, diagnostic: `unmatched ${lifecycle.lifecycle} end${identity === undefined ? ': missing exact identity' : ` for ${identity}`}`, problem: true, tone: 'warning' })
+      continue
+    }
+    consumedStarts.add(start.seq)
+    starts.delete(key!)
+    semantic.push(pairRows(start, row, lifecycle.lifecycle))
+  }
+  return semantic
+    .filter(row => !consumedStarts.has(row.seq))
+    .map(row => starts.has(`${lifecycleFor(row)?.lifecycle}:${lifecycleIdentity(row, lifecycleFor(row)?.lifecycle ?? 'tool') ?? ''}`)
+      ? { ...row, status: 'running' as const, diagnostic: row.diagnostic ?? 'lifecycle still running; no exact end event' }
+      : row)
+    .sort((left, right) => left.seq - right.seq)
 }
 
 function sessionTime(session: TuiTrajectorySessionSummary): number {
@@ -489,6 +624,8 @@ export function createTrajectoryState(activeSessionId: string, options: TuiTraje
     sessions: [],
     selectedSession: 0,
     rows: [],
+    rawRows: [],
+    diagnostics: [],
     selectedEvent: 0,
     focus: 'sessions',
     mode: options.mode ?? 'overview',
@@ -520,9 +657,14 @@ export function setTrajectorySnapshot(state: TrajectoryState, snapshot: TuiTraje
   ])
   const selectedSession = Math.max(0, sessions.findIndex(session => session.id === snapshot.id))
   const previous = selectedRow(state)
+  const rawRows = buildRawTrajectoryRows(snapshot.events)
   const rows = buildTrajectoryRows(snapshot.events)
-  const visible = filteredTrajectoryRows({ ...state, snapshot, sessions, selectedSession, rows })
-  const stableIndex = previous === undefined ? -1 : visible.findIndex(row => row.seq === previous.seq && row.type === previous.type)
+  const diagnostics = [
+    ...state.diagnostics.filter(item => item.startsWith('poll:')),
+    ...rows.flatMap(row => row.diagnostic === undefined ? [] : [`projection: #${row.seq} ${row.diagnostic}`]),
+  ]
+  const visible = filteredTrajectoryRows({ ...state, snapshot, sessions, selectedSession, rows, rawRows, diagnostics })
+  const stableIndex = previous === undefined ? -1 : visible.findIndex(row => row.sourceSeqs.some(seq => previous.sourceSeqs.includes(seq)))
   const selectedEvent = state.follow || visible.length === 0
     ? Math.max(0, visible.length - 1)
     : stableIndex >= 0
@@ -534,6 +676,8 @@ export function setTrajectorySnapshot(state: TrajectoryState, snapshot: TuiTraje
     selectedSession,
     snapshot,
     rows,
+    rawRows,
+    diagnostics,
     selectedEvent,
     loading: false,
     error: undefined,
@@ -544,16 +688,18 @@ export function setTrajectorySnapshot(state: TrajectoryState, snapshot: TuiTraje
 
 export function appendTrajectoryEvent(state: TrajectoryState, sessionId: string, event: SessionEvent): TrajectoryState {
   if (state.snapshot?.id !== sessionId) return state
-  const last = state.snapshot.events.at(-1) as EventLike | undefined
   const next = event as EventLike
-  if (last !== undefined && last.seq >= next.seq) return state
+  const existing = state.snapshot.events.find(candidate => candidate.seq === next.seq)
+  if (existing !== undefined) {
+    const same = existing.type === event.type && jsonForSearch(existing.data) === jsonForSearch(event.data)
+    return same ? state : addTrajectoryDiagnostic(state, `live seq ${next.seq} conflicts with loaded ${existing.type}`)
+  }
   const snapshot: TuiTrajectorySession = {
     ...state.snapshot,
-    events: [...state.snapshot.events, event],
-    eventCount: state.snapshot.events.length + 1,
-    updatedAt: next.time,
+    events: [...state.snapshot.events, event].sort((left, right) => left.seq - right.seq),
+    eventCount: Math.max(state.snapshot.eventCount ?? 0, state.snapshot.events.length + 1),
+    updatedAt: Math.max(state.snapshot.updatedAt ?? 0, next.time),
   }
-  if (next.type === 'assistant/chunk') return { ...state, snapshot, updatedAt: Date.now() }
   return setTrajectorySnapshot(state, snapshot)
 }
 
@@ -561,20 +707,128 @@ export function setTrajectoryLoading(state: TrajectoryState, loading: boolean, e
   return { ...state, loading, ...(error === undefined ? { error: undefined } : { error }) }
 }
 
+export function addTrajectoryDiagnostic(state: TrajectoryState, diagnostic: string): TrajectoryState {
+  const value = diagnostic.startsWith('poll:') ? diagnostic : `poll: ${diagnostic}`
+  return state.diagnostics.includes(value) ? state : { ...state, diagnostics: [...state.diagnostics, value] }
+}
+
 function modeMatches(row: TrajectoryEventRow, mode: TuiTrajectoryMode): boolean {
-  if (mode === 'tools') return row.tool
+  if (mode === 'tools') return row.category === 'tool'
   if (mode === 'changes') return row.change !== undefined
-  if (mode === 'problems') return row.problem
-  if (mode === 'runs') return row.lane === 'orchestration'
+  if (mode === 'problems') return row.problem || row.diagnostic !== undefined
+  if (mode === 'runs') return row.category === 'workflow'
   if (mode === 'raw' || mode === 'flow') return true
   return row.defaultVisible
 }
 
-/** Current bounded event result after mode and fuzzy text filtering. */
+function queryMatches(row: TrajectoryEventRow, rawQuery: string): boolean {
+  const terms = rawQuery.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+  return terms.every(term => {
+    const separator = term.indexOf(':')
+    if (separator < 1) return row.searchText.includes(term)
+    const field = term.slice(0, separator)
+    const value = term.slice(separator + 1)
+    if (value === '') return false
+    if (field === 'status') return row.status === value
+    if (field === 'tool') return row.category === 'tool' && row.label.toLocaleLowerCase().includes(value)
+    if (field === 'type') return row.type.toLocaleLowerCase().includes(value) || row.searchText.includes(` ${value}`)
+    if (field === 'run') return row.runId?.toLocaleLowerCase().includes(value) === true
+    if (field === 'turn') return row.turnId?.toLocaleLowerCase() === value
+    if (field === 'step') return row.stepId?.toLocaleLowerCase() === value
+    if (field === 'file') return row.filePaths.some(path => path.toLocaleLowerCase().includes(value))
+    return row.searchText.includes(term)
+  })
+}
+
+function repeatSignature(row: TrajectoryEventRow): string {
+  return JSON.stringify({
+    type: row.type,
+    category: row.category,
+    lane: row.lane,
+    status: row.status,
+    label: row.label,
+    summary: row.summary,
+    durationMs: row.durationMs,
+    diagnostic: row.diagnostic,
+    error: row.error,
+    problem: row.problem,
+    change: row.change,
+    filePaths: row.filePaths,
+    turnId: row.turnId,
+    stepId: row.stepId,
+    callId: row.callId,
+    runId: row.runId,
+    searchText: row.searchText,
+  })
+}
+
+function groupExactAdjacent(rows: readonly TrajectoryEventRow[]): TrajectoryEventRow[] {
+  const grouped: TrajectoryEventRow[] = []
+  for (const row of rows) {
+    const previous = grouped.at(-1)
+    if (previous !== undefined && repeatSignature(previous) === repeatSignature(row)) {
+      grouped[grouped.length - 1] = {
+        ...previous,
+        repeatCount: previous.repeatCount + row.repeatCount,
+        sourceSeqs: [...previous.sourceSeqs, ...row.sourceSeqs],
+      }
+    } else {
+      grouped.push(row)
+    }
+  }
+  return grouped
+}
+
+export interface TrajectoryCounts {
+  readonly loaded: number
+  readonly declared: number
+  readonly modeMatched: number
+  readonly queryMatched: number
+  readonly grouped: number
+  readonly shown: number
+  readonly omittedByLimit: number
+  readonly collapsedRepeats: number
+  readonly excerptedRows: number
+}
+
+export function trajectoryCounts(state: TrajectoryState): TrajectoryCounts {
+  const source = state.mode === 'raw' ? state.rawRows : state.rows
+  const modeRows = source.filter(row => modeMatches(row, state.mode))
+  const queryRows = modeRows.filter(row => queryMatches(row, state.query))
+  const groupedRows = state.mode === 'raw' ? queryRows : groupExactAdjacent(queryRows)
+  const shown = Math.min(groupedRows.length, state.limit)
+  return {
+    loaded: state.rawRows.length,
+    declared: Math.max(state.snapshot?.eventCount ?? state.rawRows.length, state.rawRows.length),
+    modeMatched: modeRows.length,
+    queryMatched: queryRows.length,
+    grouped: groupedRows.length,
+    shown,
+    omittedByLimit: Math.max(0, groupedRows.length - shown),
+    collapsedRepeats: Math.max(0, queryRows.length - groupedRows.length),
+    excerptedRows: queryRows.filter(row => row.omittedChars > 0).length,
+  }
+}
+
+/** Current bounded result after mode, structured AND filtering, and exact grouping. */
 export function filteredTrajectoryRows(state: TrajectoryState): TrajectoryEventRow[] {
-  const query = state.query.trim().toLocaleLowerCase()
-  const matching = state.rows.filter(row => modeMatches(row, state.mode) && (query === '' || row.searchText.includes(query)))
-  return matching.slice(-state.limit)
+  const source = state.mode === 'raw' ? state.rawRows : state.rows
+  const matching = source.filter(row => modeMatches(row, state.mode) && queryMatches(row, state.query))
+  const grouped = state.mode === 'raw' ? matching : groupExactAdjacent(matching)
+  return grouped.slice(-state.limit)
+}
+
+function maximumRawSeq(state: TrajectoryState): number {
+  return state.rawRows.reduce((maximum, row) => Math.max(maximum, row.seq), -1)
+}
+
+function withPausedFollow(state: TrajectoryState): TrajectoryState {
+  return state.follow ? { ...state, follow: false, pausedAtSeq: maximumRawSeq(state) } : state
+}
+
+function pausedNewCount(state: TrajectoryState): number {
+  if (state.follow || state.pausedAtSeq === undefined) return 0
+  return state.rawRows.filter(row => row.seq > state.pausedAtSeq!).length
 }
 
 function moveSession(state: TrajectoryState, delta: number): TrajectoryCommand {
@@ -582,7 +836,7 @@ function moveSession(state: TrajectoryState, delta: number): TrajectoryCommand {
   const selectedSession = Math.max(0, Math.min(state.sessions.length - 1, state.selectedSession + delta))
   const id = state.sessions[selectedSession]?.id
   if (id === undefined || selectedSession === state.selectedSession) return { kind: 'ignore' }
-  const next = { ...state, selectedSession, loading: true, error: undefined, detailScroll: 0 }
+  const next = { ...state, selectedSession, loading: true, error: undefined, detailScroll: 0, follow: true, pausedAtSeq: undefined }
   return { kind: 'inspect', state: next, id }
 }
 
@@ -590,7 +844,8 @@ function moveEvent(state: TrajectoryState, delta: number): TrajectoryState {
   const rows = filteredTrajectoryRows(state)
   if (rows.length === 0) return state
   const selectedEvent = Math.max(0, Math.min(rows.length - 1, state.selectedEvent + delta))
-  return { ...state, selectedEvent, follow: selectedEvent === rows.length - 1, detailScroll: 0 }
+  if (selectedEvent === rows.length - 1) return { ...state, selectedEvent, follow: true, pausedAtSeq: undefined, detailScroll: 0 }
+  return { ...withPausedFollow(state), selectedEvent, detailScroll: 0 }
 }
 
 function selectedRow(state: TrajectoryState): TrajectoryEventRow | undefined {
@@ -630,7 +885,7 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
   if (state.guideOpen) {
     if (event.type === 'text' && /^[1-7]$/u.test(event.value)) {
       const mode = MODES[Number(event.value) - 1] ?? 'overview'
-      return { kind: 'update', state: { ...state, guideOpen: false, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
+      return { kind: 'update', state: { ...state, guideOpen: false, mode, selectedEvent: 0, follow: true, pausedAtSeq: undefined, detailScroll: 0 } }
     }
     const closesGuide = (event.type === 'text' && ['0', '?', 'h', 'q'].includes(event.value))
       || (event.type === 'key' && ['escape', 'enter', 'ctrl+j'].includes(event.id))
@@ -646,14 +901,14 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
   }
   if (state.searchActive) {
     if (event.type === 'key' && (event.id === 'escape' || event.id === 'enter' || event.id === 'ctrl+j')) {
-      return { kind: 'update', state: { ...state, searchActive: false, selectedEvent: 0, follow: false } }
+      return { kind: 'update', state: { ...withPausedFollow(state), searchActive: false, selectedEvent: 0 } }
     }
     if (event.type === 'key' && event.id === 'ctrl+c') return { kind: 'close' }
     if (event.type === 'key' && event.id === 'backspace') {
-      return { kind: 'update', state: { ...state, query: state.query.slice(0, -1), selectedEvent: 0, follow: false } }
+      return { kind: 'update', state: { ...withPausedFollow(state), query: state.query.slice(0, -1), selectedEvent: 0 } }
     }
     if (event.type === 'text') {
-      return { kind: 'update', state: { ...state, query: state.query + event.value, selectedEvent: 0, follow: false } }
+      return { kind: 'update', state: { ...withPausedFollow(state), query: state.query + event.value, selectedEvent: 0 } }
     }
     return { kind: 'ignore' }
   }
@@ -663,16 +918,18 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
     if (event.value === 'q') return { kind: 'close' }
     if (/^[1-7]$/u.test(event.value)) {
       const mode = MODES[Number(event.value) - 1] ?? 'overview'
-      return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
+      return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, pausedAtSeq: undefined, detailScroll: 0 } }
     }
     if (event.value === 'f') {
       const index = MODES.indexOf(state.mode)
       const mode = MODES[(index + 1) % MODES.length] ?? 'overview'
-      return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, detailScroll: 0 } }
+      return { kind: 'update', state: { ...state, mode, selectedEvent: 0, follow: true, pausedAtSeq: undefined, detailScroll: 0 } }
     }
     if (event.value === 'l') {
       const rows = filteredTrajectoryRows(state)
-      return { kind: 'update', state: { ...state, follow: !state.follow, selectedEvent: state.follow ? state.selectedEvent : Math.max(0, rows.length - 1) } }
+      return state.follow
+        ? { kind: 'update', state: withPausedFollow(state) }
+        : { kind: 'update', state: { ...state, follow: true, pausedAtSeq: undefined, selectedEvent: Math.max(0, rows.length - 1), detailScroll: 0 } }
     }
     if (event.value === 'r') return { kind: 'refresh', state: { ...state, loading: true, error: undefined } }
     if (event.value === 'c') {
@@ -707,10 +964,10 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
     if (event.id === 'down') return { kind: 'update', state: moveEvent(state, 1) }
     if (event.id === 'pageUp') return { kind: 'update', state: moveEvent(state, -page) }
     if (event.id === 'pageDown') return { kind: 'update', state: moveEvent(state, page) }
-    if (event.id === 'home') return { kind: 'update', state: { ...state, selectedEvent: 0, follow: false, detailScroll: 0 } }
+    if (event.id === 'home') return { kind: 'update', state: { ...withPausedFollow(state), selectedEvent: 0, detailScroll: 0 } }
     if (event.id === 'end') {
       const rows = filteredTrajectoryRows(state)
-      return { kind: 'update', state: { ...state, selectedEvent: Math.max(0, rows.length - 1), follow: true, detailScroll: 0 } }
+      return { kind: 'update', state: { ...state, selectedEvent: Math.max(0, rows.length - 1), follow: true, pausedAtSeq: undefined, detailScroll: 0 } }
     }
   } else {
     if (event.id === 'up') return { kind: 'update', state: { ...state, detailScroll: Math.max(0, state.detailScroll - 1) } }
@@ -815,14 +1072,15 @@ function aggregateUsage(rows: readonly TrajectoryEventRow[]): string {
 function overviewRows(state: TrajectoryState, theme: Theme, width: number, height: number): string[] {
   if (height <= 0) return []
   const selected = selectedRow(state)
-  const shown = filteredTrajectoryRows(state).length
-  const problems = state.rows.filter(row => row.problem).length
-  const tools = state.rows.filter(row => row.tool).length
+  const counts = trajectoryCounts(state)
+  const problems = state.rows.filter(row => row.problem || row.diagnostic !== undefined).length
+  const tools = state.rows.filter(row => row.category === 'tool').length
   const status = state.snapshot?.status ?? (state.loading ? 'refreshing' : 'snapshot')
+  const omissions = [counts.declared > counts.loaded ? `${counts.declared - counts.loaded} not loaded` : undefined, counts.omittedByLimit > 0 ? `${counts.omittedByLimit} over limit` : undefined, counts.collapsedRepeats > 0 ? `${counts.collapsedRepeats} repeats collapsed` : undefined].filter(Boolean).join(' · ')
   const lines = [
     theme.fg('muted', truncateToWidth('  Read-only map · choose a run on the left · inspect the selected event below', width)),
-    truncateToWidth(`  Now: ${status} · showing ${shown}/${state.rows.length} records · ${tools} tools · ${problems} problems`, width),
-    truncateToWidth(`  Usage: ${aggregateUsage(state.rows)} · sequence runs left → right`, width),
+    truncateToWidth(`  Now: ${status} · loaded ${counts.loaded}/${counts.declared} durable · shown ${counts.shown}/${counts.queryMatched} matching · ${tools} tools · ${problems} problems`, width),
+    truncateToWidth(`  Usage: ${aggregateUsage(state.rows)}${omissions === '' ? '' : ` · omitted: ${omissions}`} · sequence runs left → right`, width),
   ]
   const labelWidth = Math.min(15, Math.max(12, Math.floor(width * 0.2)))
   const barWidth = Math.max(1, width - labelWidth - 3)
@@ -890,7 +1148,8 @@ function eventRows(state: TrajectoryState, theme: Theme, width: number, height: 
     const labelText = railText === '' ? row.label : `${railText} ${row.label}`
     const labelWidth = Math.min(state.mode === 'flow' ? 28 : 18, Math.max(10, Math.floor(width * (state.mode === 'flow' ? 0.38 : 0.22))))
     const label = fit(paintTone(theme, row.tone, labelText), labelWidth)
-    const summaryText = state.mode === 'changes' ? row.change ?? '' : row.summary
+    const repeat = row.repeatCount > 1 ? ` ×${row.repeatCount}` : ''
+    const summaryText = (state.mode === 'changes' ? row.change ?? '' : row.summary) + repeat
     const summaryWidth = Math.max(0, width - 2 - 6 - 2 - labelWidth - 1)
     const summary = truncateToWidth(paintTone(theme, row.tone === 'accent' ? 'normal' : row.tone, summaryText), summaryWidth)
     const line = `${marker} ${elapsed} ${glyph} ${label} ${summary}`
@@ -899,13 +1158,45 @@ function eventRows(state: TrajectoryState, theme: Theme, width: number, height: 
   return visible
 }
 
+function sessionBreadcrumb(state: TrajectoryState): string {
+  const current = state.snapshot ?? state.sessions[state.selectedSession]
+  if (current === undefined) return state.activeSessionId
+  const byId = new Map(state.sessions.map(session => [session.id, session]))
+  const parts: string[] = []
+  let cursor: TuiTrajectorySessionSummary | undefined = current
+  const seen = new Set<string>()
+  while (cursor !== undefined && !seen.has(cursor.id)) {
+    seen.add(cursor.id)
+    parts.unshift(cursor.title || cursor.id)
+    cursor = cursor.parentSession === undefined ? undefined : byId.get(cursor.parentSession)
+  }
+  return parts.join(' › ')
+}
+
+function rowBreadcrumb(row: TrajectoryEventRow): string {
+  return [row.turnId === undefined ? undefined : `Turn ${row.turnId}`, row.stepId === undefined ? undefined : `Step ${row.stepId}`, row.runId === undefined ? undefined : `Run ${row.runId}`, row.callId === undefined ? undefined : `Call ${row.callId}`]
+    .filter((value): value is string => value !== undefined).join(' › ')
+}
+
 function detailRows(state: TrajectoryState, theme: Theme, width: number, height: number): string[] {
   if (height <= 0) return []
   const row = selectedRow(state)
   if (row === undefined) return [theme.fg('muted', '  Select an event to inspect its payload.')]
   const heading = `${row.glyph} #${row.seq} · ${row.type} · ${clock(row.time)}`
-  const raw = safeEventJson(row.event)
-  const body = raw.split('\n').flatMap(line => wrapText(line, Math.max(1, width - 2)).map(part => '  ' + part))
+  const rawLines = state.mode === 'raw'
+    ? safeEventJson(row.event).split('\n')
+    : [
+        `Session: ${sessionBreadcrumb(state)}`,
+        rowBreadcrumb(row) === '' ? undefined : `Breadcrumb: ${rowBreadcrumb(row)}`,
+        `Status: ${row.status}${row.durationMs === undefined ? '' : ` · duration ${duration(row.durationMs)}`}`,
+        `Source events: ${row.sourceSeqs.map(seq => `#${seq}`).join(', ')}${row.repeatCount > 1 ? ` · repeated ${row.repeatCount}×` : ''}`,
+        `Summary: ${row.summary}`,
+        row.change === undefined ? undefined : `Change: ${row.change}`,
+        row.filePaths.length === 0 ? undefined : `Files: ${row.filePaths.join(', ')}`,
+        row.omittedChars === 0 ? undefined : `Excerpt: ${row.omittedChars} characters omitted from the row`,
+        row.diagnostic === undefined ? undefined : `Diagnostic: ${row.diagnostic}`,
+      ].filter((line): line is string => line !== undefined)
+  const body = rawLines.flatMap(line => wrapText(line, Math.max(1, width - 2)).map(part => '  ' + part))
   const maxStart = Math.max(0, body.length - Math.max(0, height - 1))
   const start = Math.max(0, Math.min(state.detailScroll, maxStart))
   const visible = body.slice(start, start + Math.max(0, height - 1)).map(line => theme.fg('muted', truncateToWidth(line, width)))
@@ -991,13 +1282,18 @@ export function renderTrajectory(
   }
   const selectedSession = state.sessions[state.selectedSession]
   const selectedTitle = state.snapshot?.title ?? selectedSession?.title ?? state.activeSessionId
-  const filtered = filteredTrajectoryRows(state)
+  const counts = trajectoryCounts(state)
+  const fresh = pausedNewCount(state)
   const status = state.guideOpen
     ? 'quick guide · ? back'
     : [
         state.mode,
-        `${filtered.length}/${state.rows.length} events`,
-        state.follow ? 'follow' : 'paused',
+        `${counts.shown}/${counts.queryMatched} matching`,
+        `loaded ${counts.loaded}/${counts.declared}`,
+        counts.collapsedRepeats > 0 ? `${counts.collapsedRepeats} grouped` : undefined,
+        counts.omittedByLimit > 0 ? `${counts.omittedByLimit} over limit` : undefined,
+        state.follow ? 'follow' : `paused${fresh > 0 ? ` · +${fresh} new` : ''}`,
+        state.diagnostics.length > 0 ? `${state.diagnostics.length} diagnostics` : undefined,
         state.loading ? 'refreshing' : undefined,
       ].filter((value): value is string => value !== undefined).join(' · ')
   const search = state.searchActive

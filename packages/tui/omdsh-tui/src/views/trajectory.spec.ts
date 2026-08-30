@@ -82,8 +82,15 @@ describe('Trajectory projection', () => {
 
   it('projects explicit rails, safe confirmed changes, problems, and raw chunks', () => {
     const rows = buildTrajectoryRows(events)
-    expect(rows.find(row => row.label === 'bash')).toMatchObject({ lane: 'execution', turnId: '1', stepId: '1', callId: 'call-1' })
-    expect(rows.find(row => row.label === 'Result')?.change).toContain('modified src/trajectory.ts')
+    expect(rows.find(row => row.type === 'tool/lifecycle')).toMatchObject({
+      lane: 'execution',
+      label: 'bash',
+      callId: 'call-1',
+      status: 'completed',
+      durationMs: 50,
+      sourceSeqs: [3, 4],
+    })
+    expect(rows.find(row => row.type === 'tool/lifecycle')?.change).toContain('modified src/trajectory.ts')
     expect(rows.find(row => row.label === 'Retry')).toMatchObject({ problem: true, lane: 'orchestration' })
     expect(rows.some(row => row.type === 'assistant/chunk')).toBe(true)
     expect(rows.find(row => row.type === 'assistant/message')?.summary).not.toContain('private chain')
@@ -103,9 +110,24 @@ describe('Trajectory projection', () => {
     const rows = buildTrajectoryRows([
       event('tool/result', 1, 1, { message: { content: [{ type: 'tool-result', toolCallId: 'a', content: [{ type: 'text', text: 'wrote file' }] }] }, guessedDiff: 'not trusted' }),
       event('tool/result', 2, 2, { metadata: { patch: '@@ -old +new' }, message: { content: [{ type: 'tool-result', toolCallId: 'b', content: [] }] } }),
+      event('tool/result', 3, 3, { meta: { changes: [{ status: 'modified', path: 'src/current.ts' }] }, message: { content: [{ type: 'tool-result', toolCallId: 'c', content: [] }] } }),
     ])
     expect(rows[0]?.change).toBeUndefined()
     expect(rows[1]?.change).toContain('@@ -old +new')
+    expect(rows[2]?.change).toContain('modified src/current.ts')
+  })
+
+  it('keeps Raw one-to-one while human modes use exact semantic lifecycle rows', () => {
+    const source = [
+      event('tool/call', 1, 1_000, { callId: 'c1', name: 'bash', arguments: '{"command":"pnpm test"}' }),
+      event('tool/result', 2, 1_250, { message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: '144 passed' }] }] } }),
+      event('tool/result', 3, 1_300, { message: { content: [{ type: 'tool-result', toolCallId: 'orphan', content: [] }] } }),
+    ]
+    const state = setTrajectorySnapshot(createTrajectoryState('root', { mode: 'tools' }), snapshot(source))
+    expect(state.rawRows.map(row => row.type)).toEqual(['tool/call', 'tool/result', 'tool/result'])
+    expect(state.rows[0]).toMatchObject({ type: 'tool/lifecycle', label: 'bash', durationMs: 250, sourceSeqs: [1, 2] })
+    expect(state.rows[1]?.diagnostic).toContain('unmatched tool end')
+    expect(filteredTrajectoryRows({ ...state, query: 'status:completed tool:bash' })).toHaveLength(1)
   })
 
   it('keeps descendants directly below their durable parent', () => {
@@ -136,7 +158,7 @@ describe('Trajectory projection', () => {
       const update = applyTrajectoryEvent(state, typed(value))
       state = update.kind === 'update' ? update.state : state
     }
-    expect(filteredTrajectoryRows(state).map(row => row.label)).toEqual(['Result'])
+    expect(filteredTrajectoryRows(state).map(row => row.label)).toEqual(['bash'])
     expect(state.follow).toBe(false)
     expect(applyTrajectoryEvent(state, key('ctrl+c'))).toEqual({ kind: 'close' })
   })

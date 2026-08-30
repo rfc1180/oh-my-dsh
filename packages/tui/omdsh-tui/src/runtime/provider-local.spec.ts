@@ -245,8 +245,8 @@ describe('LocalTui (tty)', () => {
     releaseList?.()
     await vi.waitFor(() => {
       const rendered = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
-      expect(rendered).toContain('4/4 events')
-      expect(rendered).toContain('paused')
+      expect(rendered).toContain('4/4 matching')
+      expect(rendered).toContain('paused · +1 new')
       expect(rendered).toContain('#2')
     }, { timeout: 1_500 })
 

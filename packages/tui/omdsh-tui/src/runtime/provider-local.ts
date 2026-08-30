@@ -105,6 +105,7 @@ import { encodeHostTelemetryOsc, hostTelemetryPayload } from '../chrome/host-tel
 import { sessionStatusGroups } from '../chrome/status-line.ts'
 import { HistoryStore } from '../views/history-store.ts'
 import {
+  addTrajectoryDiagnostic,
   appendTrajectoryEvent,
   applyTrajectoryEvent,
   createTrajectoryState,
@@ -870,18 +871,40 @@ export class LocalTui implements TuiService {
       this.#trajectory = next
       const snapshot = await source.inspect(id, controller.signal)
       if (requestId !== this.#trajectoryRequestId || controller.signal.aborted || this.#trajectory === null) return
-      const latest = this.#trajectory
-      const liveEvents = latest.snapshot?.id === snapshot.id
-        ? latest.snapshot.events.filter(event => event.seq > baselineSeq && !snapshot.events.some(candidate => candidate.seq === event.seq && candidate.type === event.type))
-        : []
-      const mergedSnapshot = liveEvents.length === 0
-        ? snapshot
-        : {
-            ...snapshot,
-            events: [...snapshot.events, ...liveEvents].sort((left, right) => left.seq - right.seq),
-            eventCount: snapshot.events.length + liveEvents.length,
-            updatedAt: Math.max(snapshot.updatedAt ?? 0, ...liveEvents.map(event => event.time)),
-          }
+      let latest = this.#trajectory
+      const responseBySeq = new Map<number, SessionEvent>()
+      const diagnostics: string[] = []
+      for (const remote of snapshot.events) {
+        const existing = responseBySeq.get(remote.seq)
+        if (existing === undefined) responseBySeq.set(remote.seq, remote)
+        else if (JSON.stringify(existing) !== JSON.stringify(remote)) diagnostics.push(`snapshot same-seq conflict #${remote.seq}: kept first ${existing.type}, ignored ${remote.type}`)
+      }
+      const localEvents = latest.snapshot?.id === snapshot.id ? latest.snapshot.events : []
+      for (const local of localEvents) {
+        const remote = responseBySeq.get(local.seq)
+        if (remote === undefined) {
+          responseBySeq.set(local.seq, local)
+          diagnostics.push(local.seq > baselineSeq
+            ? `preserved post-request live event #${local.seq}`
+            : `inspect omitted previously loaded event #${local.seq}`)
+          continue
+        }
+        if (local.seq > baselineSeq && JSON.stringify(remote) !== JSON.stringify(local)) {
+          // The event observed live after this request started is the only copy
+          // guaranteed to belong to the current process epoch. Keep it and make
+          // the same-seq disagreement visible instead of duplicating the seq.
+          responseBySeq.set(local.seq, local)
+          diagnostics.push(`same-seq conflict #${local.seq}: kept post-request live ${local.type}, ignored snapshot ${remote.type}`)
+        }
+      }
+      for (const diagnostic of diagnostics) latest = addTrajectoryDiagnostic(latest, diagnostic)
+      const mergedEvents = [...responseBySeq.values()].sort((left, right) => left.seq - right.seq)
+      const mergedSnapshot = {
+        ...snapshot,
+        events: mergedEvents,
+        eventCount: Math.max(snapshot.eventCount ?? 0, mergedEvents.length),
+        updatedAt: Math.max(snapshot.updatedAt ?? 0, ...mergedEvents.map(event => event.time)),
+      }
       this.#trajectory = setTrajectorySnapshot(latest, mergedSnapshot)
       this.#trajectoryAbort = null
       this.#render()

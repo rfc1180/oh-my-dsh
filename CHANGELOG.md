@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Changed
 
 - Make Trajectory self-explanatory with a visible `0 Guide` slide (`?`/`h` aliases), a persistent `0–7` tab strip, purpose-driven pane titles, and sparse event-density rails instead of opaque repeated lane initials.
+- Present exact tool/workflow lifecycles as human semantic rows while preserving one-to-one Raw records, with structured filters, source breadcrumbs, honest loaded/matched counts, canonical reported changes, readable Details, exact repeat grouping, and a `PAUSED · +N new` indicator.
 - Use plain Up/Down for visual-row caret navigation and Shift+Up/Down for sent-prompt history; transcript history remains on PgUp/PgDn so the composer stays writable while reviewing earlier output.
 - Compact status telemetry now switches through dense and unit-aware nano forms on narrow terminals, preserving cache, token, TTFT/rate, LLM/tool timing, context, and activity data before omitting lower-priority groups.
 
