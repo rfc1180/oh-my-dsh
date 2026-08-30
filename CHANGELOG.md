@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
+- Make Trajectory self-explanatory with a `?`/`h` quick-guide slide, purpose-driven pane titles, and sparse event-density rails instead of opaque repeated lane initials.
 - Use plain Up/Down for visual-row caret navigation and Shift+Up/Down for sent-prompt history; transcript history remains on PgUp/PgDn so the composer stays writable while reviewing earlier output.
 - Compact status telemetry now switches through dense and unit-aware nano forms on narrow terminals, preserving cache, token, TTFT/rate, LLM/tool timing, context, and activity data before omitting lower-priority groups.
 

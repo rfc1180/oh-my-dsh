@@ -64,6 +64,7 @@ export interface TrajectoryState {
   readonly mode: TuiTrajectoryMode
   readonly query: string
   readonly searchActive: boolean
+  readonly guideOpen: boolean
   readonly follow: boolean
   readonly loading: boolean
   readonly error?: string | undefined
@@ -493,6 +494,7 @@ export function createTrajectoryState(activeSessionId: string, options: TuiTraje
     mode: options.mode ?? 'overview',
     query: '',
     searchActive: false,
+    guideOpen: false,
     follow: true,
     loading: true,
     detailScroll: 0,
@@ -625,6 +627,11 @@ export function trajectoryPaneAt(state: TrajectoryState, width: number, height: 
 
 /** Apply one input event without touching persistence or the terminal. */
 export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, width = 0, height = 0): TrajectoryCommand {
+  if (state.guideOpen) {
+    const closesGuide = (event.type === 'text' && ['?', 'h', 'q'].includes(event.value))
+      || (event.type === 'key' && ['escape', 'enter', 'ctrl+j'].includes(event.id))
+    return closesGuide ? { kind: 'update', state: { ...state, guideOpen: false } } : { kind: 'ignore' }
+  }
   if (event.type === 'mouse') {
     const pane = trajectoryPaneAt(state, width, height, event.column, event.row)
     if (pane === undefined) return { kind: 'ignore' }
@@ -648,6 +655,7 @@ export function applyTrajectoryEvent(state: TrajectoryState, event: KeyEvent, wi
   }
   if (event.type === 'text') {
     if (event.value === '/') return { kind: 'update', state: { ...state, searchActive: true, query: '', focus: 'timeline' } }
+    if (event.value === '?' || event.value === 'h') return { kind: 'update', state: { ...state, guideOpen: true } }
     if (event.value === 'q') return { kind: 'close' }
     if (/^[1-7]$/u.test(event.value)) {
       const mode = MODES[Number(event.value) - 1] ?? 'overview'
@@ -803,27 +811,31 @@ function aggregateUsage(rows: readonly TrajectoryEventRow[]): string {
 function overviewRows(state: TrajectoryState, theme: Theme, width: number, height: number): string[] {
   if (height <= 0) return []
   const selected = selectedRow(state)
+  const shown = filteredTrajectoryRows(state).length
   const problems = state.rows.filter(row => row.problem).length
   const tools = state.rows.filter(row => row.tool).length
   const status = state.snapshot?.status ?? (state.loading ? 'refreshing' : 'snapshot')
   const lines = [
-    truncateToWidth(`  Status: ${status} · ${state.rows.length} events · ${tools} tool events · ${problems} problems`, width),
-    truncateToWidth(`  Usage: ${aggregateUsage(state.rows)} · sequence order (time is shown in details)`, width),
+    theme.fg('muted', truncateToWidth('  Read-only map · choose a run on the left · inspect the selected event below', width)),
+    truncateToWidth(`  Now: ${status} · showing ${shown}/${state.rows.length} records · ${tools} tools · ${problems} problems`, width),
+    truncateToWidth(`  Usage: ${aggregateUsage(state.rows)} · sequence runs left → right`, width),
   ]
   const labelWidth = Math.min(15, Math.max(12, Math.floor(width * 0.2)))
   const barWidth = Math.max(1, width - labelWidth - 3)
-  const lanes: readonly [TrajectoryLane, string, string][] = [
-    ['conversation', 'Conversation', 'C'],
-    ['execution', 'Execution', 'E'],
-    ['orchestration', 'Orchestration', 'O'],
+  const lanes: readonly [TrajectoryLane, string][] = [
+    ['conversation', 'Talk'],
+    ['execution', 'Tools'],
+    ['orchestration', 'Coordination'],
   ]
-  for (const [lane, label, symbol] of lanes) {
+  for (const [lane, label] of lanes) {
     const cells = Array.from({ length: barWidth }, () => '─')
     for (let index = 0; index < state.rows.length; index += 1) {
       const row = state.rows[index]
       if (row?.lane !== lane) continue
       const cell = state.rows.length <= 1 ? 0 : Math.round(index * (barWidth - 1) / (state.rows.length - 1))
-      cells[cell] = row.problem ? '!' : symbol
+      if (row.problem) cells[cell] = '!'
+      else if (cells[cell] === '─') cells[cell] = '•'
+      else if (cells[cell] !== '!') cells[cell] = '●'
     }
     if (selected?.lane === lane) {
       const index = state.rows.findIndex(row => row.seq === selected.seq && row.type === selected.type)
@@ -833,7 +845,8 @@ function overviewRows(state: TrajectoryState, theme: Theme, width: number, heigh
     const painted = cells.map(cell => cell === '◆' ? theme.fg('accent', cell) : cell === '!' ? theme.fg('error', cell) : theme.fg('dim', cell)).join('')
     lines.push(`${fit(theme.bold(label), labelWidth)} ${painted}`)
   }
-  if (selected !== undefined) lines.push(truncateToWidth(`  Selected #${selected.seq} ${selected.type} · ${selected.summary}`, width))
+  lines.push(theme.fg('dim', truncateToWidth('  • event · ● several events · ◆ selected · ! problem', width)))
+  if (selected !== undefined) lines.push(truncateToWidth(`  Selected now: #${selected.seq} ${selected.type} · ${selected.summary}`, width))
   return lines.slice(0, height)
 }
 
@@ -903,6 +916,35 @@ function panelHeader(label: string, active: boolean, meta: string, theme: Theme,
   return truncateToWidth(' ' + title + suffix, width)
 }
 
+function modeTitle(mode: TuiTrajectoryMode): string {
+  return {
+    overview: 'Overview · what is happening',
+    flow: 'Flow · event order and links',
+    runs: 'Runs · agents and workflows',
+    tools: 'Tools · calls and results',
+    changes: 'Changes · confirmed diffs',
+    problems: 'Problems · failures and retries',
+    raw: 'Raw · projected records',
+  }[mode]
+}
+
+function guideRows(theme: Theme, width: number, height: number): string[] {
+  const source = [
+    ['What this block does', 'A read-only map of the current durable conversation. It does not start another agent or change the journal.'],
+    ['Screen map', 'Runs on the left chooses the main conversation or an agent. Timeline on the top right shows the chosen mode. Details below shows the selected event.'],
+    ['Start here', '1 Overview = current shape. 2 Flow = what happened in order. 3 Runs = agents/workflows. 4 Tools = calls/results. 5 Changes = confirmed diffs. 6 Problems = failures/retries. 7 Raw = debugging records.'],
+    ['Controls', 'Tab/←/→ changes pane · ↑/↓ or wheel moves · Enter opens a run/details · l resumes follow · r refreshes · / searches · c copies · q closes.'],
+  ] as const
+  const rows: string[] = []
+  for (const [heading, body] of source) {
+    if (rows.length > 0) rows.push('')
+    rows.push('  ' + theme.bold(theme.fg('accent', heading)))
+    rows.push(...wrapText(body, Math.max(1, width - 4)).map(line => '    ' + theme.fg('muted', line)))
+  }
+  rows.push('', '  ' + theme.fg('dim', '? / h / Esc / Enter returns to Trajectory'))
+  return rows.slice(0, height).map(row => truncateToWidth(row, width))
+}
+
 function combineColumns(left: readonly string[], leftWidth: number, right: readonly string[], rightWidth: number, theme: Theme, height: number): string[] {
   const rows: string[] = []
   for (let index = 0; index < height; index += 1) {
@@ -935,17 +977,21 @@ export function renderTrajectory(
   const selectedSession = state.sessions[state.selectedSession]
   const selectedTitle = state.snapshot?.title ?? selectedSession?.title ?? state.activeSessionId
   const filtered = filteredTrajectoryRows(state)
-  const status = [
-    state.mode,
-    `${filtered.length}/${state.rows.length} events`,
-    state.follow ? 'follow' : 'paused',
-    state.loading ? 'refreshing' : undefined,
-  ].filter((value): value is string => value !== undefined).join(' · ')
+  const status = state.guideOpen
+    ? 'quick guide · ? back'
+    : [
+        state.mode,
+        `${filtered.length}/${state.rows.length} events`,
+        state.follow ? 'follow' : 'paused',
+        state.loading ? 'refreshing' : undefined,
+      ].filter((value): value is string => value !== undefined).join(' · ')
   const search = state.searchActive
     ? theme.fg('accent', '/ ') + state.query
-    : theme.bold(truncateToWidth(selectedTitle, Math.max(1, pageWidth - 8))) + theme.fg('dim', ` · ${status}`)
+    : state.guideOpen
+      ? theme.bold('How to read Trajectory') + theme.fg('dim', ` · ${status}`)
+      : theme.bold(truncateToWidth(selectedTitle, Math.max(1, pageWidth - 8))) + theme.fg('dim', ` · ${status}`)
   const lines: string[] = [
-    topBorder(theme, `${appName} · Trajectory`, pageWidth),
+    topBorder(theme, `${appName} · Trajectory · ? guide`, pageWidth),
     borderRow(theme, ' ' + search, pageWidth),
     divider(theme, pageWidth),
   ]
@@ -955,50 +1001,57 @@ export function renderTrajectory(
   const wide = innerWidth >= 92
 
   let content: string[]
-  if (wide) {
+  if (state.guideOpen) {
+    content = [
+      panelHeader('Quick guide', true, 'what each pane and mode means', theme, innerWidth),
+      ...guideRows(theme, innerWidth, Math.max(0, contentHeight - 1)),
+    ]
+  } else if (wide) {
     const leftWidth = Math.max(26, Math.min(38, Math.floor(innerWidth * 0.28)))
     const rightWidth = Math.max(1, innerWidth - leftWidth - 1)
     const timelineHeight = Math.max(5, Math.floor(contentHeight * 0.58))
     const detailHeight = Math.max(1, contentHeight - timelineHeight - 1)
     const sessions = [
-      panelHeader(state.mode === 'runs' ? 'Runs · root → descendants' : 'Conversation', state.focus === 'sessions', `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, leftWidth),
+      panelHeader('Runs', state.focus === 'sessions', `current + agents · ${state.sessions.length}`, theme, leftWidth),
       ...sessionRows(state, theme, leftWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
     const timeline = [
-      panelHeader('Timeline', state.focus === 'timeline', status, theme, rightWidth),
+      panelHeader(modeTitle(state.mode), state.focus === 'timeline', status, theme, rightWidth),
       ...eventRows(state, theme, rightWidth, Math.max(0, timelineHeight - 1)),
     ]
     while (timeline.length < timelineHeight) timeline.push('')
     timeline.push(theme.fg('borderMuted', BOX.horizontal.repeat(rightWidth)))
-    timeline.push(panelHeader('Details', state.focus === 'details', '', theme, rightWidth))
+    timeline.push(panelHeader('Details', state.focus === 'details', 'selected event', theme, rightWidth))
     timeline.push(...detailRows(state, theme, rightWidth, Math.max(0, detailHeight - 1)))
     content = combineColumns(sessions, leftWidth, timeline, rightWidth, theme, contentHeight)
   } else if (state.focus === 'sessions') {
     content = [
-      panelHeader(state.mode === 'runs' ? 'Runs · root → descendants' : 'Conversation', true, `${state.sessions.length} ${state.sessions.length === 1 ? 'run' : 'runs'}`, theme, innerWidth),
+      panelHeader('Runs', true, `current + agents · ${state.sessions.length}`, theme, innerWidth),
       ...sessionRows(state, theme, innerWidth, Math.max(0, contentHeight - 1), spinnerFrame),
     ]
   } else {
     const detailHeight = state.focus === 'details' ? Math.max(5, Math.floor(contentHeight * 0.5)) : Math.max(4, Math.floor(contentHeight * 0.34))
     const timelineHeight = Math.max(3, contentHeight - detailHeight - 1)
     content = [
-      panelHeader('Timeline', state.focus === 'timeline', status, theme, innerWidth),
+      panelHeader(modeTitle(state.mode), state.focus === 'timeline', status, theme, innerWidth),
       ...eventRows(state, theme, innerWidth, Math.max(0, timelineHeight - 1)),
     ]
     while (content.length < timelineHeight) content.push('')
     content.push(theme.fg('borderMuted', BOX.horizontal.repeat(innerWidth)))
-    content.push(panelHeader('Details', state.focus === 'details', '', theme, innerWidth))
+    content.push(panelHeader('Details', state.focus === 'details', 'selected event', theme, innerWidth))
     content.push(...detailRows(state, theme, innerWidth, Math.max(0, detailHeight - 1)))
   }
   content = content.slice(0, contentHeight)
   while (content.length < contentHeight) content.push('')
   lines.push(...content.map(line => borderRow(theme, line, pageWidth)))
   lines.push(divider(theme, pageWidth))
-  const hints = state.searchActive
-    ? 'Type to filter · Enter apply · Esc leave search · Ctrl+C close'
-    : pageWidth >= 112
-      ? 'Tab · ↑↓/wheel move · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · f next · l follow · r refresh · c copy · q close'
-      : '1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · q close'
+  const hints = state.guideOpen
+    ? '? / h / Esc / Enter back to Trajectory'
+    : state.searchActive
+      ? 'Type to filter · Enter apply · Esc leave search · Ctrl+C close'
+      : pageWidth >= 112
+        ? '? guide · Tab panes · ↑↓/wheel move · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · l follow · r refresh · c copy · q close'
+        : '? guide · 1 overview · 2 flow · 3 runs · 4 tools · 5 changes · 6 problems · 7 raw · / search · q close'
   lines.push(borderRow(theme, ' ' + theme.fg('dim', hints), pageWidth), bottomBorder(theme, pageWidth))
   return {
     lines: lines.slice(0, pageHeight),
