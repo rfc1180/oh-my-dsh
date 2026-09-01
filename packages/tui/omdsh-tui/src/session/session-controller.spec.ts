@@ -6,6 +6,7 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { mcpCatalogText } from '../commands/integrations.ts'
 import type { TuiService } from '../definition.ts'
+import type { CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
 import {
   conversationTurns,
   createSubmissionMessage,
@@ -395,6 +396,173 @@ describe('SessionRuntime.execute', () => {
       .resolves.toBe(false)
     await runtime.dispose()
     await ctx.fiber.dispose()
+  })
+})
+
+describe('SessionRuntime.createDetachedFork', () => {
+  function detachedForkRuntime(status: 'idle' | 'running' = 'idle') {
+    const parentEvents = [
+      { type: 'session/start', seq: 0, time: 1, data: {} },
+      { type: 'turn/start', seq: 1, time: 2, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, time: 3, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'question' }] } },
+      { type: 'turn/end', seq: 3, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
+    ] as unknown as SessionEvent[]
+    const parentSession = {
+      id: SessionId('parent-session'),
+      header: { id: SessionId('parent-session'), cwd: '/workspace', createdAt: 1 },
+      events: parentEvents,
+      append: vi.fn(),
+    }
+    const presentationDisposers: Array<ReturnType<typeof vi.fn>> = []
+    const agentContext = (agent: unknown) => ({
+      agent,
+      get: (name: string) => name === 'agentPresets'
+        ? { defaultId: 'standard', mount: async () => ({ id: 'reviewer' }) }
+        : name === 'tools' ? {
+            presentAs: vi.fn(() => {
+              const dispose = vi.fn()
+              presentationDisposers.push(dispose)
+              return dispose
+            }),
+          } : undefined,
+      plugin: async () => {},
+      on: () => () => {},
+    })
+    const parent = {
+      id: SessionId('parent-session'),
+      status,
+      session: parentSession,
+      ctx: undefined as unknown,
+    }
+    parent.ctx = agentContext(parent)
+    const parentHandle = { agent: parent, dispose: vi.fn(async () => {}) }
+    let createOptions: CreateAgentOptions | undefined
+    let beforeCommit = () => {}
+    const childDispose = vi.fn(async () => {})
+    const agents = {
+      resume: vi.fn(async (options: ResumeAgentOptions) => {
+        await options.setup?.(parent.ctx as Context)
+        return parentHandle
+      }),
+      create: vi.fn(async (options: CreateAgentOptions) => {
+        createOptions = options
+        const session = {
+          id: options.sessionId,
+          header: { id: options.sessionId, createdAt: 5, ...options.meta },
+          events: [...(options.seed ?? [])],
+          append: vi.fn(),
+        }
+        const child = { id: options.sessionId, status: 'idle', session, ctx: undefined as unknown }
+        child.ctx = agentContext(child)
+        const commit = await options.setup?.(child.ctx as Context)
+        beforeCommit()
+        commit?.commit()
+        return { agent: child, dispose: childDispose }
+      }),
+      get: vi.fn(),
+    }
+    const replaceSession = vi.fn()
+    const activateInput = vi.fn()
+    const tui = {
+      ...stubTui(),
+      event: vi.fn(),
+      setStatus: vi.fn(),
+      setModel: vi.fn(),
+      setLoopStatus: vi.fn(),
+      setTools: vi.fn(),
+      setCommands: vi.fn(),
+      replaceSession,
+      setSession: vi.fn(),
+      setTrajectorySource: vi.fn(),
+      activateInput,
+    } as unknown as TuiService
+    const services: Record<string, unknown> = {
+      agentDefaultModel: { currentSelection: () => ({ provider: 'openai-codex', model: 'gpt-5.6-sol' }) },
+      agents,
+      sessions: { list: () => [] },
+      tools: { schemas: () => [] },
+      sessionPersistence: { list: async () => [], inspect: vi.fn() },
+    }
+    const ctx = {
+      agents,
+      get: (name: string) => services[name],
+      on: () => () => {},
+    } as unknown as Context
+    const runtime = new SessionRuntime(ctx, tui)
+    return {
+      runtime,
+      parent,
+      parentEvents,
+      agents,
+      childDispose,
+      presentationDisposers,
+      replaceSession,
+      activateInput,
+      tui,
+      createOptions: () => createOptions,
+      beforeCommit: (callback: () => void) => { beforeCommit = callback },
+    }
+  }
+
+  it('durably publishes the complete immutable conversation without activating or prompting the child', async () => {
+    const fixture = detachedForkRuntime()
+    await fixture.runtime.start('parent-session')
+    const transcriptCalls = fixture.replaceSession.mock.calls.length
+    const inputCalls = fixture.activateInput.mock.calls.length
+
+    const result = await fixture.runtime.createDetachedFork()
+    const options = fixture.createOptions()
+
+    expect(result).toEqual({
+      childSessionId: expect.stringMatching(/^session-/),
+      parentSessionId: SessionId('parent-session'),
+      cwd: '/workspace',
+      seedLength: fixture.parentEvents.length,
+    })
+    expect(options?.seed).toEqual(fixture.parentEvents)
+    expect(options?.seed).not.toBe(fixture.parentEvents)
+    expect(Object.isFrozen(options?.seed)).toBe(true)
+    expect(options?.meta).toEqual({
+      cwd: '/workspace',
+      parentSession: SessionId('parent-session'),
+      seedLength: fixture.parentEvents.length,
+      agentPreset: 'reviewer',
+    })
+    expect(options?.agentOptions).toEqual({ provider: 'openai-codex', model: 'gpt-5.6-sol' })
+    expect(fixture.childDispose).toHaveBeenCalledOnce()
+    expect(fixture.presentationDisposers.at(-1)).toHaveBeenCalledOnce()
+    expect(fixture.runtime.agent).toBe(fixture.parent)
+    expect(fixture.replaceSession).toHaveBeenCalledTimes(transcriptCalls)
+    expect(fixture.activateInput).toHaveBeenCalledTimes(inputCalls)
+    expect(fixture.tui.restoreInput).not.toHaveBeenCalled()
+    await fixture.runtime.dispose()
+  })
+
+  it('refuses publication when the parent journal changes during child setup', async () => {
+    const fixture = detachedForkRuntime()
+    await fixture.runtime.start('parent-session')
+    fixture.beforeCommit(() => {
+      fixture.parentEvents.push({ type: 'session/title', seq: 4, time: 5, data: { title: 'changed' } } as SessionEvent)
+    })
+
+    await expect(fixture.runtime.createDetachedFork()).rejects.toThrow(
+      'The active conversation changed before the fork was published.',
+    )
+    expect(fixture.childDispose).not.toHaveBeenCalled()
+    expect(fixture.presentationDisposers.at(-1)).toHaveBeenCalledOnce()
+    expect(fixture.runtime.agent).toBe(fixture.parent)
+    await fixture.runtime.dispose()
+  })
+
+  it('requires the active root to be idle before creating a child', async () => {
+    const fixture = detachedForkRuntime('running')
+    await fixture.runtime.start('parent-session')
+
+    await expect(fixture.runtime.createDetachedFork()).rejects.toThrow(
+      'Finish or interrupt the active turn before forking the conversation.',
+    )
+    expect(fixture.agents.create).not.toHaveBeenCalled()
+    await fixture.runtime.dispose()
   })
 })
 

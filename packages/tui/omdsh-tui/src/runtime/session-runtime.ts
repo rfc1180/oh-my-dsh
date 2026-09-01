@@ -26,4 +26,4 @@ export function apply(ctx: Context): void {
   ctx.effect(() => async () => { await runtime.dispose() }, 'omdsh session runtime lifecycle')
 }
 
-export { SessionRuntime } from '../session/session-controller.ts'
+export { SessionRuntime, type DetachedConversationFork } from '../session/session-controller.ts'

@@ -129,6 +129,14 @@ interface ConfiguredAgentContext extends SessionConfiguration {
   disposeToolPresentation: () => void
 }
 
+/** Durable identity and lineage of a detached fork of the active conversation. */
+export interface DetachedConversationFork {
+  readonly childSessionId: SessionId
+  readonly parentSessionId: SessionId
+  readonly cwd: string
+  readonly seedLength: number
+}
+
 async function setupAgentContext(
   agentCtx: Context,
   selection: ModelSelectionRef,
@@ -147,8 +155,13 @@ async function setupAgentContext(
   const mounted = await agentPresets.mount(agentCtx, agentPreset)
   const presentation = resolveToolPresentation(agent.session.events, mounted.id)
   const disposeToolPresentation = tools.presentAs(presentation.tools)
-  await agentCtx.plugin(commandPermission)
-  return { agentPreset: mounted.id, ...presentation, disposeToolPresentation }
+  try {
+    await agentCtx.plugin(commandPermission)
+    return { agentPreset: mounted.id, ...presentation, disposeToolPresentation }
+  } catch (error: unknown) {
+    disposeToolPresentation()
+    throw error
+  }
 }
 
 function parseControl(line: string): { name: string; input: string } | undefined {
@@ -803,6 +816,83 @@ export class SessionRuntime {
   async resumeSession(agent: Agent, id: string, signal: AbortSignal): Promise<void> {
     this.assertActive(agent)
     this.#activate(await this.#resume(id, this.selection(agent), signal))
+  }
+
+  /**
+   * Durably publish a detached child seeded from the complete idle conversation.
+   * The active Agent and composer remain untouched; the temporary child is
+   * disposed after persistence drains its published seed.
+   */
+  async createDetachedFork(signal?: AbortSignal): Promise<DetachedConversationFork> {
+    const parent = this.#requiredAgent()
+    if (parent.status !== 'idle') {
+      throw new Error('Finish or interrupt the active turn before forking the conversation.')
+    }
+    const cwd = parent.session.header.cwd
+    if (cwd === undefined) throw new Error('The active session has no working directory.')
+    const active = this.#requiredActive()
+    const agentPreset = active.configuration.agentPreset
+    const selection = { ...this.selection(parent) }
+    const seed = Object.freeze([...parent.session.events])
+    const childSessionId = SessionId('session-' + randomUUID())
+    const ref: ModelSelectionRef = { current: selection, assembled: undefined }
+    let configured: ConfiguredAgentContext | undefined
+    let handle: AgentHandle
+    try {
+      handle = await this.#ctx.agents.create({
+        sessionId: childSessionId,
+        seed,
+        meta: {
+          cwd,
+          parentSession: parent.id,
+          seedLength: seed.length,
+          agentPreset,
+        },
+        agentOptions: { provider: selection.provider, model: selection.model },
+        ...(signal === undefined ? {} : { signal }),
+        setup: async (agentCtx) => {
+          configured = await setupAgentContext(agentCtx, ref)
+          return {
+            commit: () => {
+              this.assertActive(parent)
+              const currentSelection = this.selection(parent)
+              const parentChanged = parent.status !== 'idle'
+                || parent.session.events.length !== seed.length
+                || parent.session.events.at(-1)?.seq !== seed.at(-1)?.seq
+                || parent.session.header.cwd !== cwd
+                || this.#requiredActive().configuration.agentPreset !== agentPreset
+                || currentSelection.provider !== selection.provider
+                || currentSelection.model !== selection.model
+                || currentSelection.reasoningEffort !== selection.reasoningEffort
+              if (parentChanged) {
+                throw new Error('The active conversation changed before the fork was published.')
+              }
+            },
+          }
+        },
+      })
+    } catch (error: unknown) {
+      configured?.disposeToolPresentation()
+      throw error
+    }
+    try {
+      this.assertActive(parent)
+      if (configured === undefined) {
+        throw new Error('detached fork was published without session configuration')
+      }
+      return {
+        childSessionId,
+        parentSessionId: parent.id,
+        cwd,
+        seedLength: seed.length,
+      }
+    } finally {
+      try {
+        configured?.disposeToolPresentation()
+      } finally {
+        await handle.dispose()
+      }
+    }
   }
 
   /** Fork before a selected human turn and restore that message as an editable draft. */
