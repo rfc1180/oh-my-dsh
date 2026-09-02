@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Keep slash-command autocomplete visible above the composer instead of letting its transient rows fall into native terminal scrollback.
 - Keep `/sessions` history readable by collapsing duplicate delivery of the same prompt within one turn, and include the latest prompt preview in session search.
 - Exclude service roots without local direct-human input from the default indexed session catalog, and let authoritative hydration remove stale placeholder rows instead of preserving them.
 - Render Markdown tables richly while they stream, honor column alignment, and switch any crowded table to a lossless responsive record layout instead of crushing words into unreadable cells.

@@ -1547,6 +1547,8 @@ describe('renderView', () => {
     expect(frame.lines.slice(popupStart, -2).join('\n')).toContain('/q')
     expect(frame.cursor?.row).toBeLessThan(frame.lines.length - 1)
     expect(editorRows).toBeGreaterThan(0)
+    expect(frame.liveStart).toBe(0)
+    expect(frame.lines).toHaveLength(24)
   })
 
   it('replaces the editor with the copy picker overlay', () => {

@@ -1761,6 +1761,7 @@ export function renderView(state: TranscriptState, options: ViewOptions): Frame 
     ? (options.scrollStart ?? Number.POSITIVE_INFINITY)
     : transcriptStart + focusStart
   const hasOverlay = promptSelector !== undefined || settings !== undefined || copySelector !== undefined || search !== undefined
+    || autocomplete.length > 0
   const isFollowing = requestedStart === Number.POSITIVE_INFINITY && !hasOverlay
   const livePinned = transcript.pendingStart !== undefined
   const windowed = isFollowing

@@ -62,6 +62,18 @@ if (!(await waitFor(() => cleanOutput(out).includes('full access'), 'interactive
   process.exit(1)
 }
 let mark = out.length
+term.write('/')
+if (!(await waitFor(() => {
+  const completion = cleanOutput(out.slice(mark))
+  return completion.includes('/help') && completion.includes('/detail')
+}, 'slash-command completion'))) {
+  console.error('--- PTY output at slash completion failure ---')
+  console.error(cleanOutput(out.slice(mark)).slice(-2000))
+  term.kill()
+  process.exit(1)
+}
+term.write('\x15')
+mark = out.length
 term.write('/agent\r')
 if (!(await waitFor(() => cleanOutput(out.slice(mark)).includes('Choose the Agent composition for this blank session'), 'Agent selector'))) {
   term.kill()

@@ -1722,6 +1722,26 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('keeps slash-command suggestions visible while a turn is streaming', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    tui.setStatus('running')
+    tui.event(ev('turn/start', { turn: 1 }, 1))
+    tui.event(ev('assistant/chunk', {
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', index: 0, text: 'working' },
+    }, 2))
+
+    press(term, '/')
+
+    const screen = emulatedScreenRows(term.captured).map(stripAnsi).join('\n')
+    expect(screen).toContain('/help')
+    expect(screen).toContain('/settings')
+    expect(screen).toContain('/detail')
+    tui.dispose()
+  })
+
   it('completes the selected slash command on Tab', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
