@@ -129,12 +129,44 @@ interface ConfiguredAgentContext extends SessionConfiguration {
   disposeToolPresentation: () => void
 }
 
+export type DetachedConversationForkMode = 'completed' | 'current-task'
+
 /** Durable identity and lineage of a detached fork of the active conversation. */
 export interface DetachedConversationFork {
   readonly childSessionId: SessionId
   readonly parentSessionId: SessionId
   readonly cwd: string
   readonly seedLength: number
+}
+
+/** Build a balanced snapshot, optionally retaining the active human request as context. */
+export function detachedConversationSeed(
+  events: readonly SessionEvent[],
+  status: Agent['status'],
+  mode: DetachedConversationForkMode,
+): readonly SessionEvent[] {
+  if (status === 'idle') return Object.freeze([...events])
+
+  const lastCompletedIndex = events.findLastIndex(event => event.type === 'turn/end')
+  const completed = events.slice(0, lastCompletedIndex + 1)
+  if (mode === 'completed') return Object.freeze(completed)
+
+  let currentTask: SessionEvent<'user/message'> | undefined
+  for (let index = lastCompletedIndex + 1; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type === 'user/message' && event.data.source.kind === 'user') currentTask = event
+  }
+  if (currentTask === undefined) return Object.freeze(completed)
+  return Object.freeze([
+    ...completed,
+    {
+      type: 'user/message',
+      seq: completed.length,
+      time: currentTask.time,
+      data: currentTask.data,
+      surfaceOp: 'append',
+    },
+  ])
 }
 
 async function setupAgentContext(
@@ -819,21 +851,24 @@ export class SessionRuntime {
   }
 
   /**
-   * Durably publish a detached child seeded from the complete idle conversation.
+   * Durably publish a detached child from an immutable conversation snapshot.
+   * During an active turn the default seed ends at the last completed response;
+   * the optional current-task mode also retains the active human request.
    * The active Agent and composer remain untouched; the temporary child is
    * disposed after persistence drains its published seed.
    */
-  async createDetachedFork(signal?: AbortSignal): Promise<DetachedConversationFork> {
+  async createDetachedFork(
+    signal?: AbortSignal,
+    mode: DetachedConversationForkMode = 'completed',
+  ): Promise<DetachedConversationFork> {
     const parent = this.#requiredAgent()
-    if (parent.status !== 'idle') {
-      throw new Error('Finish or interrupt the active turn before forking the conversation.')
-    }
+    const parentWasIdle = parent.status === 'idle'
     const cwd = parent.session.header.cwd
     if (cwd === undefined) throw new Error('The active session has no working directory.')
     const active = this.#requiredActive()
     const agentPreset = active.configuration.agentPreset
     const selection = { ...this.selection(parent) }
-    const seed = Object.freeze([...parent.session.events])
+    const seed = detachedConversationSeed(parent.session.events, parent.status, mode)
     const childSessionId = SessionId('session-' + randomUUID())
     const ref: ModelSelectionRef = { current: selection, assembled: undefined }
     let configured: ConfiguredAgentContext | undefined
@@ -856,9 +891,12 @@ export class SessionRuntime {
             commit: () => {
               this.assertActive(parent)
               const currentSelection = this.selection(parent)
-              const parentChanged = parent.status !== 'idle'
+              const idleConversationChanged = parentWasIdle && (
+                parent.status !== 'idle'
                 || parent.session.events.length !== seed.length
                 || parent.session.events.at(-1)?.seq !== seed.at(-1)?.seq
+              )
+              const parentChanged = idleConversationChanged
                 || parent.session.header.cwd !== cwd
                 || this.#requiredActive().configuration.agentPreset !== agentPreset
                 || currentSelection.provider !== selection.provider

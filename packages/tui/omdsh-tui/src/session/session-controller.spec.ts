@@ -407,6 +407,13 @@ describe('SessionRuntime.createDetachedFork', () => {
       { type: 'user/message', seq: 2, time: 3, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'question' }] } },
       { type: 'turn/end', seq: 3, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
     ] as unknown as SessionEvent[]
+    if (status === 'running') {
+      parentEvents.push(
+        { type: 'turn/start', seq: 4, time: 5, data: { turn: 2 } } as SessionEvent,
+        { type: 'user/message', seq: 5, time: 6, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'active task' }] } } as SessionEvent,
+        { type: 'assistant/message', seq: 6, time: 7, data: { content: [{ type: 'text', text: 'partial answer' }] } } as SessionEvent,
+      )
+    }
     const parentSession = {
       id: SessionId('parent-session'),
       header: { id: SessionId('parent-session'), cwd: '/workspace', createdAt: 1 },
@@ -554,14 +561,39 @@ describe('SessionRuntime.createDetachedFork', () => {
     await fixture.runtime.dispose()
   })
 
-  it('requires the active root to be idle before creating a child', async () => {
+  it('forks a running conversation from the last completed response by default', async () => {
     const fixture = detachedForkRuntime('running')
     await fixture.runtime.start('parent-session')
 
-    await expect(fixture.runtime.createDetachedFork()).rejects.toThrow(
-      'Finish or interrupt the active turn before forking the conversation.',
-    )
-    expect(fixture.agents.create).not.toHaveBeenCalled()
+    const result = await fixture.runtime.createDetachedFork()
+
+    expect(fixture.createOptions()?.seed).toEqual(fixture.parentEvents.slice(0, 4))
+    expect(result.seedLength).toBe(4)
+    expect(fixture.runtime.agent).toBe(fixture.parent)
+    await fixture.runtime.dispose()
+  })
+
+  it('can retain only the current human task from a running turn', async () => {
+    const fixture = detachedForkRuntime('running')
+    await fixture.runtime.start('parent-session')
+    fixture.beforeCommit(() => {
+      fixture.parentEvents.push({ type: 'assistant/chunk', seq: 7, time: 8, data: { content: 'later output' } } as SessionEvent)
+    })
+
+    const result = await fixture.runtime.createDetachedFork(undefined, 'current-task')
+    const seed = fixture.createOptions()?.seed
+
+    expect(seed).toHaveLength(5)
+    expect(seed?.slice(0, 4)).toEqual(fixture.parentEvents.slice(0, 4))
+    expect(seed?.at(-1)).toMatchObject({
+      type: 'user/message',
+      seq: 4,
+      surfaceOp: 'append',
+      data: { content: [{ type: 'text', text: 'active task' }] },
+    })
+    expect(seed?.at(-1)).not.toHaveProperty('sourceEventSeqs')
+    expect(seed?.some(event => event.type === 'assistant/message' || event.type === 'assistant/chunk')).toBe(false)
+    expect(result.seedLength).toBe(5)
     await fixture.runtime.dispose()
   })
 })
