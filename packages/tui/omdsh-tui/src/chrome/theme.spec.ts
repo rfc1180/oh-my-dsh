@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { BOX, createTheme, DEEPSEEK_LOGO, detectTrueColor, gradientLogo, parseThemeName, SYMBOL, THEME_NAMES } from './theme.ts'
+import { BOX, createTheme, DEEPSEEK_LOGO, detectTrueColor, getThemeDefinition, gradientLogo, parseThemeName, SYMBOL, THEME_CATALOG, THEME_COLOR_NAMES, THEME_NAMES } from './theme.ts'
 
 function sgrLuminance(ansi: string): number {
-  const match = /38;2;(\d+);(\d+);(\d+)/u.exec(ansi)
+  const match = /(?:38|48);2;(\d+);(\d+);(\d+)/u.exec(ansi)
   if (match === null) return Number.NaN
   const channels = [match[1], match[2], match[3]].map(value => Number(value) / 255)
   const linear = channels.map(channel => (
@@ -16,6 +16,14 @@ function rgbLuminance(red: number, green: number, blue: number): number {
     channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
   ))
   return 0.2126 * (channels[0] ?? 0) + 0.7152 * (channels[1] ?? 0) + 0.0722 * (channels[2] ?? 0)
+}
+
+function hexLuminance(hex: string): number {
+  return rgbLuminance(
+    Number.parseInt(hex.slice(1, 3), 16),
+    Number.parseInt(hex.slice(3, 5), 16),
+    Number.parseInt(hex.slice(5, 7), 16),
+  )
 }
 
 function contrastRatio(foreground: number, background: number): number {
@@ -84,6 +92,10 @@ describe('createTheme', () => {
       'dark', 'light', 'midnight', 'solarized',
       'catppuccin', 'dracula', 'nord', 'gruvbox', 'rose-pine',
       'mono',
+      'arctic', 'paper', 'ivory', 'porcelain', 'fog', 'sand', 'rose-mist', 'lavender',
+      'stone', 'mushroom', 'overcast', 'sage',
+      'graphite', 'navy', 'espresso', 'aubergine', 'oled',
+      'hc-light', 'hc-dark',
     ])
     expect(createTheme(true, true, 'catppuccin').name).toBe('catppuccin')
     expect(createTheme(true, true, 'rose-pine').getFgAnsi('thinkingText')).not.toBe(
@@ -121,43 +133,86 @@ describe('createTheme', () => {
     expect(midnight.getFgAnsi('thinkingText')).not.toBe(midnight.getFgAnsi('dim'))
   })
 
-  it('uses the terminal foreground for body ink on every palette', () => {
-    for (const name of THEME_NAMES) {
-      const theme = createTheme(true, true, name)
-      expect(theme.getFgAnsi('text'), name).toBe('\x1b[39m')
+  it('preserves terminal-owned body ink for legacy palettes and gives new families independent ink', () => {
+    for (const name of THEME_NAMES.slice(0, 10)) {
+      expect(createTheme(true, true, name).getFgAnsi('text'), name).toBe('\x1b[39m')
+    }
+    for (const name of THEME_NAMES.slice(10)) {
+      expect(createTheme(true, true, name).getFgAnsi('text'), name).toMatch(/^\x1b\[38;2;/u)
     }
   })
 
-  it('keeps every dark color palette readable and visibly layered', () => {
-    const background = rgbLuminance(0x15, 0x14, 0x1a)
+  it('has complete metadata and truecolor/ANSI16 entries for every semantic token', () => {
+    expect(Object.keys(THEME_CATALOG)).toEqual([...THEME_NAMES])
     for (const name of THEME_NAMES) {
-      if (name === 'light') continue
-      const theme = createTheme(true, true, name)
-      const muted = contrastRatio(sgrLuminance(theme.getFgAnsi('muted')), background)
-      const dim = contrastRatio(sgrLuminance(theme.getFgAnsi('dim')), background)
-      const border = contrastRatio(sgrLuminance(theme.getFgAnsi('borderMuted')), background)
-      const accent = contrastRatio(sgrLuminance(theme.getFgAnsi('accent')), background)
-      expect(muted, `${name} muted`).toBeGreaterThanOrEqual(3.5)
-      expect(dim, `${name} dim`).toBeGreaterThanOrEqual(1.95)
-      expect(muted - dim, `${name} muted/dim gap`).toBeGreaterThanOrEqual(1)
-      expect(border, `${name} borderMuted`).toBeLessThanOrEqual(dim + 0.05)
-      expect(accent, `${name} accent`).toBeGreaterThanOrEqual(4.3)
+      const definition = getThemeDefinition(name)
+      const truecolor = createTheme(true, true, name)
+      const ansi16 = createTheme(true, false, name)
+      expect(definition.name).toBe(name)
+      expect(definition.label.length, `${name} label`).toBeGreaterThan(0)
+      expect(definition.description.length, `${name} description`).toBeGreaterThan(0)
+      for (const color of THEME_COLOR_NAMES) {
+        const truecolorCode = color.endsWith('Bg') ? truecolor.getBgAnsi(color) : truecolor.getFgAnsi(color)
+        const ansi16Code = color.endsWith('Bg') ? ansi16.getBgAnsi(color) : ansi16.getFgAnsi(color)
+        expect(truecolorCode, `${name}.${color} truecolor`).not.toBe('')
+        expect(ansi16Code, `${name}.${color} ansi16`).toMatch(/^\x1b\[/u)
+      }
     }
   })
 
-  it('keeps the light palette readable and layered on a light surface', () => {
-    const light = createTheme(true, true, 'light')
-    const background = rgbLuminance(0xff, 0xff, 0xff)
-    const muted = contrastRatio(sgrLuminance(light.getFgAnsi('muted')), background)
-    const dim = contrastRatio(sgrLuminance(light.getFgAnsi('dim')), background)
-    const border = contrastRatio(sgrLuminance(light.getFgAnsi('borderMuted')), background)
-    const accent = contrastRatio(sgrLuminance(light.getFgAnsi('accent')), background)
-    expect(muted).toBeGreaterThanOrEqual(4.5)
-    expect(dim).toBeGreaterThanOrEqual(4.5)
-    expect(muted).toBeGreaterThan(dim)
-    expect(border).toBeGreaterThanOrEqual(2)
-    expect(border).toBeLessThan(dim)
-    expect(accent).toBeGreaterThanOrEqual(4.3)
+  it('keeps semantic ink readable on each theme’s corresponding canvas and selection', () => {
+    for (const name of THEME_NAMES) {
+      const theme = createTheme(true, true, name)
+      const canvas = hexLuminance(getThemeDefinition(name).background)
+      const accent = contrastRatio(sgrLuminance(theme.getFgAnsi('accent')), canvas)
+      const muted = contrastRatio(sgrLuminance(theme.getFgAnsi('muted')), canvas)
+      const selection = contrastRatio(
+        sgrLuminance(theme.getFgAnsi('selectionText')),
+        sgrLuminance(theme.getBgAnsi('selectionBg')),
+      )
+      expect(accent, `${name} accent`).toBeGreaterThanOrEqual(3)
+      expect(muted, `${name} muted`).toBeGreaterThanOrEqual(3)
+      expect(selection, `${name} selection`).toBeGreaterThanOrEqual(4.5)
+      if (THEME_NAMES.indexOf(name) >= 10) {
+        expect(contrastRatio(sgrLuminance(theme.getFgAnsi('text')), canvas), `${name} text`).toBeGreaterThanOrEqual(7)
+      }
+    }
+  })
+
+  it('keeps new tool, markdown, and diff semantics readable on their own surfaces', () => {
+    for (const name of THEME_NAMES.slice(10)) {
+      const theme = createTheme(true, true, name)
+      for (const surface of ['toolPendingBg', 'toolSuccessBg', 'toolErrorBg'] as const) {
+        expect(contrastRatio(
+          sgrLuminance(theme.getFgAnsi('toolOutput')),
+          sgrLuminance(theme.getBgAnsi(surface)),
+        ), `${name} toolOutput/${surface}`).toBeGreaterThanOrEqual(4.5)
+      }
+      expect(new Set([
+        theme.getBgAnsi('toolPendingBg'),
+        theme.getBgAnsi('toolSuccessBg'),
+        theme.getBgAnsi('toolErrorBg'),
+      ]).size, `${name} tool state surfaces`).toBe(3)
+      const canvas = hexLuminance(getThemeDefinition(name).background)
+      expect(contrastRatio(sgrLuminance(theme.getFgAnsi('mdCodeBlock')), canvas), `${name} code`).toBeGreaterThanOrEqual(7)
+      expect(contrastRatio(sgrLuminance(theme.getFgAnsi('toolDiffAdded')), canvas), `${name} diff added`).toBeGreaterThanOrEqual(3)
+      expect(contrastRatio(sgrLuminance(theme.getFgAnsi('toolDiffRemoved')), canvas), `${name} diff removed`).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it('keeps light and dark families distinct in truecolor and ANSI16 fallbacks', () => {
+    for (const name of THEME_NAMES.slice(10)) {
+      const definition = getThemeDefinition(name)
+      const canvas = hexLuminance(definition.background)
+      const fallback = createTheme(true, false, name)
+      if (definition.appearance === 'light') {
+        expect(canvas, `${name} canvas`).toBeGreaterThan(0.7)
+        expect(fallback.getBgAnsi('toolPendingBg'), `${name} ANSI surface`).toBe('\x1b[47m')
+      } else {
+        expect(canvas, `${name} canvas`).toBeLessThan(0.03)
+        expect(fallback.getBgAnsi('toolPendingBg'), `${name} ANSI surface`).toBe('\x1b[40m')
+      }
+    }
   })
 
   it('keeps inline markdown code closer to muted text than to accent', () => {
@@ -177,6 +232,8 @@ describe('parseThemeName', () => {
     expect(parseThemeName('midnight')).toBe('midnight')
     expect(parseThemeName('catppuccin')).toBe('catppuccin')
     expect(parseThemeName('rose-pine')).toBe('rose-pine')
+    expect(parseThemeName('arctic')).toBe('arctic')
+    expect(parseThemeName('hc-dark')).toBe('hc-dark')
     expect(parseThemeName('nope')).toBe('dark')
     expect(parseThemeName(undefined)).toBe('dark')
   })

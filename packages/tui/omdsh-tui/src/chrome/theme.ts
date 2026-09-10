@@ -1,7 +1,6 @@
 /**
- * oh-my-pi dark theme, ported to Node (no Bun.color). Semantic colors, rounded
- * box chrome, and status glyphs — the visual vocabulary the rest of the view
- * paints with.
+ * Independent omdsh semantic theme catalog. Palettes share renderer roles,
+ * rounded box chrome, status glyphs, and capability-aware ANSI output.
  * @module @agi-fans/dsh-tui
  */
 
@@ -36,39 +35,20 @@ export const SYMBOL = {
 /** Braille activity spinner (OMP unicode activity frames). */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
 
-/** Semantic colors the view addresses. */
-export type ThemeColor =
-  | 'accent'
-  | 'border'
-  | 'borderAccent'
-  | 'borderMuted'
-  | 'success'
-  | 'error'
-  | 'warning'
-  | 'muted'
-  | 'dim'
-  | 'text'
-  | 'userMessageText'
-  | 'userMessageBg'
-  | 'toolPendingBg'
-  | 'toolSuccessBg'
-  | 'toolErrorBg'
-  | 'toolTitle'
-  | 'toolOutput'
-  | 'toolDiffAdded'
-  | 'toolDiffRemoved'
-  | 'toolDiffContext'
-  | 'mdHeading'
-  | 'mdLink'
-  | 'mdLinkUrl'
-  | 'mdCode'
-  | 'mdCodeBlock'
-  | 'mdCodeBlockBorder'
-  | 'mdKeyword'
-  | 'mdQuote'
-  | 'mdListBullet'
-  | 'thinkingText'
-  | 'customMessageLabel'
+/** Complete set of semantic colors consumed by the TUI. */
+export const THEME_COLOR_NAMES = [
+  'accent', 'border', 'borderAccent', 'borderMuted',
+  'success', 'error', 'warning', 'muted', 'dim', 'text',
+  'selectionText', 'selectionBg',
+  'userMessageText', 'userMessageBg',
+  'toolPendingBg', 'toolSuccessBg', 'toolErrorBg', 'toolTitle', 'toolOutput',
+  'toolDiffAdded', 'toolDiffRemoved', 'toolDiffContext',
+  'mdHeading', 'mdLink', 'mdLinkUrl', 'mdCode', 'mdCodeBlock', 'mdCodeBlockBorder',
+  'mdKeyword', 'mdQuote', 'mdListBullet', 'thinkingText', 'customMessageLabel',
+] as const
+
+/** Semantic color addressed by a real renderer. */
+export type ThemeColor = (typeof THEME_COLOR_NAMES)[number]
 
 /** Resolved palette entry: hex, empty (default fg/bg), or a 256-color index. */
 type Swatch = string | number
@@ -85,6 +65,8 @@ const DARK_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#777d88',
   dim: '#5f6673',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageText: '',
   userMessageBg: '#221d1a',
   toolPendingBg: '#1d2129',
@@ -120,6 +102,8 @@ const LIGHT_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#6c6c6c',
   dim: '#767676',
   text: '',
+  selectionText: '#101418',
+  selectionBg: '#c7d9df',
   userMessageText: '',
   userMessageBg: '#e8e8e8',
   toolPendingBg: '#e8e8f0',
@@ -155,6 +139,8 @@ const MIDNIGHT_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#777d88',
   dim: '#5f6673',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#1a1b26',
   toolPendingBg: '#16161e',
   toolSuccessBg: '#1b2430',
@@ -188,6 +174,8 @@ const SOLARIZED_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#839496',
   dim: '#586e75',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#073642',
   toolPendingBg: '#002b36',
   toolSuccessBg: '#073642',
@@ -221,6 +209,8 @@ const CATPPUCCIN_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#7f849c',
   dim: '#6c7086',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#181825',
   toolPendingBg: '#313244',
   toolSuccessBg: '#181825',
@@ -255,6 +245,8 @@ const DRACULA_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#6272a4',
   dim: '#44475a',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#1f2029',
   toolPendingBg: '#21222c',
   toolSuccessBg: '#1a1f1e',
@@ -289,6 +281,8 @@ const NORD_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#7b88a1',
   dim: '#4c566a',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#3b4252',
   toolPendingBg: '#3b4252',
   toolSuccessBg: '#2e3440',
@@ -323,6 +317,8 @@ const GRUVBOX_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#928374',
   dim: '#7c6f64',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#1d2021',
   toolPendingBg: '#32302f',
   toolSuccessBg: '#1d2021',
@@ -357,6 +353,8 @@ const ROSE_PINE_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#6e6a86',
   dim: '#524f67',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageBg: '#21202e',
   toolPendingBg: '#1f1d2e',
   toolSuccessBg: '#21202e',
@@ -390,6 +388,8 @@ const MONO_PALETTE: Record<ThemeColor, Swatch> = {
   muted: '#888888',
   dim: '#666666',
   text: '',
+  selectionText: '#ffffff',
+  selectionBg: '#005f87',
   userMessageText: '',
   userMessageBg: '#202020',
   toolPendingBg: '#242424',
@@ -413,6 +413,91 @@ const MONO_PALETTE: Record<ThemeColor, Swatch> = {
   customMessageLabel: '#a8a8a8',
 }
 
+type SemanticSeed = {
+  bg: string
+  surface: string
+  elevated: string
+  foreground: string
+  muted: string
+  dim: string
+  accent: string
+  border: string
+  success: string
+  error: string
+  warning: string
+  secondary: string
+  selectionBg: string
+  selectionText: string
+}
+
+function mixHex(base: string, tint: string, weight: number): string {
+  const channel = (hex: string, offset: number): number => Number.parseInt(hex.slice(offset, offset + 2), 16)
+  const mixed = [1, 3, 5].map(offset => Math.round(
+    channel(base, offset) * (1 - weight) + channel(tint, offset) * weight,
+  ))
+  return '#' + mixed.map(value => value.toString(16).padStart(2, '0')).join('')
+}
+
+function semanticPalette(seed: SemanticSeed): Record<ThemeColor, Swatch> {
+  return {
+    accent: seed.accent,
+    border: seed.border,
+    borderAccent: seed.accent,
+    borderMuted: seed.dim,
+    success: seed.success,
+    error: seed.error,
+    warning: seed.warning,
+    muted: seed.muted,
+    dim: seed.dim,
+    text: seed.foreground,
+    selectionText: seed.selectionText,
+    selectionBg: seed.selectionBg,
+    userMessageText: seed.foreground,
+    userMessageBg: seed.surface,
+    toolPendingBg: seed.elevated,
+    toolSuccessBg: mixHex(seed.surface, seed.success, 0.1),
+    toolErrorBg: mixHex(seed.surface, seed.error, 0.1),
+    toolTitle: seed.foreground,
+    toolOutput: seed.muted,
+    toolDiffAdded: seed.success,
+    toolDiffRemoved: seed.error,
+    toolDiffContext: seed.muted,
+    mdHeading: seed.accent,
+    mdLink: seed.border,
+    mdLinkUrl: seed.dim,
+    mdCode: seed.secondary,
+    mdCodeBlock: seed.foreground,
+    mdCodeBlockBorder: seed.dim,
+    mdKeyword: seed.secondary,
+    mdQuote: seed.muted,
+    mdListBullet: seed.accent,
+    thinkingText: seed.dim,
+    customMessageLabel: seed.secondary,
+  }
+}
+
+const NEW_THEME_SEEDS = {
+  arctic: { bg: '#f4f9fb', surface: '#e8f2f5', elevated: '#deedf2', foreground: '#172b35', muted: '#405d69', dim: '#627984', accent: '#006d8f', border: '#347d95', success: '#28754e', error: '#a73542', warning: '#8a5a00', secondary: '#6550a0', selectionBg: '#006d8f', selectionText: '#ffffff' },
+  paper: { bg: '#faf9f5', surface: '#f0eee7', elevated: '#e8e5dc', foreground: '#292824', muted: '#5d5a51', dim: '#777268', accent: '#8a4f19', border: '#576f7e', success: '#3e713f', error: '#a33b36', warning: '#806000', secondary: '#6f4f8f', selectionBg: '#76502d', selectionText: '#ffffff' },
+  ivory: { bg: '#fffdf2', surface: '#f5f0dd', elevated: '#ede5cc', foreground: '#302d20', muted: '#655f49', dim: '#7b745d', accent: '#806000', border: '#61705a', success: '#47703c', error: '#a23d35', warning: '#7a5800', secondary: '#72528b', selectionBg: '#735b19', selectionText: '#ffffff' },
+  porcelain: { bg: '#f8fafc', surface: '#edf1f5', elevated: '#e3e9ef', foreground: '#202a33', muted: '#4e606f', dim: '#6a7a87', accent: '#255f91', border: '#4c7899', success: '#337050', error: '#a33c4a', warning: '#815d09', secondary: '#6555a0', selectionBg: '#255f91', selectionText: '#ffffff' },
+  fog: { bg: '#eef1f2', surface: '#e2e7e9', elevated: '#d8dfe2', foreground: '#243035', muted: '#4f5f65', dim: '#68787e', accent: '#356979', border: '#547786', success: '#3b7154', error: '#9f4148', warning: '#7d5e14', secondary: '#68578e', selectionBg: '#356979', selectionText: '#ffffff' },
+  sand: { bg: '#f7f0df', surface: '#eee3cd', elevated: '#e5d7bb', foreground: '#332a20', muted: '#685947', dim: '#7e6f5b', accent: '#8a551d', border: '#6e7560', success: '#4d703f', error: '#a23f36', warning: '#7f5a00', secondary: '#765080', selectionBg: '#805326', selectionText: '#ffffff' },
+  'rose-mist': { bg: '#fbf4f6', surface: '#f2e6ea', elevated: '#eadbe0', foreground: '#35272d', muted: '#6b535d', dim: '#806a73', accent: '#95536b', border: '#8a6475', success: '#477255', error: '#a1384f', warning: '#80600b', secondary: '#72549a', selectionBg: '#8b4962', selectionText: '#ffffff' },
+  lavender: { bg: '#f8f5fc', surface: '#eee8f5', elevated: '#e5ddef', foreground: '#2e2938', muted: '#61586f', dim: '#776d85', accent: '#6d4ca0', border: '#756590', success: '#477251', error: '#a23d50', warning: '#80600a', secondary: '#426b91', selectionBg: '#684795', selectionText: '#ffffff' },
+  stone: { bg: '#f2f1ef', surface: '#e7e5e1', elevated: '#dddad5', foreground: '#2d2c29', muted: '#5f5d57', dim: '#77736c', accent: '#5f625c', border: '#70736d', success: '#477047', error: '#9d413d', warning: '#795c12', secondary: '#63577d', selectionBg: '#565954', selectionText: '#ffffff' },
+  mushroom: { bg: '#f3efe9', surface: '#e8e1d8', elevated: '#ded5ca', foreground: '#302b27', muted: '#635951', dim: '#796e65', accent: '#75543f', border: '#747064', success: '#4b7046', error: '#9f433c', warning: '#7c5a0c', secondary: '#6c537e', selectionBg: '#6d4d39', selectionText: '#ffffff' },
+  overcast: { bg: '#e9edf0', surface: '#dde3e7', elevated: '#d3dbe0', foreground: '#222d35', muted: '#495b67', dim: '#677984', accent: '#426b82', border: '#5a7787', success: '#39704f', error: '#9d3f49', warning: '#795d13', secondary: '#5e588c', selectionBg: '#3d657b', selectionText: '#ffffff' },
+  sage: { bg: '#f1f5ed', surface: '#e4ecdf', elevated: '#dae5d4', foreground: '#263127', muted: '#526453', dim: '#687b69', accent: '#49704e', border: '#627d65', success: '#367044', error: '#9e4140', warning: '#795d0d', secondary: '#63568a', selectionBg: '#456b4a', selectionText: '#ffffff' },
+  graphite: { bg: '#17191c', surface: '#22252a', elevated: '#2a2e34', foreground: '#edf0f3', muted: '#b0b6bf', dim: '#858d98', accent: '#69a7d6', border: '#6f91aa', success: '#78bd8b', error: '#ee7883', warning: '#d8ad62', secondary: '#b59add', selectionBg: '#315f80', selectionText: '#ffffff' },
+  navy: { bg: '#0c1624', surface: '#142338', elevated: '#1b2c43', foreground: '#e9f1fa', muted: '#a8b8ca', dim: '#7c90a7', accent: '#67b7e8', border: '#5788b0', success: '#72c69a', error: '#f17b88', warning: '#e1b866', secondary: '#b4a0e8', selectionBg: '#245f86', selectionText: '#ffffff' },
+  espresso: { bg: '#1d1512', surface: '#2a1e19', elevated: '#34251f', foreground: '#f3e8df', muted: '#c1aa9a', dim: '#927b6d', accent: '#e29a5b', border: '#a9785b', success: '#91be78', error: '#ef7d72', warning: '#dfb55f', secondary: '#c69bc7', selectionBg: '#80502e', selectionText: '#ffffff' },
+  aubergine: { bg: '#1b121e', surface: '#28192c', elevated: '#332039', foreground: '#f2e8f4', muted: '#bea9c2', dim: '#917a98', accent: '#d18bd7', border: '#9b6ca1', success: '#87c58b', error: '#f07b91', warning: '#dfb467', secondary: '#83b5df', selectionBg: '#713d77', selectionText: '#ffffff' },
+  oled: { bg: '#000000', surface: '#0a0a0a', elevated: '#121212', foreground: '#f5f5f5', muted: '#b8b8b8', dim: '#858585', accent: '#62d8ff', border: '#57a9c5', success: '#72e59a', error: '#ff7185', warning: '#ffd166', secondary: '#c9a0ff', selectionBg: '#075f78', selectionText: '#ffffff' },
+  'hc-light': { bg: '#ffffff', surface: '#f2f2f2', elevated: '#e6e6e6', foreground: '#000000', muted: '#333333', dim: '#595959', accent: '#0047ab', border: '#003f88', success: '#006b2e', error: '#a40000', warning: '#6b4d00', secondary: '#5a2380', selectionBg: '#003f88', selectionText: '#ffffff' },
+  'hc-dark': { bg: '#000000', surface: '#101010', elevated: '#1c1c1c', foreground: '#ffffff', muted: '#d0d0d0', dim: '#a0a0a0', accent: '#66d9ff', border: '#70bfff', success: '#7cff9b', error: '#ff6b78', warning: '#ffe066', secondary: '#d5a6ff', selectionBg: '#00658a', selectionText: '#ffffff' },
+} as const satisfies Record<string, SemanticSeed>
+
 const PALETTES: Record<ThemeName, Record<ThemeColor, Swatch>> = {
   dark: DARK_PALETTE,
   light: LIGHT_PALETTE,
@@ -424,6 +509,25 @@ const PALETTES: Record<ThemeName, Record<ThemeColor, Swatch>> = {
   gruvbox: GRUVBOX_PALETTE,
   'rose-pine': ROSE_PINE_PALETTE,
   mono: MONO_PALETTE,
+  arctic: semanticPalette(NEW_THEME_SEEDS.arctic),
+  paper: semanticPalette(NEW_THEME_SEEDS.paper),
+  ivory: semanticPalette(NEW_THEME_SEEDS.ivory),
+  porcelain: semanticPalette(NEW_THEME_SEEDS.porcelain),
+  fog: semanticPalette(NEW_THEME_SEEDS.fog),
+  sand: semanticPalette(NEW_THEME_SEEDS.sand),
+  'rose-mist': semanticPalette(NEW_THEME_SEEDS['rose-mist']),
+  lavender: semanticPalette(NEW_THEME_SEEDS.lavender),
+  stone: semanticPalette(NEW_THEME_SEEDS.stone),
+  mushroom: semanticPalette(NEW_THEME_SEEDS.mushroom),
+  overcast: semanticPalette(NEW_THEME_SEEDS.overcast),
+  sage: semanticPalette(NEW_THEME_SEEDS.sage),
+  graphite: semanticPalette(NEW_THEME_SEEDS.graphite),
+  navy: semanticPalette(NEW_THEME_SEEDS.navy),
+  espresso: semanticPalette(NEW_THEME_SEEDS.espresso),
+  aubergine: semanticPalette(NEW_THEME_SEEDS.aubergine),
+  oled: semanticPalette(NEW_THEME_SEEDS.oled),
+  'hc-light': semanticPalette(NEW_THEME_SEEDS['hc-light']),
+  'hc-dark': semanticPalette(NEW_THEME_SEEDS['hc-dark']),
 }
 
 /** 16-color fallbacks when the terminal is not truecolor. */
@@ -438,6 +542,8 @@ const DARK_ANSI16: Record<ThemeColor, string> = {
   muted: '37',
   dim: '90',
   text: '39',
+  selectionText: '97',
+  selectionBg: '44',
   userMessageText: '39',
   userMessageBg: '40',
   toolPendingBg: '40',
@@ -472,6 +578,8 @@ const LIGHT_ANSI16: Record<ThemeColor, string> = {
   muted: '30',
   dim: '90',
   text: '39',
+  selectionText: '30',
+  selectionBg: '47',
   userMessageText: '39',
   userMessageBg: '47',
   toolPendingBg: '47',
@@ -608,6 +716,25 @@ const ANSI16: Record<ThemeName, Record<ThemeColor, string>> = {
   gruvbox: GRUVBOX_ANSI16,
   'rose-pine': ROSE_PINE_ANSI16,
   mono: MONO_ANSI16,
+  arctic: { ...LIGHT_ANSI16, accent: '36', border: '34', borderAccent: '36', customMessageLabel: '35' },
+  paper: { ...LIGHT_ANSI16, accent: '33', border: '34', borderAccent: '33', customMessageLabel: '35' },
+  ivory: { ...LIGHT_ANSI16, accent: '33', border: '32', borderAccent: '33', customMessageLabel: '35' },
+  porcelain: { ...LIGHT_ANSI16, accent: '34', border: '34', borderAccent: '34', customMessageLabel: '35' },
+  fog: { ...LIGHT_ANSI16, accent: '36', border: '34', borderAccent: '36', customMessageLabel: '35' },
+  sand: { ...LIGHT_ANSI16, accent: '33', border: '32', borderAccent: '33', customMessageLabel: '35' },
+  'rose-mist': { ...LIGHT_ANSI16, accent: '35', border: '35', borderAccent: '35', customMessageLabel: '35' },
+  lavender: { ...LIGHT_ANSI16, accent: '35', border: '34', borderAccent: '35', customMessageLabel: '34' },
+  stone: { ...LIGHT_ANSI16, accent: '30', border: '90', borderAccent: '30', customMessageLabel: '35' },
+  mushroom: { ...LIGHT_ANSI16, accent: '33', border: '90', borderAccent: '33', customMessageLabel: '35' },
+  overcast: { ...LIGHT_ANSI16, accent: '34', border: '36', borderAccent: '34', customMessageLabel: '35' },
+  sage: { ...LIGHT_ANSI16, accent: '32', border: '32', borderAccent: '32', customMessageLabel: '35' },
+  graphite: { ...DARK_ANSI16, accent: '96', border: '36', borderAccent: '96', customMessageLabel: '95' },
+  navy: { ...DARK_ANSI16, accent: '96', border: '34', borderAccent: '96', customMessageLabel: '95' },
+  espresso: { ...DARK_ANSI16, accent: '93', border: '33', borderAccent: '93', customMessageLabel: '95' },
+  aubergine: { ...DARK_ANSI16, accent: '95', border: '35', borderAccent: '95', customMessageLabel: '96' },
+  oled: { ...DARK_ANSI16, accent: '96', border: '36', borderAccent: '96', customMessageLabel: '95' },
+  'hc-light': { ...LIGHT_ANSI16, accent: '34', border: '34', borderAccent: '34', muted: '30', dim: '90', selectionText: '97', selectionBg: '44' },
+  'hc-dark': { ...DARK_ANSI16, accent: '96', border: '94', borderAccent: '96', muted: '97', dim: '37', selectionText: '97', selectionBg: '44' },
 }
 
 const FG_RESET = '\x1b[39m'
@@ -623,10 +750,76 @@ export const THEME_NAMES = [
   'dark', 'light', 'midnight', 'solarized',
   'catppuccin', 'dracula', 'nord', 'gruvbox', 'rose-pine',
   'mono',
+  'arctic', 'paper', 'ivory', 'porcelain', 'fog', 'sand', 'rose-mist', 'lavender',
+  'stone', 'mushroom', 'overcast', 'sage',
+  'graphite', 'navy', 'espresso', 'aubergine', 'oled',
+  'hc-light', 'hc-dark',
 ] as const
 
 /** One shipped palette name. */
 export type ThemeName = (typeof THEME_NAMES)[number]
+
+export type ThemeAppearance = 'light' | 'dark'
+export type ThemeGroup = 'Classic' | 'Light' | 'Dark' | 'High contrast'
+
+/** User-facing metadata and contrast canvas for every persisted theme id. */
+export interface ThemeDefinition {
+  readonly name: ThemeName
+  readonly label: string
+  readonly description: string
+  readonly group: ThemeGroup
+  readonly appearance: ThemeAppearance
+  readonly background: string
+}
+
+function themeDefinition(
+  name: ThemeName,
+  label: string,
+  description: string,
+  group: ThemeGroup,
+  appearance: ThemeAppearance,
+  background: string,
+): ThemeDefinition {
+  return Object.freeze({ name, label, description, group, appearance, background })
+}
+
+/** Complete semantic theme catalog. Persisted ids remain stable for compatibility. */
+export const THEME_CATALOG: Readonly<Record<ThemeName, ThemeDefinition>> = Object.freeze({
+  dark: themeDefinition('dark', 'Dark', 'Warm default with amber accents.', 'Classic', 'dark', '#15141a'),
+  light: themeDefinition('light', 'Light', 'Cool neutral palette for bright terminals.', 'Classic', 'light', '#ffffff'),
+  midnight: themeDefinition('midnight', 'Midnight', 'Deep blue coding palette.', 'Classic', 'dark', '#1a1b26'),
+  solarized: themeDefinition('solarized', 'Solarized Dark', 'Low-glare cyan and ochre.', 'Classic', 'dark', '#002b36'),
+  catppuccin: themeDefinition('catppuccin', 'Catppuccin Mocha', 'Soft pastel dark palette.', 'Classic', 'dark', '#1e1e2e'),
+  dracula: themeDefinition('dracula', 'Dracula', 'Vivid purple dark palette.', 'Classic', 'dark', '#282a36'),
+  nord: themeDefinition('nord', 'Nord', 'Polar blue dark palette.', 'Classic', 'dark', '#2e3440'),
+  gruvbox: themeDefinition('gruvbox', 'Gruvbox Dark', 'Earthy retro dark palette.', 'Classic', 'dark', '#282828'),
+  'rose-pine': themeDefinition('rose-pine', 'Rosé Pine', 'Muted rose and iris dark palette.', 'Classic', 'dark', '#191724'),
+  mono: themeDefinition('mono', 'Monochrome', 'Grayscale dark palette.', 'Classic', 'dark', '#141414'),
+  arctic: themeDefinition('arctic', 'Arctic', 'Crisp ice-blue light palette.', 'Light', 'light', NEW_THEME_SEEDS.arctic.bg),
+  paper: themeDefinition('paper', 'Paper', 'Natural white with ink and sepia.', 'Light', 'light', NEW_THEME_SEEDS.paper.bg),
+  ivory: themeDefinition('ivory', 'Ivory', 'Warm cream with restrained gold.', 'Light', 'light', NEW_THEME_SEEDS.ivory.bg),
+  porcelain: themeDefinition('porcelain', 'Porcelain', 'Clean blue-white neutral palette.', 'Light', 'light', NEW_THEME_SEEDS.porcelain.bg),
+  fog: themeDefinition('fog', 'Fog', 'Soft gray-blue low-glare palette.', 'Light', 'light', NEW_THEME_SEEDS.fog.bg),
+  sand: themeDefinition('sand', 'Sand', 'Warm beige and earthen accents.', 'Light', 'light', NEW_THEME_SEEDS.sand.bg),
+  'rose-mist': themeDefinition('rose-mist', 'Rose Mist', 'Quiet blush with berry accents.', 'Light', 'light', NEW_THEME_SEEDS['rose-mist'].bg),
+  lavender: themeDefinition('lavender', 'Lavender', 'Pale violet with plum accents.', 'Light', 'light', NEW_THEME_SEEDS.lavender.bg),
+  stone: themeDefinition('stone', 'Stone', 'Balanced warm grayscale.', 'Light', 'light', NEW_THEME_SEEDS.stone.bg),
+  mushroom: themeDefinition('mushroom', 'Mushroom', 'Taupe light palette with earthy ink.', 'Light', 'light', NEW_THEME_SEEDS.mushroom.bg),
+  overcast: themeDefinition('overcast', 'Overcast', 'Cool cloudy gray with blue accents.', 'Light', 'light', NEW_THEME_SEEDS.overcast.bg),
+  sage: themeDefinition('sage', 'Sage', 'Soft green neutral light palette.', 'Light', 'light', NEW_THEME_SEEDS.sage.bg),
+  graphite: themeDefinition('graphite', 'Graphite', 'Neutral charcoal with steel blue.', 'Dark', 'dark', NEW_THEME_SEEDS.graphite.bg),
+  navy: themeDefinition('navy', 'Navy', 'Deep ocean blue with clear cyan.', 'Dark', 'dark', NEW_THEME_SEEDS.navy.bg),
+  espresso: themeDefinition('espresso', 'Espresso', 'Coffee-black with warm copper.', 'Dark', 'dark', NEW_THEME_SEEDS.espresso.bg),
+  aubergine: themeDefinition('aubergine', 'Aubergine', 'Deep purple with orchid accents.', 'Dark', 'dark', NEW_THEME_SEEDS.aubergine.bg),
+  oled: themeDefinition('oled', 'OLED', 'True black with luminous accents.', 'Dark', 'dark', NEW_THEME_SEEDS.oled.bg),
+  'hc-light': themeDefinition('hc-light', 'High Contrast Light', 'Maximum separation on white.', 'High contrast', 'light', NEW_THEME_SEEDS['hc-light'].bg),
+  'hc-dark': themeDefinition('hc-dark', 'High Contrast Dark', 'Maximum separation on black.', 'High contrast', 'dark', NEW_THEME_SEEDS['hc-dark'].bg),
+})
+
+/** Metadata for a shipped theme. */
+export function getThemeDefinition(name: ThemeName): ThemeDefinition {
+  return THEME_CATALOG[name]
+}
 
 /** True when `value` is a shipped palette name. */
 export function isThemeName(value: string): value is ThemeName {

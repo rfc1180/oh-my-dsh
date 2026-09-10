@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Ship a complete semantic TUI theme catalog with 19 new light, dark, OLED, and high-contrast palettes, friendly `/settings` metadata, truecolor rendering, and light/dark ANSI16 fallbacks while preserving existing theme ids.
 - Expose a reusable `SessionRuntime` API that durably creates a detached conversational fork without switching the active conversation or changing the composer, including safe snapshots while the parent is still working.
 - Grow the composer by explicit paragraphs up to a bounded internal viewport, expose full-draft editing through Ctrl+X, support Ctrl+A selection, and publish assistant-answer marks to supporting terminal overview rulers.
 - Show an exact-revision durable viewport tail while a resumed Agent is still validating, then atomically replace it with the authoritative full transcript before enabling composer input.

@@ -1713,7 +1713,7 @@ describe('LocalTui (tty)', () => {
     expect(term.captured).toContain('/help')
     expect(term.captured).toContain('/settings')
     expect(term.captured).toContain('/detail')
-    expect(term.captured).not.toContain('/theme')
+    expect(term.captured).not.toMatch(/[❯ ] \/theme {2}/u)
     expect(term.captured).not.toContain('/hotkeys')
     expect(term.captured).not.toContain('/pwd')
     expect(term.captured).not.toContain('/dirs')
@@ -2111,9 +2111,10 @@ describe('LocalTui (tty)', () => {
     press(term, '/settings\r')
     expect(term.captured).toContain('Settings')
     expect(term.captured).toContain('Theme')
-    expect(term.captured).toContain('dark')
+    expect(term.captured).toContain('Dark')
+    expect(term.captured).toContain('Classic · Warm default')
     press(term, '\r')
-    expect(term.captured).toContain('light')
+    expect(term.captured).toContain('Light')
     press(term, '\x1b')
     return new Promise<void>((resolve) => {
       setTimeout(async () => {
@@ -2144,7 +2145,7 @@ describe('LocalTui (tty)', () => {
     void tui.readline()
     press(term, '/set\r')
     expect(term.captured).toContain('Settings')
-    expect(term.captured).toContain('Color palette')
+    expect(term.captured).toContain('Classic · Warm default with amber accents.')
     tui.dispose()
   })
 

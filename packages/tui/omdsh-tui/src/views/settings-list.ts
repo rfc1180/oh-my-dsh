@@ -24,7 +24,7 @@ import {
   type StatusSide,
 } from '../chrome/status-config.ts'
 import { renderStatusFooter } from '../chrome/status-line.ts'
-import { BOX, SYMBOL, THEME_NAMES, type Theme, type ThemeColor, type ThemeName, isThemeName } from '../chrome/theme.ts'
+import { BOX, SYMBOL, THEME_NAMES, getThemeDefinition, type Theme, type ThemeColor, type ThemeName, isThemeName } from '../chrome/theme.ts'
 import { padToWidth, truncateToWidth, visibleWidth, wrapText } from '../chrome/width.ts'
 
 /** One cycleable row in the overlay. */
@@ -33,6 +33,8 @@ export interface SettingItem {
   label: string
   description: string
   value: string
+  /** Friendly rendering while `value` remains the persisted machine id. */
+  displayValue?: string
   values: readonly string[]
   /** Preview fragment this row controls, when it is a footer item. */
   sample?: string
@@ -116,12 +118,14 @@ function statusItemRow(config: StatusBarConfig, id: StatusItemId): SettingItem {
 /** Rows shown in `/settings` (OMP settings-list cycle widgets). */
 export function tuiSettingItems(prefs: TuiPrefs): SettingItem[] {
   const statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
+  const activeTheme = getThemeDefinition(prefs.theme)
   return [
     {
       id: 'theme',
       label: 'Theme',
-      description: 'Color palette',
+      description: `${activeTheme.group} · ${activeTheme.description}`,
       value: prefs.theme,
+      displayValue: activeTheme.label,
       values: THEME_NAMES,
     },
     {
@@ -604,7 +608,7 @@ function renderSettingRow(
   const sample = item.sample === undefined
     ? ''
     : '  ' + theme.fg(item.hidden === true ? 'dim' : 'muted', item.sample)
-  const rawValue = moving ? 'moving' : item.value
+  const rawValue = moving ? 'moving' : (item.displayValue ?? item.value)
   const value = selected || item.swatch === undefined
     ? theme.fg(selected ? 'accent' : 'muted', rawValue)
     : theme.fg(item.swatch, rawValue)

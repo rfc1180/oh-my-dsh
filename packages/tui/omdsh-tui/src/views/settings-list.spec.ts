@@ -39,7 +39,14 @@ describe('tuiSettingItems / applySettingValue', () => {
       'statusItem:durations',
       'statusItem:counts',
     ])
-    expect(items[0]?.value).toBe('dark')
+    expect(items[0]).toMatchObject({
+      value: 'dark',
+      displayValue: 'Dark',
+      description: 'Classic · Warm default with amber accents.',
+    })
+    expect(items[0]?.values).toContain('arctic')
+    expect(items[0]?.values).toContain('oled')
+    expect(items[0]?.values).toContain('hc-dark')
     expect(items[1]?.value).toBe('on')
     expect(items[2]).toMatchObject({ label: 'Activity detail', value: 'standard' })
     expect(items[3]).toMatchObject({ label: 'Tool details', value: 'compact' })
@@ -51,6 +58,7 @@ describe('tuiSettingItems / applySettingValue', () => {
     expect(items[8]).toMatchObject({ label: '← Model', value: 'default', sample: 'deepseek' })
     expect(items[12]).toMatchObject({ label: '← Context', value: 'default', sample: 'Ctx 1.6%' })
     expect(applySettingValue(prefs, 'theme', 'light')).toEqual({ theme: 'light', colors: true, expandTools: false })
+    expect(applySettingValue(prefs, 'theme', 'oled')).toEqual({ theme: 'oled', colors: true, expandTools: false })
     expect(applySettingValue(prefs, 'colors', 'off')).toEqual({ theme: 'dark', colors: false, expandTools: false })
     expect(applySettingValue(prefs, 'activityDetail', 'compact')).toEqual({ ...prefs, activityDetail: 'compact' })
     expect(applySettingValue(prefs, 'expandTools', 'expanded')).toEqual({ theme: 'dark', colors: true, expandTools: true })
@@ -182,13 +190,13 @@ describe('renderSettings', () => {
     const lines = renderSettings(createSettings(prefs), theme, 50).lines.join('\n')
     expect(lines).toContain('Settings')
     expect(lines).toContain('Theme')
-    expect(lines).toContain('dark')
+    expect(lines).toContain('Dark')
+    expect(lines).toContain('Classic · Warm default')
     expect(lines).toContain('Color')
     expect(lines).toContain('on')
     expect(lines).toContain('Activity detail')
     expect(lines).toContain('standard')
     expect(lines).toContain('←→ change')
-    expect(lines).toContain('Color palette')
     expect(lines).toContain('Tool details')
     const tools = renderSettings(createSettings(prefs, 'expandTools'), theme, 50).lines.join('\n')
     expect(tools).toContain('Expand tool output')

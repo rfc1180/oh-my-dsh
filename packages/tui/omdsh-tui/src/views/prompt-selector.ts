@@ -256,7 +256,7 @@ export function renderPlanReviewPage(
     const actions = options.map((option, index) => {
       const label = `[ ${option.label} ]`
       return index === state.selected
-        ? theme.bold(theme.fg('accent', label))
+        ? theme.bold(theme.bg('selectionBg', theme.fg('selectionText', label)))
         : theme.fg('muted', label)
     }).join(theme.fg('dim', '   '))
     lines.push(pageRow(theme, ' ' + actions, width))

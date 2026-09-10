@@ -38,6 +38,14 @@ describe('plan review page', () => {
     expect(frame.cursorVisible).toBe(false)
   })
 
+  it('uses semantic selection ink for the focused action', () => {
+    const theme = createTheme(true, true, 'arctic')
+    const frame = renderPlanReviewPage(reviewState(), theme, 80, 24, '', 0, 'omdsh')
+    const actionRow = frame.lines.find(line => line.includes('[ Approve ]')) ?? ''
+    expect(actionRow).toContain(theme.getFgAnsi('selectionText'))
+    expect(actionRow).toContain(theme.getBgAnsi('selectionBg'))
+  })
+
   it('scrolls the document independently and reserves an in-frame feedback field', () => {
     const scrolled = renderPlanReviewPage(
       reviewState({ documentScroll: 10_000 }),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TuiSettingsSchema } from './tui-settings.ts'
+import { THEME_NAMES } from '../chrome/theme.ts'
 
 describe('TuiSettingsSchema', () => {
   it('defaults to dark + colors and accepts light', () => {
@@ -44,6 +45,12 @@ describe('TuiSettingsSchema', () => {
         colors: { model: 'accent', metrics: 'warning' },
       },
     })
+  })
+
+  it('accepts every catalog theme for durable settings persistence', () => {
+    const validate = TuiSettingsSchema as unknown as (input: object) => { theme: string }
+    for (const theme of THEME_NAMES) expect(validate({ theme }).theme).toBe(theme)
+    expect(() => validate({ theme: 'missing-theme' })).toThrow()
   })
 
   it('validates activity detail modes and rejects unknown values', () => {
