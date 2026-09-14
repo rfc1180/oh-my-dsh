@@ -65,7 +65,17 @@ export function activeTranscriptSource(
           user: content(interaction.input.content),
           ...(interaction.answer?.confidence !== 'explicit' || interaction.outcome.kind !== 'completed'
             ? {}
-            : { assistant: content(interaction.answer.content) }),
+            : {
+                assistant: content(interaction.answer.content),
+                ...(interaction.answer.ref.turn === undefined && interaction.turn === undefined
+                  ? {}
+                  : {
+                      assistantAnchor: {
+                        turn: interaction.answer.ref.turn ?? interaction.turn!,
+                        step: interaction.answer.ref.step ?? 0,
+                      },
+                    }),
+              }),
         })),
         ...(page.previousCursor === undefined ? {} : { previousCursor: page.previousCursor }),
         hasMore: page.hasMore,

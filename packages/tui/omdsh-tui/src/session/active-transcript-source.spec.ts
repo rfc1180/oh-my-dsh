@@ -21,7 +21,7 @@ function manager(): TuiSessionManagerSource {
         answer: {
           content: { format: 'markdown', text: 'Final answer' },
           confidence: 'explicit',
-          ref: { seq: 8, time: 8, type: 'assistant/message' },
+          ref: { seq: 8, time: 8, type: 'assistant/message', turn: 1, step: 2 },
         },
         outcome: { kind: 'completed', ref: { seq: 9, time: 9, type: 'turn/end' } },
         technicalTrace: [
@@ -66,6 +66,7 @@ describe('active transcript source', () => {
         id: 'turn:1:2',
         user: { format: 'markdown', text: 'Direct request' },
         assistant: { format: 'markdown', text: 'Final answer' },
+        assistantAnchor: { turn: 1, step: 2 },
       }, {
         id: 'legacy:10',
         user: { format: 'markdown', text: 'Legacy request' },

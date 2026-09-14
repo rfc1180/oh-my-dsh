@@ -266,6 +266,10 @@ export interface TuiActiveTranscriptInteractionV2 {
   readonly id: string
   readonly user: TuiSessionHistoryContent
   readonly assistant?: TuiSessionHistoryContent
+  readonly assistantAnchor?: {
+    readonly turn: number
+    readonly step: number
+  }
 }
 
 /** Raw events, reasoning, tool calls, and tool results never cross this seam. */
