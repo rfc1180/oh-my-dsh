@@ -253,6 +253,39 @@ export interface TuiSessionHistoryPage {
   readonly hasMore: boolean
 }
 
+/** Host request for the safe transcript of the currently active root session. */
+export interface TuiActiveTranscriptPageRequestV2 {
+  readonly method: 'session.history.page.v2'
+  readonly sessionId: string
+  readonly cursor?: string
+  readonly limit?: number
+}
+
+/** One direct-human interaction and its final, completed assistant answer. */
+export interface TuiActiveTranscriptInteractionV2 {
+  readonly id: string
+  readonly user: TuiSessionHistoryContent
+  readonly assistant?: TuiSessionHistoryContent
+}
+
+/** Raw events, reasoning, tool calls, and tool results never cross this seam. */
+export interface TuiActiveTranscriptPageV2 {
+  readonly schemaVersion: 2
+  readonly sessionId: string
+  readonly interactions: readonly TuiActiveTranscriptInteractionV2[]
+  readonly previousCursor?: string
+  readonly hasMore: boolean
+}
+
+/** Switchable, single-session source bound to the terminal host lifecycle. */
+export interface TuiActiveTranscriptSource {
+  readonly activeSessionId: string
+  request(
+    request: TuiActiveTranscriptPageRequestV2,
+    signal?: AbortSignal,
+  ): Promise<TuiActiveTranscriptPageV2>
+}
+
 /** Data source kept outside the session manager renderer. */
 export interface TuiSessionManagerSource {
   readonly activeSessionId: string
@@ -384,6 +417,8 @@ export interface TuiService {
   prompt(request: TuiPrompt): Promise<string | null>
   /** Replace the optional source used by `/trajectory` and the Trajectory hotkey. */
   setTrajectorySource(source?: TuiTrajectorySource): void
+  /** Bind or unbind the safe transcript source for the current active session. */
+  setActiveTranscriptSource?(source?: TuiActiveTranscriptSource): void
   /** Open the read-only live Trajectory workspace until the human closes it. */
   openTrajectory(source: TuiTrajectorySource, options?: TuiTrajectoryOptions): Promise<void>
   /** Browse indexed durable sessions and return one safe resume action. */

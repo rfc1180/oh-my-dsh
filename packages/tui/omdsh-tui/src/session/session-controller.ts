@@ -70,6 +70,7 @@ import {
   type SessionConfiguration,
 } from './session-configuration.ts'
 import { stripComposerImageMarkers } from '../input/image-paste.ts'
+import { activeTranscriptSource } from './active-transcript-source.ts'
 
 const SESSION_INFO_COALESCE_MS = 50
 
@@ -1151,8 +1152,14 @@ export class SessionRuntime {
     let rows: readonly TuiRecentSession[] = []
     const catalogCursor = (request: TuiSessionCatalogRequest, id: string): string =>
       `catalog-v1:${request.scope}:${request.sortField}:${request.sortDirection}:${encodeURIComponent(request.query ?? '')}:${encodeURIComponent(id)}`
-    const historyCursor = (id: string, beforeSeq: number): string =>
-      `history-v1:${encodeURIComponent(id)}:${beforeSeq}`
+    const historyCursors = new Map<string, { readonly id: string; readonly beforeSeq: number }>()
+    const historyCursor = (id: string, beforeSeq: number): string => {
+      const cursor = randomUUID()
+      historyCursors.set(cursor, { id, beforeSeq })
+      const oldest = historyCursors.size > 512 ? historyCursors.keys().next().value : undefined
+      if (oldest !== undefined) historyCursors.delete(oldest)
+      return cursor
+    }
     const catalog = async (request: TuiSessionCatalogRequest, signal?: AbortSignal): Promise<TuiSessionCatalogPage> => {
       signal?.throwIfAborted()
       let classified: TuiSessionCatalogRow[]
@@ -1235,12 +1242,13 @@ export class SessionRuntime {
     const historyPage = async (request: TuiSessionHistoryPageRequest, signal?: AbortSignal): Promise<TuiSessionHistoryPage> => {
       const project = accelerated.omdshProjectSessionHistory
       if (project === undefined) throw new Error('Semantic session history is unavailable.')
+      const cursor = request.cursor === undefined ? undefined : historyCursors.get(request.cursor)
+      if (request.cursor !== undefined && cursor === undefined) throw new Error('Malformed or expired session history cursor.')
+      if (cursor !== undefined && cursor.id !== request.id) throw new Error('Session history cursor belongs to another session.')
       signal?.throwIfAborted()
       const projection = await project.call(persistence, request.id, signal)
       signal?.throwIfAborted()
-      const prefix = `history-v1:${encodeURIComponent(request.id)}:`
-      const parsed = request.cursor?.startsWith(prefix) === true ? Number(request.cursor.slice(prefix.length)) : undefined
-      const beforeSeq = parsed !== undefined && Number.isSafeInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+      const beforeSeq = cursor?.beforeSeq ?? Number.MAX_SAFE_INTEGER
       const eligible = projection.interactions.filter(interaction => interaction.input.ref.seq < beforeSeq)
       const limit = Math.max(1, Math.min(request.limit ?? 20, 50))
       const interactions = eligible.slice(-limit)
@@ -1395,6 +1403,7 @@ export class SessionRuntime {
     this.#tui.setSessionSearch()
     this.#tui.setFileSearch()
     this.#tui.setImageValidator()
+    this.#tui.setActiveTranscriptSource?.()
     for (const off of this.#off.splice(0).reverse()) off()
     await Promise.allSettled(this.#retired.splice(0).map(handle => handle.dispose()))
     await this.#active?.handle.dispose()
@@ -1472,6 +1481,12 @@ export class SessionRuntime {
     const previous = this.#active
     this.#active = next
     const agent = next.handle.agent
+    const managerSource = this.#ctx.get('sessionPersistence') === undefined
+      ? undefined
+      : this.sessionManagerSource(agent)
+    this.#tui.setActiveTranscriptSource?.(managerSource === undefined
+      ? undefined
+      : activeTranscriptSource(managerSource, () => this.#active === next && !this.#disposed))
     this.#inspectedId = undefined
     this.#skillCommands = []
     this.#tui.setInspectedSubagent(undefined)

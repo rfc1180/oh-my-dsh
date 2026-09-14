@@ -27,6 +27,7 @@ import {
   type TuiSessionStats,
   type TuiSessionManagerResult,
   type TuiSessionManagerSource,
+  type TuiActiveTranscriptSource,
   type TuiStatus,
   type TuiInputImage,
   type TuiInspectedSubagent,
@@ -205,6 +206,8 @@ export interface TerminalLike {
   height(): number
   /** Optional resize subscription; returns a disposer. */
   onResize?(listener: () => void): () => void
+  /** Optional terminal-host bridge for the current safe transcript source. */
+  bindActiveTranscriptSource?(source?: TuiActiveTranscriptSource): void
 }
 
 type PendingRead = { resolve: (submission: TuiSubmission | null) => void }
@@ -259,6 +262,7 @@ export class LocalTui implements TuiService {
   #trajectoryRequestId = 0
   #trajectoryPoll: ReturnType<typeof setInterval> | null = null
   #trajectoryMouseEnabled = false
+  #activeTranscriptSource: TuiActiveTranscriptSource | null = null
   #sessionManager: SessionManagerState | null = null
   #sessionManagerSource: TuiSessionManagerSource | null = null
   #sessionManagerResolve: ((result: TuiSessionManagerResult | null) => void) | null = null
@@ -646,6 +650,11 @@ export class LocalTui implements TuiService {
   setTrajectorySource(source?: TuiTrajectorySource): void {
     this.#trajectorySource = source ?? null
     if (source === undefined && this.#trajectory !== null) this.#closeTrajectory()
+  }
+
+  setActiveTranscriptSource(source?: TuiActiveTranscriptSource): void {
+    this.#activeTranscriptSource = source ?? null
+    this.#term.bindActiveTranscriptSource?.(source)
   }
 
   #setTrajectoryMouse(enabled: boolean): void {
@@ -1167,6 +1176,10 @@ export class LocalTui implements TuiService {
     this.#closeSessionManager(null, false)
     this.#closeTrajectory(false)
     this.#trajectorySource = null
+    if (this.#activeTranscriptSource !== null) {
+      this.#activeTranscriptSource = null
+      this.#term.bindActiveTranscriptSource?.()
+    }
     if (this.#tty) {
       this.#offData?.()
       this.#offResize?.()

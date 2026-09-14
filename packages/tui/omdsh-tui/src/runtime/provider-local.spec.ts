@@ -19,6 +19,7 @@ import { createHistorySearch } from '../views/history-search.ts'
 import type { DirEntry, PathSearcher, ProjectPathEntry } from '../views/path-complete.ts'
 import { stripAnsi } from '../chrome/width.ts'
 import { SessionPresentationController } from '../session/session-controller.ts'
+import type { TuiActiveTranscriptSource } from '../definition.ts'
 
 const PNG_1X1 = new Uint8Array(Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zk5sAAAAASUVORK5CYII=',
@@ -37,6 +38,7 @@ class FakeTerminal implements TerminalLike {
   columns = 60
   rows = 24
   resizeListener: (() => void) | undefined
+  boundTranscriptSources: Array<TuiActiveTranscriptSource | undefined> = []
   output = {
     isTTY: true,
     write: (chunk: string): void => { this.writes += 1; this.captured += chunk },
@@ -51,6 +53,9 @@ class FakeTerminal implements TerminalLike {
   onResize(listener: () => void): () => void {
     this.resizeListener = listener
     return () => { this.resizeListener = undefined }
+  }
+  bindActiveTranscriptSource(source?: TuiActiveTranscriptSource): void {
+    this.boundTranscriptSources.push(source)
   }
   resize(columns: number, rows: number): void {
     this.columns = columns
@@ -120,6 +125,21 @@ function shortenedWorkspaceRoot(): string {
 }
 
 describe('LocalTui (tty)', () => {
+  it('binds and unbinds the current transcript source with terminal ownership', () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const source = {
+      activeSessionId: 'session-current',
+      request: vi.fn(),
+    } as unknown as TuiActiveTranscriptSource
+
+    tui.setActiveTranscriptSource(source)
+    expect(term.boundTranscriptSources).toEqual([source])
+
+    tui.dispose()
+    expect(term.boundTranscriptSources).toEqual([source, undefined])
+  })
+
   it('shows a staged tail while composer input stays unbound until activation', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { deferInitialRender: true })

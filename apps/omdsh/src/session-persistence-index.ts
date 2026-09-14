@@ -1,6 +1,6 @@
 /** Product-owned acceleration hooks over the published rc.8 JSONL persistence backend. */
 import { JsonlSessionPersistence } from '@deepseek-ai/dsh-session-persistence-jsonl'
-import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { projectSessionHistoryV1, type SessionHistoryProjectionV1 } from './session-history-projection.ts'
 import {
   DurableSessionIndex,
@@ -29,6 +29,36 @@ interface AcceleratedPrototype extends IndexedPersistence {
 
 let installed = false
 const indexes = new WeakMap<object, DurableSessionIndex>()
+const historyProjections = new WeakMap<object, Map<string, {
+  readonly revision: string
+  readonly projection: SessionHistoryProjectionV1
+}>>()
+
+interface HistoryProjectionPersistence {
+  readStoredRevision(id: SessionId, signal?: AbortSignal): Promise<string | undefined>
+  inspect(id: string, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>
+}
+
+/** Project once per exact durable revision and reject a journal race. */
+export async function projectSessionHistoryAtRevision(
+  persistence: HistoryProjectionPersistence,
+  id: string,
+  signal?: AbortSignal,
+): Promise<SessionHistoryProjectionV1> {
+  signal?.throwIfAborted()
+  const before = await persistence.readStoredRevision(SessionId(id), signal)
+  const cache = historyProjections.get(persistence) ?? new Map()
+  historyProjections.set(persistence, cache)
+  const cached = cache.get(id)
+  if (before !== undefined && cached?.revision === String(before)) return cached.projection
+  const inspected = await persistence.inspect(id, signal)
+  signal?.throwIfAborted()
+  const after = await persistence.readStoredRevision(SessionId(id), signal)
+  if (before !== after) throw new Error(`session "${id}" changed during history projection`)
+  const projection = projectSessionHistoryV1(inspected.meta, inspected.events)
+  if (after !== undefined) cache.set(id, { revision: String(after), projection })
+  return projection
+}
 
 function indexFor(persistence: AcceleratedPrototype): DurableSessionIndex {
   let index = indexes.get(persistence)
@@ -75,8 +105,6 @@ export function installSessionPersistenceIndex(): void {
     return indexFor(this).refreshViewportTail(id, candidate => listSnapshots.call(this, candidate), signal, knownNextSeq)
   }
   prototype.omdshProjectSessionHistory = async function (id, signal) {
-    const inspected = await this.inspect(id, signal)
-    signal?.throwIfAborted()
-    return projectSessionHistoryV1(inspected.meta, inspected.events)
+    return projectSessionHistoryAtRevision(this, id, signal)
   }
 }

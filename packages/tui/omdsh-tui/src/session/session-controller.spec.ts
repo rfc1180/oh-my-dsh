@@ -483,12 +483,34 @@ describe('SessionRuntime.createDetachedFork', () => {
       setTrajectorySource: vi.fn(),
       activateInput,
     } as unknown as TuiService
+    const sessionPersistence = {
+      list: async () => [],
+      inspect: vi.fn(),
+      omdshProjectSessionHistory: vi.fn(async (id: string) => ({
+        version: 1 as const,
+        sessionId: id,
+        title: id,
+        createdAt: 1,
+        updatedAt: 6,
+        classification: { bucket: 'human' as const },
+        interactions: [1, 3, 5].map(seq => ({
+          id: `event:${seq}`,
+          input: {
+            kind: 'input' as const,
+            content: { format: 'markdown' as const, text: `prompt ${seq}` },
+            ref: { seq, time: seq, type: 'user/message' },
+          },
+          outcome: { kind: 'completed' as const },
+          technicalTrace: [],
+        })),
+      })),
+    }
     const services: Record<string, unknown> = {
       agentDefaultModel: { currentSelection: () => ({ provider: 'openai-codex', model: 'gpt-5.6-sol' }) },
       agents,
       sessions: { list: () => [] },
       tools: { schemas: () => [] },
-      sessionPersistence: { list: async () => [], inspect: vi.fn() },
+      sessionPersistence,
     }
     const ctx = {
       agents,
@@ -506,6 +528,7 @@ describe('SessionRuntime.createDetachedFork', () => {
       replaceSession,
       activateInput,
       tui,
+      sessionPersistence,
       createOptions: () => createOptions,
       beforeCommit: (callback: () => void) => { beforeCommit = callback },
     }
@@ -596,6 +619,35 @@ describe('SessionRuntime.createDetachedFork', () => {
     expect(result.seedLength).toBe(5)
     await fixture.runtime.dispose()
   })
+
+  it('uses opaque exclusive history cursors and rejects malformed or cross-session reuse', async () => {
+    const fixture = detachedForkRuntime()
+    await fixture.runtime.start('parent-session')
+    const source = fixture.runtime.sessionManagerSource(fixture.parent)
+
+    const first = await source.historyPage?.({ id: 'parent-session', limit: 2 })
+    expect(first?.interactions.map(row => row.id)).toEqual(['event:3', 'event:5'])
+    expect(first?.previousCursor).toMatch(/^[0-9a-f-]{36}$/u)
+    expect(first?.previousCursor).not.toContain('parent-session')
+
+    const second = await source.historyPage?.({
+      id: 'parent-session',
+      cursor: first?.previousCursor,
+      limit: 2,
+    })
+    expect(second?.interactions.map(row => row.id)).toEqual(['event:1'])
+    const projectionCalls = fixture.sessionPersistence.omdshProjectSessionHistory.mock.calls.length
+    await expect(source.historyPage?.({
+      id: 'parent-session',
+      cursor: 'history-v1:parent-session:3',
+    })).rejects.toThrow('Malformed or expired')
+    await expect(source.historyPage?.({
+      id: 'another-session',
+      cursor: first?.previousCursor,
+    })).rejects.toThrow('belongs to another session')
+    expect(fixture.sessionPersistence.omdshProjectSessionHistory).toHaveBeenCalledTimes(projectionCalls)
+    await fixture.runtime.dispose()
+  })
 })
 
 describe('SessionRuntime startup', () => {
@@ -653,6 +705,7 @@ describe('SessionRuntime startup', () => {
     const setCommands = vi.fn()
     const setModel = vi.fn()
     const setSession = vi.fn()
+    const setActiveTranscriptSource = vi.fn()
     const tui = {
       ...stubTui(),
       event: vi.fn(),
@@ -666,6 +719,7 @@ describe('SessionRuntime startup', () => {
       replaceSession,
       setSession,
       setTrajectorySource: vi.fn(),
+      setActiveTranscriptSource,
     } as unknown as TuiService
     const services: Record<string, unknown> = {
       agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'v4' }) },
@@ -701,6 +755,10 @@ describe('SessionRuntime startup', () => {
     expect(order).toEqual(['resume', 'preview', 'validated', 'full', 'input'])
     expect(setCommands).toHaveBeenLastCalledWith([{ name: 'help', description: 'help' }])
     expect(setModel).toHaveBeenLastCalledWith('gpt-5.6-sol', 'xhigh')
+    expect(setActiveTranscriptSource).toHaveBeenCalledWith(expect.objectContaining({
+      activeSessionId: 'durable-target',
+      request: expect.any(Function),
+    }))
 
     resolveRecent([{ id: SessionId('recent'), createdAt: 2, origin: 'user' }])
     resolveModel({ context: { contextWindow: 128_000 }, reasoning: { defaultEffort: ReasoningEffortId('high') } })
@@ -717,5 +775,6 @@ describe('SessionRuntime startup', () => {
     ])
     expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 2, eventCount: 2 }])
     await runtime.dispose()
+    expect(setActiveTranscriptSource).toHaveBeenLastCalledWith()
   })
 })
