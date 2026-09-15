@@ -2,6 +2,7 @@
 
 import { extractSessionEventText } from '@deepseek-ai/dsh-session-query'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { steeringNoteText } from '../runtime/steering-note.ts'
 
 function contentMarkdown(content: unknown): string {
   if (!Array.isArray(content)) return ''
@@ -27,7 +28,7 @@ function contentMarkdown(content: unknown): string {
 }
 
 function eventMarkdown(event: SessionEvent): string {
-  if (event.type === 'user/message') return contentMarkdown(event.data.content)
+  if (event.type === 'user/message') return steeringNoteText(event.data) ?? contentMarkdown(event.data.content)
   if (event.type === 'assistant/message') return contentMarkdown(event.data.message.content)
   if (event.type === 'tool/call') return `\`\`\`json\n${event.data.arguments}\n\`\`\``
   if (event.type === 'tool/result') return contentMarkdown(event.data.message.content)
@@ -35,7 +36,7 @@ function eventMarkdown(event: SessionEvent): string {
 }
 
 function heading(event: SessionEvent): string {
-  if (event.type === 'user/message') return 'User'
+  if (event.type === 'user/message') return steeringNoteText(event.data) === undefined ? 'User' : 'Steer'
   if (event.type === 'assistant/message') return 'Assistant'
   if (event.type === 'tool/call') return `Tool call: ${event.data.name}`
   if (event.type === 'tool/result') return 'Tool result'

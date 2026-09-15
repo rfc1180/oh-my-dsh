@@ -33,6 +33,7 @@ import { resolveStatusBarConfig, type StatusBarConfig, type StatusPreset } from 
 import { renderPermissionBadge, renderStatusFooter } from '../chrome/status-line.ts'
 import { createTheme, SPINNER, SYMBOL, type Theme, type ThemeName } from '../chrome/theme.ts'
 import { padToWidth, stripAnsi, truncateToWidth, visibleWidth, wrapText } from '../chrome/width.ts'
+import { steeringNoteText } from '../runtime/steering-note.ts'
 import type {
   TuiInspectedSubagent,
   TuiLoopStatus,
@@ -275,9 +276,11 @@ function foldEvent(
     case 'user/message': {
       // Synthetic plugin injections (system-prompt runtime context, skill
       // catalog) reach the surface as user-role messages but are model input,
-      // not what the human typed; only human prompts render as transcript.
-      if (event.data.source.kind !== 'user') return state
-      const text = contentToText(event.data.content)
+      // not what the human typed. Steering notes are the one plugin-authored
+      // envelope whose raw human note remains visible without its host framing.
+      const note = steeringNoteText(event.data)
+      if (event.data.source.kind !== 'user' && note === undefined) return state
+      const text = note ?? contentToText(event.data.content)
       if (text === '') return state
       const blocks = editableBlocks(state, mutable)
       blocks.push({ kind: 'user', text })

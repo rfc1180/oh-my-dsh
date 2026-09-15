@@ -2,27 +2,30 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createSteeringNoteMessage } from '../runtime/steering-note.ts'
 import { registerCommands } from './registration.ts'
 
 export const name = 'omdsh-command-steer'
 export const inject = ['commands']
 
-function steer(invocation: CommandInvocation): CommandResult {
+export function steer(invocation: CommandInvocation): CommandResult {
   const input = invocation.rawInput.trim()
-  if (input === '') return { kind: 'error', text: 'Usage: /steer <message>' }
+  if (input === '') return { kind: 'error', text: 'Usage: /steer <note>' }
   if (invocation.agent.status !== 'running') {
     return {
       kind: 'error',
-      text: 'Steering is only available during an active turn. Send a normal message to start the next turn.',
+      text: 'A continuation note needs active work. Send a normal message to start the next task.',
     }
   }
-  invocation.agent.steer(createUserMessage({ content: [{ type: 'text', text: input }], source: { kind: 'user' } }))
-  return { kind: 'success', text: "Guidance queued for the current turn's next model step." }
+  invocation.agent.steer(createSteeringNoteMessage(input))
+  return {
+    kind: 'success',
+    text: 'Continuation note queued for the next model step. Tools already running are not interrupted.',
+  }
 }
 
 export function apply(ctx: Context): void {
   registerCommands(ctx, [
-    { name: 'steer', description: 'Guide the active turn before its next model step', input: { hint: '<message>' }, handler: steer },
+    { name: 'steer', description: 'Add a note to the active task without replacing it', input: { hint: '<note>' }, handler: steer },
   ], 'omdsh steering commands')
 }

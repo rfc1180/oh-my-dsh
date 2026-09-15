@@ -8,6 +8,16 @@ describe('formatTranscriptMarkdown', () => {
       { type: 'turn/start', data: { turn: 1 } },
       { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] } },
       { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'image', attachment: { width: 20, height: 10, mediaType: 'image/png' } }] } },
+      {
+        type: 'user/message',
+        data: {
+          source: { kind: 'plugin', plugin: 'omdsh/steering-note', form: 'notice', summary: 'Continuation note to the current task' },
+          content: [
+            { type: 'text', text: 'Keep the current task as the primary objective.\n' },
+            { type: 'text', text: 'also check mobile' },
+          ],
+        },
+      },
       { type: 'tool/call', data: { name: 'bash', arguments: '{"command":"pwd"}' } },
       { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } },
     ] as unknown as SessionEvent[]
@@ -17,6 +27,8 @@ describe('formatTranscriptMarkdown', () => {
     expect(text).toContain('## User\n\nhello')
     expect(text).toContain('## Tool call: bash')
     expect(text).toContain('[image 20×10 · image/png]')
+    expect(text).toContain('## Steer\n\nalso check mobile')
+    expect(text).not.toContain('Keep the current task as the primary objective.')
     expect(text).toContain('## Assistant\n\ndone')
     expect(text).not.toContain('turn/start')
   })
