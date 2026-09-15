@@ -8,13 +8,20 @@ import { registerCommands } from './registration.ts'
 export const name = 'omdsh-command-steer'
 export const inject = ['commands']
 
+function hasOpenTurn(invocation: CommandInvocation): boolean {
+  const boundary = invocation.agent.session.events.findLast(event => (
+    event.type === 'turn/start' || event.type === 'turn/end'
+  ))
+  return boundary?.type === 'turn/start'
+}
+
 export function steer(invocation: CommandInvocation): CommandResult {
   const input = invocation.rawInput.trim()
   if (input === '') return { kind: 'error', text: 'Usage: /steer <note>' }
-  if (invocation.agent.status !== 'running') {
+  if (invocation.agent.status !== 'running' || !hasOpenTurn(invocation)) {
     return {
       kind: 'error',
-      text: 'A continuation note needs active work. Send a normal message to start the next task.',
+      text: 'A continuation note needs an open active turn. Send a normal message to start the next task.',
     }
   }
   invocation.agent.steer(createSteeringNoteMessage(input))

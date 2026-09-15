@@ -32,6 +32,7 @@ describe('omdsh command plugins', () => {
     const steer = vi.fn()
     const fiber = await ctx.plugin(commandSteer)
     const session = ctx.sessions.create(SessionId('command-steer-test'))
+    session.append('turn/start', { turn: 1 })
     const agent = {
       id: session.id,
       session,
@@ -50,7 +51,7 @@ describe('omdsh command plugins', () => {
       .resolves.toMatchObject({
         result: {
           kind: 'error',
-          text: expect.stringContaining('needs active work'),
+          text: expect.stringContaining('needs an open active turn'),
         },
       })
     expect(steer).toHaveBeenCalledOnce()

@@ -4,15 +4,18 @@ import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { steeringNoteText } from '../runtime/steering-note.ts'
 import { steer } from './steer.ts'
 
-function invocation(rawInput: string, status: Agent['status']): {
+function invocation(rawInput: string, status: Agent['status'], openTurn = true): {
   value: CommandInvocation
   steerAgent: ReturnType<typeof vi.fn>
 } {
   const steerAgent = vi.fn()
+  const events = openTurn
+    ? [{ type: 'turn/start' }]
+    : [{ type: 'turn/start' }, { type: 'turn/end' }]
   return {
     value: {
       rawInput,
-      agent: { status, steer: steerAgent } as unknown as Agent,
+      agent: { status, steer: steerAgent, session: { events } } as unknown as Agent,
     } as CommandInvocation,
     steerAgent,
   }
@@ -40,8 +43,15 @@ describe('/steer', () => {
     const idle = invocation('remember this', 'idle')
     expect(steer(idle.value)).toEqual({
       kind: 'error',
-      text: 'A continuation note needs active work. Send a normal message to start the next task.',
+      text: 'A continuation note needs an open active turn. Send a normal message to start the next task.',
     })
     expect(idle.steerAgent).not.toHaveBeenCalled()
+
+    const draining = invocation('too late', 'running', false)
+    expect(steer(draining.value)).toEqual({
+      kind: 'error',
+      text: 'A continuation note needs an open active turn. Send a normal message to start the next task.',
+    })
+    expect(draining.steerAgent).not.toHaveBeenCalled()
   })
 })
