@@ -50,7 +50,7 @@ describe('omdsh command plugins', () => {
       .resolves.toMatchObject({
         result: {
           kind: 'error',
-          text: expect.stringContaining('only available during an active turn'),
+          text: expect.stringContaining('needs active work'),
         },
       })
     expect(steer).toHaveBeenCalledOnce()

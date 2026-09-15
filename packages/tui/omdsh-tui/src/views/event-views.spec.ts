@@ -503,6 +503,23 @@ describe('applyEvent', () => {
     state = applyEvent(state, ev('user/message', { source: { kind: 'plugin' }, content: [{ type: 'text', text: 'runtime context noise' }] }, 1))
     expect(state.blocks).toEqual([])
   })
+
+  it('renders only the human text from a framed steering note', () => {
+    let state = initialTranscript()
+    state = applyEvent(state, ev('user/message', {
+      source: {
+        kind: 'plugin',
+        plugin: 'omdsh/steering-note',
+        form: 'notice',
+        summary: 'Continuation note to the current task',
+      },
+      content: [
+        { type: 'text', text: 'Keep the current task as the primary objective.\n' },
+        { type: 'text', text: 'also check mobile' },
+      ],
+    }, 1))
+    expect(state.blocks).toEqual([{ kind: 'user', text: 'also check mobile' }])
+  })
 })
 
 describe('blockLines', () => {
