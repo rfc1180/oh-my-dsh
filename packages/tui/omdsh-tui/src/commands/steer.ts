@@ -2,7 +2,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { createSteeringNoteMessage } from '../runtime/steering-note.ts'
+import {
+  createSteeringContinuationMessage,
+  createSteeringNoteMessage,
+  needsSteeringContinuation,
+} from '../runtime/steering-note.ts'
 import { registerCommands } from './registration.ts'
 
 export const name = 'omdsh-command-steer'
@@ -32,6 +36,11 @@ export function steer(invocation: CommandInvocation): CommandResult {
 }
 
 export function apply(ctx: Context): void {
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+    if (needsSteeringContinuation(agent.session.events, turn)) {
+      agent.steer(createSteeringContinuationMessage())
+    }
+  })
   registerCommands(ctx, [
     { name: 'steer', description: 'Add a note to the active task without replacing it', input: { hint: '<note>' }, handler: steer },
   ], 'omdsh steering commands')
