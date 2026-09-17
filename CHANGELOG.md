@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Expose user-invocable skills as first-class slash commands in autocomplete and `/help`, so a skill such as `/razbor` behaves like the built-in terminal commands.
 - Resume the active task once when a text-only reply to `/steer` would otherwise close its turn.
 - Keep slash-command autocomplete visible above the composer instead of letting its transient rows fall into native terminal scrollback.
 - Keep `/sessions` history readable by collapsing duplicate delivery of the same prompt within one turn, and include the latest prompt preview in session search.

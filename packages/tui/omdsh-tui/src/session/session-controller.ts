@@ -480,11 +480,12 @@ export function recentSessionStatus(events: readonly SessionEvent[]): TuiRecentS
   return undefined
 }
 
-/** Convert the human-visible part of a skill catalog into slash commands. */
+/** Convert the human-visible part of a skill catalog into first-class slash commands. */
 export function userSkillCommands(skills: readonly SkillSummary[]): TuiCommand[] {
   return skills.filter(isUserInvocable).map(skill => ({
-    name: `skill:${skill.name}`,
+    name: skill.name,
     description: compactDescription(skill.description),
+    kind: 'skill' as const,
   }))
 }
 

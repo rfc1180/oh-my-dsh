@@ -23,6 +23,8 @@ export interface SlashCommand {
   arguments?: readonly SlashArgument[]
   /** Free-form argument usage contributed by a runtime command plugin. */
   inputHint?: string
+  /** Human-invocable skill surfaced as a first-class slash command. */
+  kind?: 'skill'
 }
 
 /** One ranked suggestion shown in the popup. */
@@ -323,10 +325,10 @@ function helpRows(commands: readonly SlashCommand[]): string[] {
 export function formatHelpText(
   commands: readonly SlashCommand[] = BUILTIN_SLASH_COMMANDS,
 ): string {
-  const skills = commands.filter(command => command.name.startsWith('skill:'))
+  const skills = commands.filter(command => command.kind === 'skill')
   const terminalNames = new Set(BUILTIN_SLASH_COMMANDS.map(command => command.name))
   const terminal = commands.filter(command => terminalNames.has(command.name))
-  const agent = commands.filter(command => !command.name.startsWith('skill:') && !terminalNames.has(command.name))
+  const agent = commands.filter(command => command.kind !== 'skill' && !terminalNames.has(command.name))
   const lines = [`Commands · ${terminal.length + agent.length} core${skills.length === 0 ? '' : ` · ${skills.length} skills`}`]
   if (terminal.length > 0) {
     lines.push(
@@ -346,8 +348,7 @@ export function formatHelpText(
     lines.push(
       '',
       `**Skills · ${skills.length}**`,
-      '',
-      'Type `/skill:` to browse and filter skills with descriptions.',
+      ...helpRows(skills),
     )
   }
   return lines.join('\n')

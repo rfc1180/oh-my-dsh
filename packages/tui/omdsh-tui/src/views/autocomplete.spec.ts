@@ -89,16 +89,15 @@ describe('slashSuggestions', () => {
     expect(slashSuggestions('/settings ', 10)).toBe(null)
   })
 
-  it('filters namespaced skills as one flat command catalog', () => {
+  it('suggests user-invocable skills as first-class slash commands', () => {
     const commands = [
       ...BUILTIN_SLASH_COMMANDS,
-      { name: 'skill:code-review', description: 'Review a change for correctness' },
-      { name: 'skill:research', description: 'Investigate primary sources' },
+      { name: 'code-review', description: 'Review a change for correctness', kind: 'skill' as const },
+      { name: 'research', description: 'Investigate primary sources', kind: 'skill' as const },
     ]
-    const result = slashSuggestions('/skill:', 7, commands)
+    const result = slashSuggestions('/res', 4, commands)
     expect(result?.items).toEqual([
-      expect.objectContaining({ value: 'skill:code-review', description: 'Review a change for correctness' }),
-      expect.objectContaining({ value: 'skill:research', description: 'Investigate primary sources' }),
+      expect.objectContaining({ value: 'research', description: 'Investigate primary sources' }),
     ])
   })
 })
@@ -150,6 +149,7 @@ describe('parseSlashInput / resolveSlashCommand', () => {
     expect(parseSlashInput('/help')).toEqual({ name: 'help', args: '' })
     expect(parseSlashInput('  /clear now  ')).toEqual({ name: 'clear', args: 'now' })
     expect(parseSlashInput('/foo:bar')).toEqual({ name: 'foo', args: 'bar' })
+    expect(parseSlashInput('/razbor')).toEqual({ name: 'razbor', args: '' })
     expect(parseSlashInput('/skill:code-review')).toEqual({ name: 'skill:code-review', args: '' })
     expect(parseSlashInput('/skill:code-review focus on auth')).toEqual({
       name: 'skill:code-review',
@@ -192,10 +192,11 @@ describe('formatHelpText / renderAutocomplete', () => {
       ...BUILTIN_SLASH_COMMANDS,
       { name: 'resume', description: 'Resume a durable session', inputHint: '[session-id]' },
       {
-        name: 'skill:code-review',
+        name: 'code-review',
         description: 'Review changes against repository standards and the originating specification',
+        kind: 'skill',
       },
-      { name: 'skill:research', description: 'Investigate a question against high-trust primary sources' },
+      { name: 'research', description: 'Investigate a question against high-trust primary sources', kind: 'skill' },
     ])
     const lines = text.split('\n')
     expect(lines[0]).toBe('Commands · 8 core · 2 skills')
@@ -204,9 +205,10 @@ describe('formatHelpText / renderAutocomplete', () => {
     expect(text).not.toContain('| Command | Description |')
     expect(text).toContain('/resume [session-id]')
     expect(text).toContain('**Skills · 2**')
-    expect(text).toContain('Type `/skill:` to browse and filter skills')
-    expect(text).not.toContain('/skill:code-review')
-    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(8)
+    expect(text).toContain('/code-review')
+    expect(text).toContain('/research')
+    expect(text).not.toContain('/skill:')
+    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(10)
   })
 
   it('paints the selected row with a cursor and windows long lists', () => {

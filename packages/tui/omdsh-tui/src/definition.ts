@@ -26,6 +26,8 @@ export interface TuiCommand {
   name: string
   description: string
   inputHint?: string
+  /** Human-invocable skill surfaced as a first-class slash command. */
+  kind?: 'skill'
 }
 
 /** Presentation intent for a direct, non-session notice. */

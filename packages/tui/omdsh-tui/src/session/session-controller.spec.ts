@@ -304,7 +304,7 @@ describe('capability catalogs', () => {
     expect(userSkillCommands([
       { ...base, name: 'code-review' },
       { ...base, name: 'hidden', invocation: { modelInvocable: true, userInvocable: false } },
-    ])).toEqual([{ name: 'skill:code-review', description: 'Review code' }])
+    ])).toEqual([{ name: 'code-review', description: 'Review code', kind: 'skill' }])
   })
 
   it('groups MCP tools by server', () => {
@@ -771,7 +771,7 @@ describe('SessionRuntime startup', () => {
     expect(setModel).toHaveBeenLastCalledWith('gpt-5.6-sol', 'xhigh')
     expect(setCommands).toHaveBeenLastCalledWith([
       { name: 'help', description: 'help' },
-      { name: 'skill:review', description: 'Review code' },
+      { name: 'review', description: 'Review code', kind: 'skill' },
     ])
     expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 2, eventCount: 2 }])
     await runtime.dispose()

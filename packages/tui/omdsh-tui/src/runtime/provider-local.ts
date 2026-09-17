@@ -571,6 +571,7 @@ export class LocalTui implements TuiService {
       name: command.name,
       description: command.description,
       ...(command.inputHint === undefined ? {} : { inputHint: command.inputHint }),
+      ...(command.kind === undefined ? {} : { kind: command.kind }),
     }))
     this.#refreshAutocomplete()
     if (this.#tty) this.#render()
