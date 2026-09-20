@@ -10,6 +10,7 @@ import type { CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-ag
 import {
   conversationTurns,
   createSubmissionMessage,
+  cumulativeQueuedFollowup,
   encodeComposerImages,
   modelStatus,
   recentSessionContent,
@@ -145,6 +146,35 @@ describe('createSubmissionMessage', () => {
       text: 'edit me',
       images: [{ data: PNG_1X1, mediaType: 'image/png', name: 'queued.png', width: 1, height: 1 }],
     })
+  })
+})
+
+describe('cumulativeQueuedFollowup', () => {
+  const message = (text: string): UserMessage => createUserMessage({
+    source: { kind: 'user' },
+    content: [{ type: 'text', text }],
+  })
+
+  it('collapses the growing snapshots produced by an unbracketed multiline paste', () => {
+    expect(cumulativeQueuedFollowup(
+      message('3. Universal and factual'),
+      message('3. Universal and factual  Levels 1-2 are architecture.'),
+    )).toBe(true)
+  })
+
+  it('keeps independent follow-ups and messages with attachments separate', () => {
+    expect(cumulativeQueuedFollowup(message('first request'), message('another request'))).toBe(false)
+    expect(cumulativeQueuedFollowup(message('longer request'), message('longer'))).toBe(false)
+    expect(cumulativeQueuedFollowup(message('same request'), createUserMessage({
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'same request plus image' }, { type: 'image', attachment: {
+        attachmentId: AttachmentId('attachment:queued'),
+        mediaType: 'image/png',
+        bytes: PNG_1X1.byteLength,
+        width: 1,
+        height: 1,
+      } }],
+    }))).toBe(false)
   })
 })
 

@@ -203,6 +203,22 @@ function parseControl(line: string): { name: string; input: string } | undefined
   return { name: match[1].toLowerCase(), input: match[2]?.trim() ?? '' }
 }
 
+function plainTextMessage(message: UserMessage | undefined): string | undefined {
+  if (message === undefined || message.source.kind !== 'user' || message.content.length !== 1) return undefined
+  const block = message.content[0]
+  return block?.type === 'text' ? block.text : undefined
+}
+
+/** Detect one queued draft that an unbracketed multiline paste expanded in place. */
+export function cumulativeQueuedFollowup(previous: UserMessage | undefined, next: UserMessage): boolean {
+  const previousText = plainTextMessage(previous)
+  const nextText = plainTextMessage(next)
+  return previousText !== undefined
+    && nextText !== undefined
+    && nextText.length >= previousText.length
+    && nextText.startsWith(previousText)
+}
+
 /** Projection values consumed as one consistent snapshot when the units exist. */
 export interface TuiStatsProjection {
   sessionStats?: SessionStatsProjection
@@ -748,6 +764,16 @@ export class SessionRuntime {
     const submission = typeof input === 'string' ? { text: input, images: [] } : input
     const message = await createSubmissionMessage(submission, this.#ctx.get('attachments'))
     this.assertActive(agent)
+    const previous = agent.inbox.nextTurn.at(-1)
+    if (cumulativeQueuedFollowup(previous, message) && previous !== undefined && agent.inbox.remove(previous.id)) {
+      try {
+        agent.followup(message)
+        return
+      } catch (error: unknown) {
+        try { agent.inbox.append('next-turn', previous) } catch { /* agent retired or queue changed */ }
+        throw error
+      }
+    }
     agent.followup(message)
   }
 
