@@ -1,13 +1,13 @@
 /**
- * `/copy` targets from the live transcript: last assistant text, last fenced
- * code block, or last bash command. Pure — the provider owns the clipboard.
+ * `/copy` targets from the live transcript: last assistant text, Markdown table,
+ * fenced code block, or bash command. Pure — the provider owns the clipboard.
  * @module @agi-fans/dsh-tui
  */
 
 import type { Block } from './event-views.ts'
 
 /** What `/copy` should pull from the transcript. */
-export type CopyKind = 'text' | 'code' | 'cmd'
+export type CopyKind = 'text' | 'table' | 'code' | 'cmd'
 
 /** One clipboard payload plus the status label shown after a successful copy. */
 export interface CopyTarget {
@@ -21,6 +21,7 @@ const FENCE = /^```([^\n]*)$/
 export function parseCopyKind(args: string): CopyKind | undefined {
   const token = args.trim().toLowerCase()
   if (token === '' || token === 'text') return 'text'
+  if (token === 'table') return 'table'
   if (token === 'code') return 'code'
   if (token === 'cmd' || token === 'command') return 'cmd'
   return undefined
@@ -45,6 +46,39 @@ export function extractCodeBlocks(text: string): { lang: string; code: string }[
     i = close
   }
   return blocks
+}
+
+function tableCells(line: string): string[] {
+  let value = line.trim()
+  if (value.startsWith('|')) value = value.slice(1)
+  if (value.endsWith('|')) value = value.slice(0, -1)
+  return value.split('|').map(cell => cell.trim())
+}
+
+function isTableDelimiter(line: string): boolean {
+  const cells = tableCells(line)
+  return cells.length >= 2 && cells.every(cell => /^:?-{3,}:?$/u.test(cell))
+}
+
+function isTableRow(line: string, columns: number): boolean {
+  return line.includes('|') && tableCells(line).length === columns
+}
+
+/** Raw GFM table blocks in document order, preserving Markdown rather than terminal box drawing. */
+export function extractMarkdownTables(text: string): string[] {
+  const lines = text.split('\n')
+  const tables: string[] = []
+  for (let index = 0; index + 1 < lines.length; index += 1) {
+    const header = lines[index] ?? ''
+    const delimiter = lines[index + 1] ?? ''
+    const columns = tableCells(delimiter).length
+    if (!isTableDelimiter(delimiter) || !isTableRow(header, columns)) continue
+    let end = index + 2
+    while (end < lines.length && isTableRow(lines[end] ?? '', columns)) end += 1
+    tables.push(lines.slice(index, end).join('\n'))
+    index = end - 1
+  }
+  return tables
 }
 
 /** Cap on how many picker rows `/copy` lists (OMP recent-message window). */
@@ -94,10 +128,23 @@ function pushCodePicks(items: CopyPick[], source: string, nextId: () => string):
   }
 }
 
+function pushTablePicks(items: CopyPick[], source: string, nextId: () => string): void {
+  for (const table of extractMarkdownTables(source)) {
+    items.push({
+      id: nextId(),
+      label: firstLine(table),
+      hint: 'Markdown table · ' + pluralLines(table),
+      text: table,
+      copyMessage: 'Markdown table',
+    })
+  }
+}
+
 /** Newest-first picker rows from the live transcript. */
 export function buildCopyTargets(blocks: readonly Block[], limit = COPY_TARGET_LIMIT): CopyPick[] {
   const items: CopyPick[] = []
   let messages = 0
+  let tables = 0
   let codes = 0
   let commands = 0
   const cap = Math.max(0, limit)
@@ -112,6 +159,11 @@ export function buildCopyTargets(blocks: readonly Block[], limit = COPY_TARGET_L
         hint: pluralLines(block.text),
         text: block.text,
         copyMessage: messages === 1 ? 'last message' : 'assistant text',
+      })
+      if (items.length >= cap) break
+      pushTablePicks(items, block.text, () => {
+        tables += 1
+        return 'table:' + String(tables)
       })
       if (items.length >= cap) break
       pushCodePicks(items, block.text, () => {
@@ -163,6 +215,11 @@ export function extractCopyTarget(blocks: readonly Block[], kind: CopyKind): Cop
     if (block === undefined) continue
     if (kind === 'text' && block.kind === 'assistant' && block.text.trim() !== '') {
       return { text: block.text, label: 'assistant text' }
+    }
+    if (kind === 'table' && block.kind === 'assistant') {
+      const tables = extractMarkdownTables(block.text)
+      const last = tables[tables.length - 1]
+      if (last !== undefined) return { text: last, label: 'Markdown table' }
     }
     if (kind === 'code') {
       const source = block.kind === 'assistant'

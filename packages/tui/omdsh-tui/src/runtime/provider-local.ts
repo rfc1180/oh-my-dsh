@@ -2733,13 +2733,15 @@ export class LocalTui implements TuiService {
     }
     const kind = parseCopyKind(args)
     if (kind === undefined) {
-      this.#notice('Usage: /copy [code|cmd]')
+      this.#notice('Usage: /copy [text|table|code|cmd]')
       this.#render()
       return
     }
     const target = extractCopyTarget(this.#state.blocks, kind)
     if (target === undefined) {
-      this.#notice(kind === 'code' ? 'No code block to copy.' : kind === 'cmd' ? 'No command to copy.' : 'Nothing to copy.')
+      this.#notice(kind === 'table'
+        ? 'No Markdown table to copy.'
+        : kind === 'code' ? 'No code block to copy.' : kind === 'cmd' ? 'No command to copy.' : 'Nothing to copy.')
       this.#render()
       return
     }
