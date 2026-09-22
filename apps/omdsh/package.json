@@ -36,7 +36,8 @@
     "typecheck": "tsc -b tsconfig.json",
     "prepack": "node ../../scripts/sync-package-readme.mjs && pnpm run clean && pnpm run build",
     "dev": "tsx src/bin.ts",
-    "omdsh": "tsx src/bin.ts"
+    "omdsh": "tsx src/bin.ts",
+    "check:wedge": "tsx scripts/wedge-recovery-check.mts"
   },
   "dependencies": {
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
