@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Recover a session whose live turn was orphaned by a stopped driver: an idle agent that still carries an open turn now reloads its session automatically, closing the interrupted turn and reporting queued messages that could not be kept, instead of queueing input forever while the agent reads as idle.
 - Resume the requested durable session directly at startup instead of briefly creating and publishing an empty replacement session first.
 - Keep composer typing and submit responsive during long assistant replies by using a cheap plain streaming preview, bounding repaint frequency, and reusing the last painted transcript for raw-key frames; full Markdown appears when the reply settles.
 - List and resume sessions written by Harness rc.7 as a single Zstandard frame after upgrading to rc.8, instead of rejecting their header as corrupt.
