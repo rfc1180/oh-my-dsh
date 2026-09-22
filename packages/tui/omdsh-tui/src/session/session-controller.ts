@@ -51,6 +51,7 @@ import type {
   TuiSubmission,
   TuiInputImage,
 } from '../definition.ts'
+import { hasOrphanedTurn } from './turn-recovery.ts'
 import { descendantDepth, isSteerableSubagent, SubagentRoster } from './subagent-roster.ts'
 import type {} from '../runtime/tool-presentation.ts'
 import * as commandPermission from '../commands/permission.ts'
@@ -575,7 +576,38 @@ export class SessionRuntime {
     const submission = typeof input === 'string' ? { text: input, images: [] } : input
     const message = await createSubmissionMessage(submission, this.#ctx.get('attachments'))
     this.assertActive(agent)
+    if (hasOrphanedTurn(agent)) {
+      await this.recoverOrphanedTurn()
+      agent = this.#requiredAgent()
+    }
     agent.followup(message)
+  }
+
+  /**
+   * Reload a session whose live turn was orphaned by a stopped driver.
+   *
+   * The load path closes an interrupted tail turn and discards input queued
+   * behind it, so a reload is the only recovery that restarts the driver. This
+   * is what makes a session that reads as idle but never runs input usable
+   * again. Returns whether a reload happened.
+   *
+   * @param signal - optional cancellation for the resume.
+   * @returns whether the active session was reloaded.
+   */
+  async recoverOrphanedTurn(signal?: AbortSignal): Promise<boolean> {
+    const active = this.#active
+    if (active === undefined) return false
+    const agent = active.handle.agent
+    if (!hasOrphanedTurn(agent)) return false
+    const queued = agent.inbox.nextTurn.length
+    await this.resumeSession(agent, agent.session.id, signal ?? new AbortController().signal)
+    await this.#disposeRetired()
+    this.#tui.notice(
+      queued === 0
+        ? 'Closed an interrupted turn so the session can continue.'
+        : `Closed an interrupted turn. ${queued} queued message${queued === 1 ? '' : 's'} could not be kept — please send again.`,
+    )
+    return true
   }
 
   /** Remove and rehydrate the newest durable human follow-up for queue browsing. */
