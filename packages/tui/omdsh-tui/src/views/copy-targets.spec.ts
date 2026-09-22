@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { CallId } from '@deepseek-ai/dsh-llm'
-import { buildCopyTargets, extractCodeBlocks, extractCopyTarget, extractMarkdownTables, parseCopyKind } from './copy-targets.ts'
+import {
+  buildCopyTargets,
+  buildTableTargets,
+  collectMarkdownTables,
+  extractCodeBlocks,
+  extractCopyTarget,
+  extractMarkdownTables,
+  extractTableCells,
+  parseCopyKind,
+  parseCopyTableRequest,
+} from './copy-targets.ts'
 import type { Block } from './event-views.ts'
 
 const assistant = (text: string): Block =>
@@ -47,6 +57,53 @@ describe('extractMarkdownTables', () => {
   })
 })
 
+describe('parseCopyTableRequest', () => {
+  it('reads table, row, and cell positions newest first', () => {
+    expect(parseCopyTableRequest('table')).toEqual({ table: 1 })
+    expect(parseCopyTableRequest(' TABLE 3 ')).toEqual({ table: 3 })
+    expect(parseCopyTableRequest('table 1 4')).toEqual({ table: 1, row: 4 })
+    expect(parseCopyTableRequest('table 2 4 5')).toEqual({ table: 2, row: 4, column: 5 })
+    expect(parseCopyTableRequest('table 0')).toBeUndefined()
+    expect(parseCopyTableRequest('table 1 0')).toBeUndefined()
+    expect(parseCopyTableRequest('table 1 2 0')).toBeUndefined()
+    expect(parseCopyTableRequest('table 1 nope')).toBeUndefined()
+    expect(parseCopyTableRequest('code')).toBeUndefined()
+    expect(parseCopyTableRequest('')).toBeUndefined()
+  })
+})
+
+describe('extractTableCells', () => {
+  const table = '| Name | Value |\n| --- | --- |\n| alpha | one |\n| beta | two |'
+
+  it('reads one row or one cell with the header as row 1', () => {
+    expect(extractTableCells(table, 1)).toEqual(['Name', 'Value'])
+    expect(extractTableCells(table, 3)).toEqual(['beta', 'two'])
+    expect(extractTableCells(table, 3, 2)).toEqual(['two'])
+    expect(extractTableCells(table, 9)).toBeUndefined()
+    expect(extractTableCells(table, 3, 9)).toBeUndefined()
+  })
+})
+
+describe('collectMarkdownTables / buildTableTargets', () => {
+  const first = '| A | B |\n| --- | --- |\n| one | two |'
+  const second = '| C | D |\n| --- | --- |\n| three | four |'
+
+  it('collects tables newest first across assistant blocks', () => {
+    expect(collectMarkdownTables([
+      assistant('intro\n' + first),
+      { kind: 'user', text: 'more?' },
+      assistant('result\n' + second),
+    ])).toEqual([second, first])
+  })
+
+  it('builds numbered picker rows for the tables only', () => {
+    const items = buildTableTargets([assistant(first), assistant(second)])
+    expect(items.map((item) => item.id)).toEqual(['table:1', 'table:2'])
+    expect(items[0]).toMatchObject({ text: second, copyMessage: 'Markdown table' })
+    expect(items[1]).toMatchObject({ text: first })
+  })
+})
+
 describe('extractCopyTarget', () => {
   it('takes the last assistant text', () => {
     const target = extractCopyTarget([
@@ -64,6 +121,15 @@ describe('extractCopyTarget', () => {
       assistant('Result:\n\n' + table + '\n\nafter'),
     ], 'table')
     expect(target).toEqual({ text: table, label: 'Markdown table' })
+  })
+
+  it('selects an older table by newest-first index', () => {
+    const older = '| Old | Row |\n| --- | --- |\n| before | value |'
+    const newer = '| New | Row |\n| --- | --- |\n| after | value |'
+    const blocks = [assistant(older), assistant(newer)]
+    expect(extractCopyTarget(blocks, 'table', 1)).toEqual({ text: newer, label: 'Markdown table' })
+    expect(extractCopyTarget(blocks, 'table', 2)).toEqual({ text: older, label: 'Markdown table' })
+    expect(extractCopyTarget(blocks, 'table', 3)).toBeUndefined()
   })
 
   it('takes the last closed fence from assistant or tool output', () => {

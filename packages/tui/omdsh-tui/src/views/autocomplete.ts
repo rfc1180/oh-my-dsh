@@ -38,7 +38,7 @@ export interface AutocompleteItem {
 
 const COPY_ARGUMENTS: readonly SlashArgument[] = [
   { value: 'text', description: 'Last assistant reply' },
-  { value: 'table', description: 'Last raw Markdown table' },
+  { value: 'table', description: 'Markdown table or cell: n [row [col]]' },
   { value: 'code', description: 'Last fenced code block' },
   { value: 'cmd', aliases: ['command'], description: 'Last bash command' },
 ]

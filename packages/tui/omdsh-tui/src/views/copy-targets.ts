@@ -27,6 +27,42 @@ export function parseCopyKind(args: string): CopyKind | undefined {
   return undefined
 }
 
+/** Table/row/cell selection from `/copy table [n [row [col]]]` (all 1-based, newest table first). */
+export interface CopyTableRequest {
+  table: number
+  row?: number
+  column?: number
+}
+
+/** Parse `/copy table [n [row [col]]]`; undefined when the args name another kind. */
+export function parseCopyTableRequest(args: string): CopyTableRequest | undefined {
+  const match = /^table(?:\s+(\d+))?(?:\s+(\d+)(?:\s+(\d+))?)?$/u.exec(args.trim().toLowerCase())
+  if (match === null) return undefined
+  const table = match[1] === undefined ? 1 : Number(match[1])
+  const row = match[2] === undefined ? undefined : Number(match[2])
+  const column = match[3] === undefined ? undefined : Number(match[3])
+  if (!Number.isSafeInteger(table) || table < 1) return undefined
+  if (row !== undefined && (!Number.isSafeInteger(row) || row < 1)) return undefined
+  if (column !== undefined && (!Number.isSafeInteger(column) || column < 1)) return undefined
+  if (row === undefined && column !== undefined) return undefined
+  return {
+    table,
+    ...(row === undefined ? {} : { row }),
+    ...(column === undefined ? {} : { column }),
+  }
+}
+
+/** One row's cells, or one cell, from a raw Markdown table. Header is row 1. */
+export function extractTableCells(table: string, row: number, column?: number): string[] | undefined {
+  const body = table.split('\n').filter(line => !isTableDelimiter(line))
+  const line = body[row - 1]
+  if (line === undefined) return undefined
+  const cells = tableCells(line)
+  if (column === undefined) return cells
+  const cell = cells[column - 1]
+  return cell === undefined ? undefined : [cell]
+}
+
 /** Fenced bodies in document order (`lang` is the info string). */
 export function extractCodeBlocks(text: string): { lang: string; code: string }[] {
   const lines = text.split('\n')
@@ -77,6 +113,21 @@ export function extractMarkdownTables(text: string): string[] {
     while (end < lines.length && isTableRow(lines[end] ?? '', columns)) end += 1
     tables.push(lines.slice(index, end).join('\n'))
     index = end - 1
+  }
+  return tables
+}
+
+/** Newest-first raw Markdown tables across the transcript. */
+export function collectMarkdownTables(blocks: readonly Block[]): string[] {
+  const tables: string[] = []
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i]
+    if (block?.kind !== 'assistant') continue
+    const found = extractMarkdownTables(block.text)
+    for (let k = found.length - 1; k >= 0; k -= 1) {
+      const table = found[k]
+      if (table !== undefined) tables.push(table)
+    }
   }
   return tables
 }
@@ -138,6 +189,17 @@ function pushTablePicks(items: CopyPick[], source: string, nextId: () => string)
       copyMessage: 'Markdown table',
     })
   }
+}
+
+/** Newest-first picker rows limited to Markdown tables. */
+export function buildTableTargets(blocks: readonly Block[], limit = COPY_TARGET_LIMIT): CopyPick[] {
+  return collectMarkdownTables(blocks).slice(0, Math.max(0, limit)).map((table, position) => ({
+    id: 'table:' + String(position + 1),
+    label: firstLine(table),
+    hint: 'Markdown table · ' + pluralLines(table),
+    text: table,
+    copyMessage: 'Markdown table',
+  }))
 }
 
 /** Newest-first picker rows from the live transcript. */
@@ -209,17 +271,20 @@ function bashCommand(args: string): string | undefined {
 }
 
 /** Walk the transcript backwards for the requested copy target. */
-export function extractCopyTarget(blocks: readonly Block[], kind: CopyKind): CopyTarget | undefined {
+export function extractCopyTarget(
+  blocks: readonly Block[],
+  kind: CopyKind,
+  index = 1,
+): CopyTarget | undefined {
+  if (kind === 'table') {
+    const table = collectMarkdownTables(blocks)[Math.max(0, index - 1)]
+    return table === undefined ? undefined : { text: table, label: 'Markdown table' }
+  }
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i]
     if (block === undefined) continue
     if (kind === 'text' && block.kind === 'assistant' && block.text.trim() !== '') {
       return { text: block.text, label: 'assistant text' }
-    }
-    if (kind === 'table' && block.kind === 'assistant') {
-      const tables = extractMarkdownTables(block.text)
-      const last = tables[tables.length - 1]
-      if (last !== undefined) return { text: last, label: 'Markdown table' }
     }
     if (kind === 'code') {
       const source = block.kind === 'assistant'

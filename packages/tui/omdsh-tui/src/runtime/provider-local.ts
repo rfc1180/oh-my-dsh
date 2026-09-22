@@ -71,7 +71,14 @@ import {
   createCopySelector,
   type CopySelectorState,
 } from '../views/copy-selector.ts'
-import { buildCopyTargets, extractCopyTarget, parseCopyKind } from '../views/copy-targets.ts'
+import {
+  buildCopyTargets,
+  buildTableTargets,
+  extractCopyTarget,
+  extractTableCells,
+  parseCopyKind,
+  parseCopyTableRequest,
+} from '../views/copy-targets.ts'
 import {
   applyHistorySearchEvent,
   createHistorySearch,
@@ -2731,9 +2738,42 @@ export class LocalTui implements TuiService {
       this.#render()
       return
     }
+    const request = parseCopyTableRequest(args)
+    if (request !== undefined) {
+      const tables = buildTableTargets(this.#state.blocks)
+      const picked = tables[request.table - 1]
+      if (picked === undefined) {
+        this.#notice('No Markdown table to copy.')
+        this.#render()
+        return
+      }
+      if (request.row === undefined) {
+        if (args.trim().toLowerCase() === 'table' && tables.length > 1) {
+          this.#search = null
+          this.#ac = null
+          this.#settings = null
+          this.#copySelector = createCopySelector(tables)
+          this.#render()
+          return
+        }
+        await this.#copyPicked(picked.text, picked.copyMessage)
+        return
+      }
+      const cells = extractTableCells(picked.text, request.row, request.column)
+      if (cells === undefined || cells.length === 0) {
+        this.#notice('No such table cell.')
+        this.#render()
+        return
+      }
+      const label = request.column === undefined
+        ? `table row ${request.row}`
+        : `cell r${request.row}c${request.column}`
+      await this.#copyPicked(cells.join(' | '), label)
+      return
+    }
     const kind = parseCopyKind(args)
     if (kind === undefined) {
-      this.#notice('Usage: /copy [text|table|code|cmd]')
+      this.#notice('Usage: /copy [text|table [n [row [col]]]|code|cmd]')
       this.#render()
       return
     }

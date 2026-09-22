@@ -2029,6 +2029,87 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('copies an older table by newest-first index', async () => {
+    const copied: string[] = []
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', async (text) => { copied.push(text) })
+    const pending = tui.readline()
+    const older = '| Old | Row |\n| --- | --- |\n| before | value |'
+    const newer = '| New | Row |\n| --- | --- |\n| after | value |'
+    tui.event(ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: older }] },
+    }, 1))
+    tui.event(ev('assistant/message', {
+      turn: 1,
+      step: 2,
+      message: { content: [{ type: 'text', text: newer }] },
+    }, 2))
+
+    press(term, '/copy table 2\r')
+    await flushAsyncPaste()
+
+    expect(copied).toEqual([older])
+    press(term, 'ok\r')
+    expect(await pending).toBe('ok')
+    tui.dispose()
+  })
+
+  it('copies one table cell by row and column', async () => {
+    const copied: string[] = []
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', async (text) => { copied.push(text) })
+    const pending = tui.readline()
+    const table = '| Name | Value |\n| --- | --- |\n| alpha | one |\n| beta | two |'
+    tui.event(ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: table }] },
+    }, 1))
+
+    press(term, '/copy table 1 3 2\r')
+    await flushAsyncPaste()
+
+    expect(copied).toEqual(['two'])
+    expect(term.captured).toContain('Copied cell r3c2')
+    press(term, '/copy table 1 3\r')
+    await flushAsyncPaste()
+    expect(copied).toEqual(['two', 'beta | two'])
+    press(term, 'ok\r')
+    expect(await pending).toBe('ok')
+    tui.dispose()
+  })
+
+  it('offers a tables-only picker when several tables exist', async () => {
+    const copied: string[] = []
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', async (text) => { copied.push(text) })
+    const pending = tui.readline()
+    const older = '| Old | Row |\n| --- | --- |\n| before | value |'
+    const newer = '| New | Row |\n| --- | --- |\n| after | value |'
+    tui.event(ev('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: older + '\n\nplain text' }] },
+    }, 1))
+    tui.event(ev('assistant/message', {
+      turn: 1,
+      step: 2,
+      message: { content: [{ type: 'text', text: newer }] },
+    }, 2))
+
+    press(term, '/copy table\r')
+    expect(term.captured).toContain('enter copy')
+    expect(copied).toEqual([])
+    press(term, '\r')
+    await flushAsyncPaste()
+    expect(copied).toEqual([newer])
+    press(term, 'ok\r')
+    expect(await pending).toBe('ok')
+    tui.dispose()
+  })
+
   it('opens the /copy picker and copies the selected row', async () => {
     const copied: string[] = []
     const term = new FakeTerminal()
@@ -2059,7 +2140,7 @@ describe('LocalTui (tty)', () => {
     press(term, '/copy\r')
     expect(term.captured).toContain('Nothing to copy.')
     press(term, '/copy nope\r')
-    expect(term.captured).toContain('Usage: /copy [text|table|code|cmd]')
+    expect(term.captured).toContain('Usage: /copy [text|table [n [row [col]]]|code|cmd]')
     press(term, 'ok\r')
     expect(await pending).toBe('ok')
     tui.dispose()
