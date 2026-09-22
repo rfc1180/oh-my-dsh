@@ -15,6 +15,7 @@ import {
   modelStatus,
   recentSessionContent,
   recentSessionStatus,
+  remoteTranscriptTail,
   resolveDurableModelSelection,
   restoreSubmissionMessage,
   SessionRuntime,
@@ -45,6 +46,19 @@ const PNG_1X1 = new Uint8Array(Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zk5sAAAAASUVORK5CYII=',
   'base64',
 ))
+
+describe('remoteTranscriptTail', () => {
+  it('keeps only the latest bounded projection without mutating durable events', () => {
+    const events = Array.from({ length: 1_500 }, (_, seq) => ({ type: 'assistant/chunk', seq })) as unknown as SessionEvent[]
+    const tail = remoteTranscriptTail(events)
+    expect(tail).toHaveLength(1_024)
+    expect(tail[0]?.seq).toBe(476)
+    expect(tail.at(-1)?.seq).toBe(1_499)
+    expect(events).toHaveLength(1_500)
+    expect(remoteTranscriptTail(events.slice(0, 2))).toHaveLength(2)
+    expect(() => remoteTranscriptTail(events, 0)).toThrow('positive integer')
+  })
+})
 
 describe('modelStatus', () => {
   it('shows the effective adapter default and prefers an explicit effort', () => {
@@ -781,6 +795,7 @@ describe('SessionRuntime startup', () => {
     expect(agents.create).not.toHaveBeenCalled()
     expect(replaceViewportTail).toHaveBeenCalledOnce()
     expect(replaceSession).toHaveBeenCalledOnce()
+    expect(replaceSession.mock.calls[0]?.[0]).toBe(session.events)
     expect(activateInput).toHaveBeenCalledOnce()
     expect(order).toEqual(['resume', 'preview', 'validated', 'full', 'input'])
     expect(setCommands).toHaveBeenLastCalledWith([{ name: 'help', description: 'help' }])

@@ -58,6 +58,7 @@ import type {
   TuiSessionStats,
   TuiSubmission,
   TuiInputImage,
+  TuiStatus,
 } from '../definition.ts'
 import { hasOrphanedTurn, ORPHANED_TURN_GRACE_MS } from './turn-recovery.ts'
 import { descendantDepth, isSteerableSubagent, SubagentRoster } from './subagent-roster.ts'
@@ -72,8 +73,19 @@ import {
 } from './session-configuration.ts'
 import { stripComposerImageMarkers } from '../input/image-paste.ts'
 import { activeTranscriptSource } from './active-transcript-source.ts'
+import { connectSharedSessionEvents, type SharedSessionEventRoute } from './shared-session-event-router.ts'
 
 const SESSION_INFO_COALESCE_MS = 50
+export const REMOTE_TRANSCRIPT_EVENT_LIMIT = 1_024
+
+/** Bound only remote presentation state; the durable Agent session remains authoritative and complete. */
+export function remoteTranscriptTail(
+  events: readonly SessionEvent[],
+  limit = REMOTE_TRANSCRIPT_EVENT_LIMIT,
+): readonly SessionEvent[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('remote transcript limit must be a positive integer')
+  return events.length <= limit ? events : events.slice(events.length - limit)
+}
 
 /** Keep transcript delivery immediate while coalescing aggregate footer projections. */
 export class SessionPresentationController {
@@ -611,6 +623,7 @@ export class SessionRuntime {
   #turnRecoveryTimer: ReturnType<typeof setTimeout> | undefined
   readonly #off: Array<() => void> = []
   readonly #subagents = new SubagentRoster()
+  readonly #sessionEvents: SharedSessionEventRoute
   #subagentEpoch = 0
   #inspectEpoch = 0
   #inspectedId: string | undefined
@@ -645,44 +658,44 @@ export class SessionRuntime {
         ...(image.name === undefined ? {} : { name: image.name }),
       }))
     }
-    this.#off.push(ctx.on('agent/status', (payload) => {
-      if (payload.agent === this.#active?.handle.agent) {
-        if (this.#inspectedId === undefined) tui.setStatus(payload.status)
-        if (payload.status === 'running') this.#cancelTurnRecovery()
-        else this.#scheduleTurnRecovery()
-        return
-      }
-      if (payload.agent.id === this.#inspectedId) tui.setStatus(payload.status)
-      this.#noteSubagentStatus(payload.agent.session, payload.status)
-    }))
-    this.#off.push(ctx.on('session/created', (session) => {
-      this.#noteSubagentSession(session)
-    }))
-    this.#off.push(ctx.on('session/disposed', (session) => {
-      if (!this.#subagents.owns(session.id)) return
-      this.#subagents.setAgentStatus(session.id, 'gone')
-      this.#pushSubagents()
-    }))
-    this.#off.push(ctx.on('session/event', (session, event) => {
-      const active = this.#active
-      if (active === undefined) return
-      if (session.id === this.#inspectedId) {
-        const child = ctx.get('agents')?.get(session.id)
-        tui.event(event, child === undefined ? undefined : ctx.get('tuiToolPresentation')?.event(child, event))
-        this.#noteSubagentEvent(session, event)
-        return
-      }
-      if (session === active.handle.agent.session) {
-        if (this.#inspectedId === undefined) {
-          this.#presentation.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
-        } else {
-          this.#presentation.sessionInfoChanged()
+    this.#sessionEvents = connectSharedSessionEvents(ctx, {
+      agentStatus: (payload) => {
+        if (payload.agent === this.#active?.handle.agent) {
+          if (this.#inspectedId === undefined) tui.setStatus(payload.status)
+          if (payload.status === 'running') this.#cancelTurnRecovery()
+          else this.#scheduleTurnRecovery()
+          return
         }
-        if (event.type === 'session/title') void this.refreshRecent()
-        return
-      }
-      this.#noteSubagentEvent(session, event)
-    }))
+        if (payload.agent.id === this.#inspectedId) tui.setStatus(payload.status)
+        this.#noteSubagentStatus(payload.agent.session, payload.status)
+      },
+      sessionCreated: session => { this.#noteSubagentSession(session) },
+      sessionDisposed: (session) => {
+        if (!this.#subagents.owns(session.id)) return
+        this.#subagents.setAgentStatus(session.id, 'gone')
+        this.#pushSubagents()
+      },
+      sessionEvent: (session, event) => {
+        const active = this.#active
+        if (active === undefined) return
+        if (session.id === this.#inspectedId) {
+          const child = ctx.get('agents')?.get(session.id)
+          tui.event(event, child === undefined ? undefined : ctx.get('tuiToolPresentation')?.event(child, event))
+          this.#noteSubagentEvent(session, event)
+          return
+        }
+        if (session === active.handle.agent.session) {
+          if (this.#inspectedId === undefined) {
+            this.#presentation.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
+          } else {
+            this.#presentation.sessionInfoChanged()
+          }
+          if (event.type === 'session/title') void this.refreshRecent()
+          return
+        }
+        this.#noteSubagentEvent(session, event)
+      },
+    })
     if (ctx.get('commands') !== undefined) {
       this.#off.push(ctx.on('commands/change', () => { this.#pushCommands() }))
     }
@@ -808,6 +821,7 @@ export class SessionRuntime {
     // the interrupted-turn repair runs only on load: release the owner first so
     // the reload closes the tail turn exactly like a process restart does.
     this.#active = undefined
+    this.#sessionEvents.unbindRoot()
     try {
       await active.handle.dispose()
       await this.#activate(await this.#resume(id, selection, signal ?? new AbortController().signal))
@@ -1490,6 +1504,7 @@ export class SessionRuntime {
   async dispose(): Promise<void> {
     if (this.#disposed) return
     this.#disposed = true
+    this.#sessionEvents.dispose()
     this.#presentation.dispose()
     this.#cancelTurnRecovery()
     this.#subagentEpoch += 1
@@ -1576,8 +1591,9 @@ export class SessionRuntime {
 
   #activate(next: ActiveSession, hydrate = true): void {
     const previous = this.#active
-    this.#active = next
     const agent = next.handle.agent
+    this.#sessionEvents.bindRoot(agent.id)
+    this.#active = next
     const managerSource = this.#ctx.get('sessionPersistence') === undefined
       ? undefined
       : this.sessionManagerSource(agent)
@@ -1812,8 +1828,19 @@ export class SessionRuntime {
   }
 
   #replaceTranscript(agent: Agent): void {
-    const events = agent.session.events
-    this.#tui.replaceSession(events, this.#ctx.get('tuiToolPresentation')?.session(agent, events), agent.status)
+    this.#replaceTranscriptEvents(agent.session.events, agent, agent.status)
+  }
+
+  #replaceTranscriptEvents(events: readonly SessionEvent[], agent: Agent | undefined, status: TuiStatus): void {
+    const visible = this.#tui.replaceSessionTail === undefined ? events : remoteTranscriptTail(events)
+    const presentations = agent === undefined
+      ? undefined
+      : this.#ctx.get('tuiToolPresentation')?.session(agent, visible)
+    if (this.#tui.replaceSessionTail !== undefined) {
+      this.#tui.replaceSessionTail(visible, presentations, status, events.length)
+      return
+    }
+    this.#tui.replaceSession(visible, presentations, status)
   }
 
   #replaceVisibleTranscript(): void {
@@ -1862,11 +1889,7 @@ export class SessionRuntime {
     if (request !== this.#inspectEpoch) return
     this.#inspectedId = id
     const child = this.#ctx.get('agents')?.get(SessionId(id))
-    this.#tui.replaceSession(
-      events,
-      child === undefined ? undefined : this.#ctx.get('tuiToolPresentation')?.session(child, events),
-      child?.status ?? 'idle',
-    )
+    this.#replaceTranscriptEvents(events, child, child?.status ?? 'idle')
     this.#tui.setInspectedSubagent(this.#inspectView(
       id,
       child?.status === 'running' ? 'running' : 'waiting',
