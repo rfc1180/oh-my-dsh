@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-22
+
 ### Added
 
 - Choose `standard`, `compact`, `minimal`, or `quiet` activity detail from `/settings` or `/detail`, keeping the current transcript as the default while progressively reducing reasoning, tool, and todo noise without hiding errors.
@@ -230,7 +232,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Preserved terminal-cell alignment and right padding for long commands, CJK text, emoji, ANSI styling, and narrow viewports.
 - Stabilized incremental rendering, transcript scrolling, cursor placement, tool-output folding, and queued input during active turns.
 
-[Unreleased]: https://github.com/agi-fans/oh-my-dsh/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/agi-fans/oh-my-dsh/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/agi-fans/oh-my-dsh/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/agi-fans/oh-my-dsh/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/agi-fans/oh-my-dsh/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/agi-fans/oh-my-dsh/compare/v0.6.0...v0.6.1
