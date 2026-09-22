@@ -1,6 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
+
+export type SessionProjectionKey = Extract<keyof SessionProjectionMap, string>
 
 type AgentStatusPayload = {
   readonly agent: Agent
@@ -13,6 +16,7 @@ export interface SharedSessionEventSink {
   sessionCreated(session: Session): void
   sessionDisposed(session: Session): void
   sessionEvent(session: Session, event: SessionEvent): void
+  sessionProjectionChanged(session: Session, key: SessionProjectionKey): void
 }
 
 /** One runtime's root binding in the process-wide router for a shared Context. */
@@ -62,6 +66,12 @@ class SharedSessionEventRouter {
         this.#dispatch(session, route => { route.sink.sessionEvent(session, event) })
       }),
     ]
+    const projections = ctx.get('sessionProjections')
+    if (projections !== undefined) {
+      this.#off.push(projections.onChanged((session, key) => {
+        this.#dispatch(session, route => { route.sink.sessionProjectionChanged(session, key) })
+      }))
+    }
   }
 
   connect(sink: SharedSessionEventSink): SharedSessionEventRoute {

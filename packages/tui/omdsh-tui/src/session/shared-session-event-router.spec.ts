@@ -27,12 +27,22 @@ function sink(): SharedSessionEventSink {
     sessionCreated: vi.fn(),
     sessionDisposed: vi.fn(),
     sessionEvent: vi.fn(),
+    sessionProjectionChanged: vi.fn(),
   }
 }
 
 function sharedContext(sessions: readonly Session[]) {
   const listeners = new Map<string, Set<Listener>>()
+  const projectionListeners = new Set<Listener>()
   const off = vi.fn()
+  const projectionOff = vi.fn()
+  const onChanged = vi.fn((listener: Listener) => {
+    projectionListeners.add(listener)
+    return () => {
+      projectionListeners.delete(listener)
+      projectionOff()
+    }
+  })
   const on = vi.fn((name: string, listener: Listener) => {
     let group = listeners.get(name)
     if (group === undefined) {
@@ -50,12 +60,15 @@ function sharedContext(sessions: readonly Session[]) {
     on,
     get: (name: string) => name === 'sessions'
       ? { get: (id: SessionId) => sessionMap.get(id) }
-      : undefined,
+      : name === 'sessionProjections' ? { onChanged } : undefined,
   } as unknown as Context
   const emit = (name: string, ...args: unknown[]) => {
     for (const listener of listeners.get(name) ?? []) listener(...args as never[])
   }
-  return { ctx, on, off, emit }
+  const emitProjection = (...args: unknown[]) => {
+    for (const listener of projectionListeners) listener(...args as never[])
+  }
+  return { ctx, on, off, onChanged, projectionOff, emit, emitProjection }
 }
 
 const titleEvent = {
@@ -79,6 +92,7 @@ describe('shared session event router', () => {
     const routeB = connectSharedSessionEvents(fixture.ctx, sinkB)
 
     expect(fixture.on).toHaveBeenCalledTimes(4)
+    expect(fixture.onChanged).toHaveBeenCalledOnce()
     routeA.bindRoot(rootA.id)
     routeB.bindRoot(rootB.id)
 
@@ -102,6 +116,43 @@ describe('shared session event router', () => {
     routeA.dispose()
     routeB.dispose()
     expect(fixture.off).toHaveBeenCalledTimes(4)
+    expect(fixture.projectionOff).toHaveBeenCalledOnce()
+  })
+
+  it('shares one projection listener across slots and routes owner, switch, and unknown lineage safely', () => {
+    const rootA = session('root-a')
+    const childA = session('child-a', 'root-a')
+    const rootB = session('root-b')
+    const rootC = session('root-c')
+    const unknown = session('unknown', 'missing-parent')
+    const fixture = sharedContext([rootA, childA, rootB, rootC])
+    const sinkA = sink()
+    const sinkB = sink()
+    const routeA = connectSharedSessionEvents(fixture.ctx, sinkA)
+    const routeB = connectSharedSessionEvents(fixture.ctx, sinkB)
+    routeA.bindRoot(rootA.id)
+    routeB.bindRoot(rootB.id)
+
+    expect(fixture.onChanged).toHaveBeenCalledOnce()
+    fixture.emitProjection(childA, 'sessionStats', {}, 1)
+    fixture.emitProjection(rootB, 'tokenUsage', {}, 2)
+    expect(sinkA.sessionProjectionChanged).toHaveBeenCalledWith(childA, 'sessionStats')
+    expect(sinkB.sessionProjectionChanged).toHaveBeenCalledWith(rootB, 'tokenUsage')
+    expect(sinkA.sessionProjectionChanged).toHaveBeenCalledTimes(1)
+    expect(sinkB.sessionProjectionChanged).toHaveBeenCalledTimes(1)
+
+    routeA.bindRoot(rootC.id)
+    fixture.emitProjection(rootC, 'plan', {}, 3)
+    expect(sinkA.sessionProjectionChanged).toHaveBeenLastCalledWith(rootC, 'plan')
+    expect(sinkB.sessionProjectionChanged).toHaveBeenCalledTimes(1)
+
+    fixture.emitProjection(unknown, 'permissions', {}, 4)
+    expect(sinkA.sessionProjectionChanged).toHaveBeenLastCalledWith(unknown, 'permissions')
+    expect(sinkB.sessionProjectionChanged).toHaveBeenLastCalledWith(unknown, 'permissions')
+
+    routeA.dispose()
+    routeB.dispose()
+    expect(fixture.projectionOff).toHaveBeenCalledOnce()
   })
 
   it('broadcasts unknown lineage and drops cached descendants when a runtime switches roots', () => {

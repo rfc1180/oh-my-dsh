@@ -695,6 +695,11 @@ export class SessionRuntime {
         }
         this.#noteSubagentEvent(session, event)
       },
+      sessionProjectionChanged: (session, key) => {
+        if (session !== this.#active?.handle.agent.session) return
+        if (key === 'sessionStats' || key === 'tokenUsage' || key === 'contextPressure'
+          || key === 'plan' || key === 'permissions') this.#presentation.sessionInfoChanged()
+      },
     })
     if (ctx.get('commands') !== undefined) {
       this.#off.push(ctx.on('commands/change', () => { this.#pushCommands() }))
@@ -707,14 +712,6 @@ export class SessionRuntime {
         this.#pushTools()
         const active = this.#active
         if (active !== undefined) this.#replaceVisibleTranscript()
-      }))
-    }
-    const projections = ctx.get('sessionProjections')
-    if (projections !== undefined) {
-      this.#off.push(projections.onChanged((session, key) => {
-        if (session !== this.#active?.handle.agent.session) return
-        if (key === 'sessionStats' || key === 'tokenUsage' || key === 'contextPressure'
-          || key === 'plan' || key === 'permissions') this.#presentation.sessionInfoChanged()
       }))
     }
   }
