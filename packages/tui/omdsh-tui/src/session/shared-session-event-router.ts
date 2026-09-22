@@ -84,7 +84,11 @@ class SharedSessionEventRouter {
     this.#unbindRoot(route)
     route.rootId = rootId
     this.#roots.set(rootId, route)
-    this.#owners.set(rootId, route)
+    // A session cached as another root's descendant may itself become a live
+    // root later. Rebuild only explicit root owners so every descendant is
+    // resolved against the complete new root set on its next event.
+    this.#owners.clear()
+    for (const [id, ownerRoute] of this.#roots) this.#owners.set(id, ownerRoute)
   }
 
   #unbindRoot(route: RouteState): void {

@@ -133,6 +133,30 @@ describe('shared session event router', () => {
     routeB.dispose()
   })
 
+  it('reassigns cached descendants when an intermediate session is promoted to a live root', () => {
+    const rootA = session('root-a')
+    const rootB = session('root-b', 'root-a')
+    const childC = session('child-c', 'root-b')
+    const fixture = sharedContext([rootA, rootB, childC])
+    const sinkA = sink()
+    const sinkB = sink()
+    const routeA = connectSharedSessionEvents(fixture.ctx, sinkA)
+    const routeB = connectSharedSessionEvents(fixture.ctx, sinkB)
+    routeA.bindRoot(rootA.id)
+
+    fixture.emit('session/event', childC, titleEvent)
+    expect(sinkA.sessionEvent).toHaveBeenCalledTimes(1)
+    expect(sinkB.sessionEvent).not.toHaveBeenCalled()
+
+    routeB.bindRoot(rootB.id)
+    fixture.emit('session/event', childC, titleEvent)
+    expect(sinkA.sessionEvent).toHaveBeenCalledTimes(1)
+    expect(sinkB.sessionEvent).toHaveBeenCalledTimes(1)
+
+    routeA.dispose()
+    routeB.dispose()
+  })
+
   it('rejects duplicate root ownership and detaches the global listeners after the last runtime', () => {
     const root = session('root')
     const fixture = sharedContext([root])
