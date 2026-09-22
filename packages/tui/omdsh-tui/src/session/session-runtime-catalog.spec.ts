@@ -31,12 +31,15 @@ function runtimeFixture(options: {
     for (const listener of listeners.get(name) ?? []) listener(...args)
   }
 
+  let inspectedAgent: Agent | undefined
+  let inspectSubagent: ((id: string) => void) | undefined
   let schemas = [{
     name: 'bash',
     description: 'shell',
     parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
   }]
   let definition = { presentCall: (() => undefined) as unknown, presentResult: (() => undefined) as unknown }
+  let inspectedDefinition = { presentCall: (() => undefined) as unknown, presentResult: (() => undefined) as unknown }
   const tools = {
     schemas: vi.fn(() => schemas),
     get: vi.fn(() => definition),
@@ -46,10 +49,13 @@ function runtimeFixture(options: {
     : {
         event: vi.fn(),
         session: vi.fn(() => new Map()),
-        catalogIdentity: vi.fn((_agent: Agent, names: readonly string[]) => [
-          bridge,
-          ...names.flatMap(name => [name, definition, definition.presentCall, definition.presentResult]),
-        ]),
+        catalogIdentity: vi.fn((agent: Agent, names: readonly string[]) => {
+          const effective = agent === inspectedAgent ? inspectedDefinition : definition
+          return [
+            bridge,
+            ...names.flatMap(name => [name, effective, effective.presentCall, effective.presentResult]),
+          ]
+        }),
       }
 
   const session = {
@@ -69,20 +75,35 @@ function runtimeFixture(options: {
   }
   const agent = { id: session.id, status: 'idle', session, ctx: childContext } as unknown as Agent
   childContext.agent = agent
+  const inspectedSession = {
+    id: SessionId('catalog-child'),
+    header: { id: SessionId('catalog-child'), parentSession: session.id, origin: 'subagent', cwd: '/workspace', createdAt: 2 },
+    events: [],
+    append: vi.fn(),
+  }
+  inspectedAgent = {
+    id: inspectedSession.id,
+    status: 'idle',
+    session: inspectedSession,
+    ctx: childContext,
+  } as unknown as Agent
   const handle = { agent, dispose: vi.fn(async () => {}) }
   const agents = {
     create: vi.fn(async ({ setup }) => {
       await setup?.(childContext as unknown as Context)
       return handle
     }),
-    get: vi.fn(),
+    get: vi.fn((id: SessionId) => id === inspectedSession.id ? inspectedAgent : undefined),
   }
   const commands = { list: vi.fn(() => [{ name: 'help', description: 'help' }]) }
   const services: Record<string, unknown> = {
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'v4' }) },
     agentPresets: { resolve: async () => ({ id: 'standard' }) },
     agents,
-    sessions: { list: () => [] },
+    sessions: {
+      list: () => [inspectedSession],
+      get: (id: SessionId) => id === inspectedSession.id ? inspectedSession : undefined,
+    },
     commands,
     tools,
     tuiToolPresentation: bridge,
@@ -97,7 +118,10 @@ function runtimeFixture(options: {
   const tui = {
     activateInput: vi.fn(),
     replaceViewportTail: vi.fn(),
-    onInspectSubagent: () => () => {},
+    onInspectSubagent: (listener: (id: string) => void) => {
+      inspectSubagent = listener
+      return () => { inspectSubagent = undefined }
+    },
     onInspectClose: () => () => {},
     onInspectSubmit: () => () => {},
     setSessionSearch: vi.fn(),
@@ -127,6 +151,8 @@ function runtimeFixture(options: {
     commands,
     setSchemas: (next: typeof schemas) => { schemas = next },
     setPresentCall: (next: unknown) => { definition = { ...definition, presentCall: next } },
+    setInspectedPresentCall: (next: unknown) => { inspectedDefinition = { ...inspectedDefinition, presentCall: next } },
+    inspect: () => { inspectSubagent?.(String(inspectedSession.id)) },
   }
 }
 
@@ -209,6 +235,25 @@ describe('SessionRuntime catalog refresh', () => {
     await flushMicrotasks()
     expect(fixture.tui.setTools).toHaveBeenCalledTimes(initialRows)
     expect(fixture.tui.replaceSession).toHaveBeenCalledTimes(initialReplay + 2)
+    await fixture.runtime.dispose()
+  })
+
+  it('rebuilds an inspected child when only its scoped presenter changes', async () => {
+    const fixture = runtimeFixture()
+    await fixture.runtime.start()
+    await fixture.runtime.whenHydrated()
+    fixture.inspect()
+    await flushMicrotasks()
+    const initialReplay = vi.mocked(fixture.tui.replaceSession).mock.calls.length
+
+    fixture.setInspectedPresentCall(() => undefined)
+    fixture.emit('tools/change')
+    await flushMicrotasks()
+    expect(fixture.tui.replaceSession).toHaveBeenCalledTimes(initialReplay + 1)
+
+    fixture.emit('tools/change')
+    await flushMicrotasks()
+    expect(fixture.tui.replaceSession).toHaveBeenCalledTimes(initialReplay + 1)
     await fixture.runtime.dispose()
   })
 

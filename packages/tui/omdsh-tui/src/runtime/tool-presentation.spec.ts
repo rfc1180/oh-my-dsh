@@ -112,22 +112,26 @@ describe('ToolPresentationBridge', () => {
     expect(indexedEventReads).toBeLessThanOrEqual(authoritativeEvents.length)
   })
 
-  it('skips missing callIds and uses the latest authoritative duplicate callId', () => {
+  it('skips missing callIds and pairs each duplicate result with its preceding call', () => {
     const oldCall = toolCall(1, 'duplicate', 'old-tool')
     const newCall = toolCall(2, 'duplicate', 'new-tool')
     const duplicateResult = toolResult(3, 'duplicate')
-    const missingResult = toolResult(4, 'missing')
-    const agent = { session: { events: [oldCall, newCall, duplicateResult, missingResult] } } as unknown as Agent
+    const futureCall = toolCall(4, 'duplicate', 'future-tool')
+    const futureResult = toolResult(5, 'duplicate')
+    const missingResult = toolResult(6, 'missing')
+    const agent = { session: { events: [oldCall, newCall, duplicateResult, futureCall, futureResult, missingResult] } } as unknown as Agent
     const get = vi.fn((name: string) => ({
       presentCall: () => ({ card: 'generic' as const, title: name }),
     }))
     const bridge = createToolPresentationBridge({ tools: { get } } as unknown as Context)
 
-    expect(bridge.session(agent, [duplicateResult, missingResult])).toEqual(new Map([
+    expect(bridge.session(agent, [duplicateResult, futureResult, missingResult])).toEqual(new Map([
       [3, { call: { card: 'generic', title: 'new-tool' } }],
+      [5, { call: { card: 'generic', title: 'future-tool' } }],
     ]))
-    expect(get).toHaveBeenCalledTimes(1)
-    expect(get).toHaveBeenCalledWith('new-tool', agent)
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(get).toHaveBeenNthCalledWith(1, 'new-tool', agent)
+    expect(get).toHaveBeenNthCalledWith(2, 'future-tool', agent)
   })
 
   it('isolates throwing call and result presenters during replay', () => {

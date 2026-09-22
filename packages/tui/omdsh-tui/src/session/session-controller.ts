@@ -108,6 +108,14 @@ function identityEqual(left: readonly unknown[] | undefined, right: readonly unk
     && left.every((value, index) => Object.is(value, right[index]))
 }
 
+function toolCatalogChanged(previous: ToolCatalogSnapshot | undefined, next: ToolCatalogSnapshot): boolean {
+  return previous === undefined
+    || previous.schema === undefined
+    || next.schema === undefined
+    || previous.schema !== next.schema
+    || !identityEqual(previous.presentation, next.presentation)
+}
+
 function catalogFingerprint(value: unknown): string | undefined {
   try {
     return JSON.stringify(value, (_key, current: unknown) => {
@@ -667,6 +675,7 @@ export class SessionRuntime {
   #commandsCache: readonly object[] | undefined
   #toolsCache: readonly object[] | undefined
   #toolCatalogSnapshot: ToolCatalogSnapshot | undefined
+  #inspectedToolCatalogSnapshot: { readonly agent: Agent, readonly snapshot: ToolCatalogSnapshot } | undefined
   #skillsEpoch = 0
   #started = false
   readonly #hydrations = new Set<Promise<void>>()
@@ -757,7 +766,10 @@ export class SessionRuntime {
       commandsChanged: () => { this.#pushCommands() },
       skillsChanged: () => this.#refreshSkills(),
       toolsChanged: () => {
-        const transcriptChanged = this.#pushTools()
+        const rootTranscriptChanged = this.#pushTools()
+        const transcriptChanged = this.#inspectedId === undefined
+          ? rootTranscriptChanged
+          : this.#inspectedTranscriptToolsChanged()
         const active = this.#active
         if (transcriptChanged && active !== undefined) this.#replaceVisibleTranscript()
       },
@@ -1652,6 +1664,7 @@ export class SessionRuntime {
     this.#commandsCache = undefined
     this.#toolsCache = undefined
     this.#toolCatalogSnapshot = undefined
+    this.#inspectedToolCatalogSnapshot = undefined
     this.#tui.setInspectedSubagent(undefined)
     this.#tui.setStatus(agent.status)
     this.#syncSubagents()
@@ -1734,11 +1747,28 @@ export class SessionRuntime {
     }
     const previous = this.#toolCatalogSnapshot
     this.#toolCatalogSnapshot = next
-    return previous === undefined
-      || previous.schema === undefined
-      || next.schema === undefined
-      || previous.schema !== next.schema
-      || !identityEqual(previous.presentation, next.presentation)
+    return toolCatalogChanged(previous, next)
+  }
+
+  #inspectedTranscriptToolsChanged(): boolean {
+    const id = this.#inspectedId
+    if (id === undefined) return false
+    const agent = this.#ctx.get('agents')?.get(SessionId(id))
+    if (agent === undefined) {
+      this.#inspectedToolCatalogSnapshot = undefined
+      return false
+    }
+    const schemas = this.#ctx.get('tools')?.schemas(agent) ?? []
+    const bridge = this.#ctx.get('tuiToolPresentation')
+    const next: ToolCatalogSnapshot = {
+      schema: catalogFingerprint(schemas),
+      presentation: bridge === undefined
+        ? NO_TOOL_PRESENTATION
+        : bridge.catalogIdentity?.(agent, schemas.map(schema => schema.name)),
+    }
+    const previous = this.#inspectedToolCatalogSnapshot
+    this.#inspectedToolCatalogSnapshot = { agent, snapshot: next }
+    return previous?.agent !== agent || toolCatalogChanged(previous.snapshot, next)
   }
 
   async #refreshSkills(signal?: AbortSignal, expected: ActiveSession | undefined = this.#active): Promise<void> {
@@ -1927,6 +1957,7 @@ export class SessionRuntime {
     if (this.#inspectedId === undefined) return
     this.#inspectEpoch += 1
     this.#inspectedId = undefined
+    this.#inspectedToolCatalogSnapshot = undefined
     this.#tui.setInspectedSubagent(undefined)
     const agent = this.#active?.handle.agent
     if (agent === undefined) return

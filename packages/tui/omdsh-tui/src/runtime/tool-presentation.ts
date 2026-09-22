@@ -93,14 +93,19 @@ class HarnessToolPresentation implements ToolPresentationBridge {
   }
 
   session(agent: Agent, events: readonly SessionEvent[]): ReadonlyMap<number, TuiToolPresentation> {
-    const callsById = new Map<string, Extract<SessionEvent, { type: 'tool/call' }>>()
-    const unresolvedCallIds = new Set(events.flatMap(event =>
-      event.type === 'tool/result' ? [event.data.message.source.callId] : []))
-    const sessionEvents = agent.session.events
-    for (let index = sessionEvents.length - 1; index >= 0 && unresolvedCallIds.size > 0; index -= 1) {
-      const event = sessionEvents[index]
-      if (event?.type === 'tool/call' && unresolvedCallIds.delete(event.data.callId)) {
-        callsById.set(event.data.callId, event)
+    const callsByResultSeq = new Map<number, Extract<SessionEvent, { type: 'tool/call' }>>()
+    const visibleResults = new Map(events.flatMap(event =>
+      event.type === 'tool/result' ? [[event.seq, event.data.message.source.callId] as const] : []))
+    const neededCallIds = new Set(visibleResults.values())
+    const latestCalls = new Map<string, Extract<SessionEvent, { type: 'tool/call' }>>()
+    const maxResultSeq = Math.max(-1, ...visibleResults.keys())
+    for (const event of agent.session.events) {
+      if (event.seq > maxResultSeq) break
+      if (event.type === 'tool/call' && neededCallIds.has(event.data.callId)) {
+        latestCalls.set(event.data.callId, event)
+      } else if (event.type === 'tool/result' && visibleResults.has(event.seq)) {
+        const call = latestCalls.get(event.data.message.source.callId)
+        if (call !== undefined) callsByResultSeq.set(event.seq, call)
       }
     }
 
@@ -128,7 +133,7 @@ class HarnessToolPresentation implements ToolPresentationBridge {
       }
       if (event.type !== 'tool/result') continue
 
-      const callEvent = callsById.get(event.data.message.source.callId)
+      const callEvent = callsByResultSeq.get(event.seq)
       if (callEvent === undefined) continue
       const definition = definitionFor(callEvent.data.name)
       const args = parsedArguments(callEvent.data.arguments)
