@@ -437,6 +437,13 @@ export interface TuiService {
     presentations?: ReadonlyMap<number, TuiToolPresentation>,
     status?: TuiStatus,
   ): void
+  /** Remote surfaces may retain only a bounded authoritative tail while preserving total-history metadata. */
+  replaceSessionTail?(
+    events: readonly SessionEvent[],
+    presentations: ReadonlyMap<number, TuiToolPresentation> | undefined,
+    status: TuiStatus,
+    totalEvents: number,
+  ): void
   /** Update session identity, recent rows, projected controls, and aggregate figures. */
   setSession(info: {
     id: string
