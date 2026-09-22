@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CallId } from '@deepseek-ai/dsh-llm'
-import { buildCopyTargets, extractCodeBlocks, extractCopyTarget, extractMarkdownTables, parseCopyKind } from './copy-targets.ts'
+import { buildCopyTargets, extractCodeBlocks, extractCopyTarget, parseCopyKind } from './copy-targets.ts'
 import type { Block } from './event-views.ts'
 
 const assistant = (text: string): Block =>
@@ -13,7 +13,6 @@ describe('parseCopyKind', () => {
   it('accepts the OMP tokens and rejects unknown ones', () => {
     expect(parseCopyKind('')).toBe('text')
     expect(parseCopyKind(' text ')).toBe('text')
-    expect(parseCopyKind('table')).toBe('table')
     expect(parseCopyKind('code')).toBe('code')
     expect(parseCopyKind('cmd')).toBe('cmd')
     expect(parseCopyKind('command')).toBe('cmd')
@@ -28,25 +27,6 @@ describe('extractCodeBlocks', () => {
   })
 })
 
-describe('extractMarkdownTables', () => {
-  it('preserves raw GFM tables without terminal box drawing', () => {
-    expect(extractMarkdownTables([
-      'before',
-      '| Name | Value |',
-      '| :--- | ---: |',
-      '| alpha | one |',
-      '',
-      'after',
-    ].join('\n'))).toEqual([
-      '| Name | Value |\n| :--- | ---: |\n| alpha | one |',
-    ])
-  })
-
-  it('ignores pipe-shaped prose without a delimiter row', () => {
-    expect(extractMarkdownTables('one | two\nnot a table')).toEqual([])
-  })
-})
-
 describe('extractCopyTarget', () => {
   it('takes the last assistant text', () => {
     const target = extractCopyTarget([
@@ -55,15 +35,6 @@ describe('extractCopyTarget', () => {
       assistant('second'),
     ], 'text')
     expect(target).toEqual({ text: 'second', label: 'assistant text' })
-  })
-
-  it('takes the last raw Markdown table from assistant output', () => {
-    const table = '| Name | Value |\n| --- | --- |\n| alpha | one |'
-    const target = extractCopyTarget([
-      assistant('| Old | Row |\n| --- | --- |\n| before | value |'),
-      assistant('Result:\n\n' + table + '\n\nafter'),
-    ], 'table')
-    expect(target).toEqual({ text: table, label: 'Markdown table' })
   })
 
   it('takes the last closed fence from assistant or tool output', () => {
@@ -89,7 +60,6 @@ describe('extractCopyTarget', () => {
 
   it('returns undefined when the transcript has no match', () => {
     expect(extractCopyTarget([], 'text')).toBeUndefined()
-    expect(extractCopyTarget([assistant('no table')], 'table')).toBeUndefined()
     expect(extractCopyTarget([assistant('no fence')], 'code')).toBeUndefined()
     expect(extractCopyTarget([tool('fs', '{}')], 'cmd')).toBeUndefined()
   })
@@ -100,14 +70,13 @@ describe('buildCopyTargets', () => {
     const items = buildCopyTargets([
       assistant('first reply'),
       tool('bash', '{"command":"ls -la"}'),
-      assistant('see\n| Name | Value |\n| --- | --- |\n| alpha | one |\n```ts\nconst x = 1\n```'),
+      assistant('see\n```ts\nconst x = 1\n```'),
     ])
-    expect(items.map((item) => item.id)).toEqual(['msg:1', 'table:1', 'code:1', 'cmd:1', 'msg:2'])
-    expect(items[0]).toMatchObject({ label: 'see', hint: '7 lines', copyMessage: 'last message' })
-    expect(items[1]).toMatchObject({ label: '| Name | Value |', hint: 'Markdown table · 3 lines', copyMessage: 'Markdown table' })
-    expect(items[2]).toMatchObject({ label: 'const x = 1', hint: 'ts · 1 line', text: 'const x = 1', copyMessage: 'ts block' })
-    expect(items[3]).toMatchObject({ label: 'ls -la', hint: 'bash · 1 line', text: 'ls -la', copyMessage: 'bash command' })
-    expect(items[4]?.label).toBe('first reply')
+    expect(items.map((item) => item.id)).toEqual(['msg:1', 'code:1', 'cmd:1', 'msg:2'])
+    expect(items[0]).toMatchObject({ label: 'see', hint: '4 lines', copyMessage: 'last message' })
+    expect(items[1]).toMatchObject({ label: 'const x = 1', hint: 'ts · 1 line', text: 'const x = 1', copyMessage: 'ts block' })
+    expect(items[2]).toMatchObject({ label: 'ls -la', hint: 'bash · 1 line', text: 'ls -la', copyMessage: 'bash command' })
+    expect(items[3]?.label).toBe('first reply')
   })
 
   it('returns an empty list when nothing is copyable', () => {

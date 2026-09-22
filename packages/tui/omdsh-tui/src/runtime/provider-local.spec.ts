@@ -2007,28 +2007,6 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
-  it('copies the last table as raw Markdown instead of terminal box drawing', async () => {
-    const copied: string[] = []
-    const term = new FakeTerminal()
-    const tui = new LocalTui(term, 'm', false, 'dark', async (text) => { copied.push(text) })
-    const pending = tui.readline()
-    const table = '| Name | Value |\n| --- | --- |\n| alpha | one |'
-    tui.event(ev('assistant/message', {
-      turn: 1,
-      step: 1,
-      message: { content: [{ type: 'text', text: 'Result:\n\n' + table }] },
-    }, 1))
-
-    press(term, '/copy table\r')
-    await flushAsyncPaste()
-
-    expect(copied).toEqual([table])
-    expect(term.captured).toContain('Copied Markdown table')
-    press(term, 'ok\r')
-    expect(await pending).toBe('ok')
-    tui.dispose()
-  })
-
   it('opens the /copy picker and copies the selected row', async () => {
     const copied: string[] = []
     const term = new FakeTerminal()
@@ -2059,7 +2037,7 @@ describe('LocalTui (tty)', () => {
     press(term, '/copy\r')
     expect(term.captured).toContain('Nothing to copy.')
     press(term, '/copy nope\r')
-    expect(term.captured).toContain('Usage: /copy [text|table|code|cmd]')
+    expect(term.captured).toContain('Usage: /copy [code|cmd]')
     press(term, 'ok\r')
     expect(await pending).toBe('ok')
     tui.dispose()

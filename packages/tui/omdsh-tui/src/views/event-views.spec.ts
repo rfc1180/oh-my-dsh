@@ -1500,7 +1500,7 @@ describe('renderView', () => {
       inputCursor: 6,
       colors: false,
     })
-    expect(frame.lines.join('\n')).toContain('text|table|code|cmd')
+    expect(frame.lines.join('\n')).toContain('text|code|cmd')
     expect(frame.cursor?.column).toBe(8)
   })
 
