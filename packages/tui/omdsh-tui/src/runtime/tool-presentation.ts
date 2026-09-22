@@ -84,7 +84,7 @@ class HarnessToolPresentation implements ToolPresentationBridge {
       const identity: unknown[] = [this]
       for (const name of names) {
         const definition = this.#ctx.tools.get(name, agent)
-        identity.push(name, definition?.presentCall, definition?.presentResult)
+        identity.push(name, definition, definition?.presentCall, definition?.presentResult)
       }
       return identity
     } catch {

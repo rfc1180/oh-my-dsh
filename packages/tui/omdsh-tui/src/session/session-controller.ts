@@ -74,8 +74,56 @@ import {
 import { stripComposerImageMarkers } from '../input/image-paste.ts'
 import { activeTranscriptSource } from './active-transcript-source.ts'
 import { connectSharedSessionEvents, type SharedSessionEventRoute } from './shared-session-event-router.ts'
+import { connectSharedCatalogChanges } from './shared-catalog-change-router.ts'
 
 const SESSION_INFO_COALESCE_MS = 50
+const NO_TOOL_PRESENTATION = Object.freeze([undefined])
+
+type ToolCatalogSnapshot = {
+  readonly schema: string | undefined
+  readonly presentation: readonly unknown[] | undefined
+}
+
+function shallowRecordsEqual(left: readonly object[] | undefined, right: readonly object[]): boolean {
+  if (left === undefined || left.length !== right.length) return false
+  for (let index = 0; index < right.length; index += 1) {
+    const leftEntry = left[index]
+    const rightEntry = right[index]
+    if (leftEntry === undefined || rightEntry === undefined) return false
+    const leftRecord = leftEntry as Record<string, unknown>
+    const rightRecord = rightEntry as Record<string, unknown>
+    const leftKeys = Object.keys(leftRecord)
+    const rightKeys = Object.keys(rightRecord)
+    if (leftKeys.length !== rightKeys.length) return false
+    for (const key of rightKeys) {
+      if (!Object.hasOwn(leftRecord, key) || !Object.is(leftRecord[key], rightRecord[key])) return false
+    }
+  }
+  return true
+}
+
+function identityEqual(left: readonly unknown[] | undefined, right: readonly unknown[] | undefined): boolean {
+  return left !== undefined && right !== undefined
+    && left.length === right.length
+    && left.every((value, index) => Object.is(value, right[index]))
+}
+
+function catalogFingerprint(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, (_key, current: unknown) => {
+      if (current === undefined || typeof current === 'function' || typeof current === 'symbol' || typeof current === 'bigint') {
+        throw new TypeError('catalog is not lossless JSON')
+      }
+      if (typeof current === 'number' && !Number.isFinite(current)) throw new TypeError('catalog is not lossless JSON')
+      if (typeof current !== 'object' || current === null || Array.isArray(current)) return current
+      const sorted: Record<string, unknown> = {}
+      for (const key of Object.keys(current).sort()) sorted[key] = (current as Record<string, unknown>)[key]
+      return sorted
+    })
+  } catch {
+    return undefined
+  }
+}
 export const REMOTE_TRANSCRIPT_EVENT_LIMIT = 1_024
 
 /** Bound only remote presentation state; the durable Agent session remains authoritative and complete. */
@@ -616,6 +664,10 @@ export class SessionRuntime {
   #active: ActiveSession | undefined
   #recent: TuiRecentSession[] = []
   #skillCommands: TuiCommand[] = []
+  #commandsCache: readonly object[] | undefined
+  #toolsCache: readonly object[] | undefined
+  #toolCatalogSnapshot: ToolCatalogSnapshot | undefined
+  #skillsEpoch = 0
   #started = false
   readonly #hydrations = new Set<Promise<void>>()
   readonly #retired: AgentHandle[] = []
@@ -701,19 +753,15 @@ export class SessionRuntime {
           || key === 'plan' || key === 'permissions') this.#presentation.sessionInfoChanged()
       },
     })
-    if (ctx.get('commands') !== undefined) {
-      this.#off.push(ctx.on('commands/change', () => { this.#pushCommands() }))
-    }
-    if (ctx.get('skills') !== undefined) {
-      this.#off.push(ctx.on('skills/change', () => { void this.#refreshSkills() }))
-    }
-    if (ctx.get('tools') !== undefined) {
-      this.#off.push(ctx.on('tools/change', () => {
-        this.#pushTools()
+    this.#off.push(connectSharedCatalogChanges(ctx, {
+      commandsChanged: () => { this.#pushCommands() },
+      skillsChanged: () => this.#refreshSkills(),
+      toolsChanged: () => {
+        const transcriptChanged = this.#pushTools()
         const active = this.#active
-        if (active !== undefined) this.#replaceVisibleTranscript()
-      }))
-    }
+        if (transcriptChanged && active !== undefined) this.#replaceVisibleTranscript()
+      },
+    }))
   }
 
   get agent(): Agent | undefined {
@@ -1505,6 +1553,7 @@ export class SessionRuntime {
     this.#presentation.dispose()
     this.#cancelTurnRecovery()
     this.#subagentEpoch += 1
+    this.#skillsEpoch += 1
     this.#inspectedId = undefined
     this.#subagents.reset()
     this.#tui.setInspectedSubagent(undefined)
@@ -1598,7 +1647,11 @@ export class SessionRuntime {
       ? undefined
       : activeTranscriptSource(managerSource, () => this.#active === next && !this.#disposed))
     this.#inspectedId = undefined
+    this.#skillsEpoch += 1
     this.#skillCommands = []
+    this.#commandsCache = undefined
+    this.#toolsCache = undefined
+    this.#toolCatalogSnapshot = undefined
     this.#tui.setInspectedSubagent(undefined)
     this.#tui.setStatus(agent.status)
     this.#syncSubagents()
@@ -1655,27 +1708,48 @@ export class SessionRuntime {
       commands.push(skill)
       names.add(skill.name)
     }
+    if (shallowRecordsEqual(this.#commandsCache, commands)) return
+    this.#commandsCache = commands
     this.#tui.setCommands(commands)
   }
 
-  #pushTools(): void {
+  /** Update the visible tool catalog and report whether replay inputs changed. */
+  #pushTools(): boolean {
     const agent = this.agent
-    const tools = agent === undefined
-      ? []
-      : (this.#ctx.get('tools')?.schemas(agent).map(schema => ({
-          name: schema.name,
-          description: schema.description,
-        })) ?? [])
-    this.#tui.setTools(tools)
+    const registry = this.#ctx.get('tools')
+    const schemas = agent === undefined ? [] : (registry?.schemas(agent) ?? [])
+    const tools = schemas.map(schema => ({ name: schema.name, description: schema.description }))
+    if (!shallowRecordsEqual(this.#toolsCache, tools)) {
+      this.#toolsCache = tools
+      this.#tui.setTools(tools)
+    }
+
+    const bridge = this.#ctx.get('tuiToolPresentation')
+    const presentation = agent === undefined || bridge === undefined
+      ? NO_TOOL_PRESENTATION
+      : bridge.catalogIdentity?.(agent, schemas.map(schema => schema.name))
+    const next: ToolCatalogSnapshot = {
+      schema: catalogFingerprint(schemas),
+      presentation,
+    }
+    const previous = this.#toolCatalogSnapshot
+    this.#toolCatalogSnapshot = next
+    return previous === undefined
+      || previous.schema === undefined
+      || next.schema === undefined
+      || previous.schema !== next.schema
+      || !identityEqual(previous.presentation, next.presentation)
   }
 
   async #refreshSkills(signal?: AbortSignal, expected: ActiveSession | undefined = this.#active): Promise<void> {
+    const request = this.#skillsEpoch + 1
+    this.#skillsEpoch = request
     const agent = expected?.handle.agent
     const skills = this.#ctx.get('skills')
     const commands = agent === undefined || skills === undefined
       ? []
       : userSkillCommands(await skills.list({ cwd: agent.session.header.cwd, scope: agent, signal }))
-    if (expected !== this.#active) return
+    if (request !== this.#skillsEpoch || expected !== this.#active || this.#disposed) return
     this.#skillCommands = commands
     this.#pushCommands()
   }
