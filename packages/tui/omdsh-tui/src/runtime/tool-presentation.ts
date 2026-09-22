@@ -12,6 +12,8 @@ export const inject = ['tools']
 export interface ToolPresentationBridge {
   event(agent: Agent, event: SessionEvent): TuiToolPresentation | undefined
   session(agent: Agent, events: readonly SessionEvent[]): ReadonlyMap<number, TuiToolPresentation>
+  /** Stable references that fully describe tool-owned replay presentation, when provable. */
+  catalogIdentity?(agent: Agent, names: readonly string[]): readonly unknown[] | undefined
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -77,11 +79,87 @@ class HarnessToolPresentation implements ToolPresentationBridge {
     }
   }
 
+  catalogIdentity(agent: Agent, names: readonly string[]): readonly unknown[] | undefined {
+    try {
+      const identity: unknown[] = [this]
+      for (const name of names) {
+        const definition = this.#ctx.tools.get(name, agent)
+        identity.push(name, definition, definition?.presentCall, definition?.presentResult)
+      }
+      return identity
+    } catch {
+      return undefined
+    }
+  }
+
   session(agent: Agent, events: readonly SessionEvent[]): ReadonlyMap<number, TuiToolPresentation> {
+    const callsByResultSeq = new Map<number, Extract<SessionEvent, { type: 'tool/call' }>>()
+    const visibleResults = new Map(events.flatMap(event =>
+      event.type === 'tool/result' ? [[event.seq, event.data.message.source.callId] as const] : []))
+    const neededCallIds = new Set(visibleResults.values())
+    const latestCalls = new Map<string, Extract<SessionEvent, { type: 'tool/call' }>>()
+    const maxResultSeq = Math.max(-1, ...visibleResults.keys())
+    for (const event of agent.session.events) {
+      if (event.seq > maxResultSeq) break
+      if (event.type === 'tool/call' && neededCallIds.has(event.data.callId)) {
+        latestCalls.set(event.data.callId, event)
+      } else if (event.type === 'tool/result' && visibleResults.has(event.seq)) {
+        const call = latestCalls.get(event.data.message.source.callId)
+        if (call !== undefined) callsByResultSeq.set(event.seq, call)
+      }
+    }
+
+    type ToolDefinition = ReturnType<Context['tools']['get']>
+    const definitions = new Map<string, ToolDefinition>()
+    const definitionFor = (name: string): ToolDefinition => {
+      if (definitions.has(name)) return definitions.get(name)
+      const definition = this.#ctx.tools.get(name, agent)
+      definitions.set(name, definition)
+      return definition
+    }
+
     const presentations = new Map<number, TuiToolPresentation>()
     for (const event of events) {
-      const presentation = this.event(agent, event)
-      if (presentation !== undefined) presentations.set(event.seq, presentation)
+      if (event.type === 'tool/call') {
+        const definition = definitionFor(event.data.name)
+        if (definition?.presentCall === undefined) continue
+        try {
+          const call = definition.presentCall(parsedArguments(event.data.arguments))
+          if (call !== undefined) presentations.set(event.seq, { call })
+        } catch {
+          // A tool-owned presenter must not break replay.
+        }
+        continue
+      }
+      if (event.type !== 'tool/result') continue
+
+      const callEvent = callsByResultSeq.get(event.seq)
+      if (callEvent === undefined) continue
+      const definition = definitionFor(callEvent.data.name)
+      const args = parsedArguments(callEvent.data.arguments)
+      let call
+      let result
+      try {
+        call = definition?.presentCall?.(args)
+      } catch {
+        call = undefined
+      }
+      try {
+        const block = event.data.message.content[0]
+        result = definition?.presentResult?.(args, {
+          content: block.content,
+          isError: block.isError === true,
+          ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
+        })
+      } catch {
+        result = undefined
+      }
+      if (call !== undefined || result !== undefined) {
+        presentations.set(event.seq, {
+          ...(call === undefined ? {} : { call }),
+          ...(result === undefined ? {} : { result }),
+        })
+      }
     }
     return presentations
   }

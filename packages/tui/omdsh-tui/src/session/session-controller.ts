@@ -58,6 +58,7 @@ import type {
   TuiSessionStats,
   TuiSubmission,
   TuiInputImage,
+  TuiStatus,
 } from '../definition.ts'
 import { hasOrphanedTurn, ORPHANED_TURN_GRACE_MS } from './turn-recovery.ts'
 import { descendantDepth, isSteerableSubagent, SubagentRoster } from './subagent-roster.ts'
@@ -72,8 +73,75 @@ import {
 } from './session-configuration.ts'
 import { stripComposerImageMarkers } from '../input/image-paste.ts'
 import { activeTranscriptSource } from './active-transcript-source.ts'
+import { connectSharedSessionEvents, type SharedSessionEventRoute } from './shared-session-event-router.ts'
+import { connectSharedCatalogChanges } from './shared-catalog-change-router.ts'
 
 const SESSION_INFO_COALESCE_MS = 50
+const NO_TOOL_PRESENTATION = Object.freeze([undefined])
+
+type ToolCatalogSnapshot = {
+  readonly schema: string | undefined
+  readonly presentation: readonly unknown[] | undefined
+}
+
+function shallowRecordsEqual(left: readonly object[] | undefined, right: readonly object[]): boolean {
+  if (left === undefined || left.length !== right.length) return false
+  for (let index = 0; index < right.length; index += 1) {
+    const leftEntry = left[index]
+    const rightEntry = right[index]
+    if (leftEntry === undefined || rightEntry === undefined) return false
+    const leftRecord = leftEntry as Record<string, unknown>
+    const rightRecord = rightEntry as Record<string, unknown>
+    const leftKeys = Object.keys(leftRecord)
+    const rightKeys = Object.keys(rightRecord)
+    if (leftKeys.length !== rightKeys.length) return false
+    for (const key of rightKeys) {
+      if (!Object.hasOwn(leftRecord, key) || !Object.is(leftRecord[key], rightRecord[key])) return false
+    }
+  }
+  return true
+}
+
+function identityEqual(left: readonly unknown[] | undefined, right: readonly unknown[] | undefined): boolean {
+  return left !== undefined && right !== undefined
+    && left.length === right.length
+    && left.every((value, index) => Object.is(value, right[index]))
+}
+
+function toolCatalogChanged(previous: ToolCatalogSnapshot | undefined, next: ToolCatalogSnapshot): boolean {
+  return previous === undefined
+    || previous.schema === undefined
+    || next.schema === undefined
+    || previous.schema !== next.schema
+    || !identityEqual(previous.presentation, next.presentation)
+}
+
+function catalogFingerprint(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, (_key, current: unknown) => {
+      if (current === undefined || typeof current === 'function' || typeof current === 'symbol' || typeof current === 'bigint') {
+        throw new TypeError('catalog is not lossless JSON')
+      }
+      if (typeof current === 'number' && !Number.isFinite(current)) throw new TypeError('catalog is not lossless JSON')
+      if (typeof current !== 'object' || current === null || Array.isArray(current)) return current
+      const sorted: Record<string, unknown> = {}
+      for (const key of Object.keys(current).sort()) sorted[key] = (current as Record<string, unknown>)[key]
+      return sorted
+    })
+  } catch {
+    return undefined
+  }
+}
+export const REMOTE_TRANSCRIPT_EVENT_LIMIT = 1_024
+
+/** Bound only remote presentation state; the durable Agent session remains authoritative and complete. */
+export function remoteTranscriptTail(
+  events: readonly SessionEvent[],
+  limit = REMOTE_TRANSCRIPT_EVENT_LIMIT,
+): readonly SessionEvent[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('remote transcript limit must be a positive integer')
+  return events.length <= limit ? events : events.slice(events.length - limit)
+}
 
 /** Keep transcript delivery immediate while coalescing aggregate footer projections. */
 export class SessionPresentationController {
@@ -604,6 +672,11 @@ export class SessionRuntime {
   #active: ActiveSession | undefined
   #recent: TuiRecentSession[] = []
   #skillCommands: TuiCommand[] = []
+  #commandsCache: readonly object[] | undefined
+  #toolsCache: readonly object[] | undefined
+  #toolCatalogSnapshot: ToolCatalogSnapshot | undefined
+  #inspectedToolCatalogSnapshot: { readonly agent: Agent, readonly snapshot: ToolCatalogSnapshot } | undefined
+  #skillsEpoch = 0
   #started = false
   readonly #hydrations = new Set<Promise<void>>()
   readonly #retired: AgentHandle[] = []
@@ -611,6 +684,7 @@ export class SessionRuntime {
   #turnRecoveryTimer: ReturnType<typeof setTimeout> | undefined
   readonly #off: Array<() => void> = []
   readonly #subagents = new SubagentRoster()
+  readonly #sessionEvents: SharedSessionEventRoute
   #subagentEpoch = 0
   #inspectEpoch = 0
   #inspectedId: string | undefined
@@ -645,65 +719,61 @@ export class SessionRuntime {
         ...(image.name === undefined ? {} : { name: image.name }),
       }))
     }
-    this.#off.push(ctx.on('agent/status', (payload) => {
-      if (payload.agent === this.#active?.handle.agent) {
-        if (this.#inspectedId === undefined) tui.setStatus(payload.status)
-        if (payload.status === 'running') this.#cancelTurnRecovery()
-        else this.#scheduleTurnRecovery()
-        return
-      }
-      if (payload.agent.id === this.#inspectedId) tui.setStatus(payload.status)
-      this.#noteSubagentStatus(payload.agent.session, payload.status)
-    }))
-    this.#off.push(ctx.on('session/created', (session) => {
-      this.#noteSubagentSession(session)
-    }))
-    this.#off.push(ctx.on('session/disposed', (session) => {
-      if (!this.#subagents.owns(session.id)) return
-      this.#subagents.setAgentStatus(session.id, 'gone')
-      this.#pushSubagents()
-    }))
-    this.#off.push(ctx.on('session/event', (session, event) => {
-      const active = this.#active
-      if (active === undefined) return
-      if (session.id === this.#inspectedId) {
-        const child = ctx.get('agents')?.get(session.id)
-        tui.event(event, child === undefined ? undefined : ctx.get('tuiToolPresentation')?.event(child, event))
-        this.#noteSubagentEvent(session, event)
-        return
-      }
-      if (session === active.handle.agent.session) {
-        if (this.#inspectedId === undefined) {
-          this.#presentation.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
-        } else {
-          this.#presentation.sessionInfoChanged()
+    this.#sessionEvents = connectSharedSessionEvents(ctx, {
+      agentStatus: (payload) => {
+        if (payload.agent === this.#active?.handle.agent) {
+          if (this.#inspectedId === undefined) tui.setStatus(payload.status)
+          if (payload.status === 'running') this.#cancelTurnRecovery()
+          else this.#scheduleTurnRecovery()
+          return
         }
-        if (event.type === 'session/title') void this.refreshRecent()
-        return
-      }
-      this.#noteSubagentEvent(session, event)
-    }))
-    if (ctx.get('commands') !== undefined) {
-      this.#off.push(ctx.on('commands/change', () => { this.#pushCommands() }))
-    }
-    if (ctx.get('skills') !== undefined) {
-      this.#off.push(ctx.on('skills/change', () => { void this.#refreshSkills() }))
-    }
-    if (ctx.get('tools') !== undefined) {
-      this.#off.push(ctx.on('tools/change', () => {
-        this.#pushTools()
+        if (payload.agent.id === this.#inspectedId) tui.setStatus(payload.status)
+        this.#noteSubagentStatus(payload.agent.session, payload.status)
+      },
+      sessionCreated: session => { this.#noteSubagentSession(session) },
+      sessionDisposed: (session) => {
+        if (!this.#subagents.owns(session.id)) return
+        this.#subagents.setAgentStatus(session.id, 'gone')
+        this.#pushSubagents()
+      },
+      sessionEvent: (session, event) => {
         const active = this.#active
-        if (active !== undefined) this.#replaceVisibleTranscript()
-      }))
-    }
-    const projections = ctx.get('sessionProjections')
-    if (projections !== undefined) {
-      this.#off.push(projections.onChanged((session, key) => {
+        if (active === undefined) return
+        if (session.id === this.#inspectedId) {
+          const child = ctx.get('agents')?.get(session.id)
+          tui.event(event, child === undefined ? undefined : ctx.get('tuiToolPresentation')?.event(child, event))
+          this.#noteSubagentEvent(session, event)
+          return
+        }
+        if (session === active.handle.agent.session) {
+          if (this.#inspectedId === undefined) {
+            this.#presentation.event(event, ctx.get('tuiToolPresentation')?.event(active.handle.agent, event))
+          } else {
+            this.#presentation.sessionInfoChanged()
+          }
+          if (event.type === 'session/title') void this.refreshRecent()
+          return
+        }
+        this.#noteSubagentEvent(session, event)
+      },
+      sessionProjectionChanged: (session, key) => {
         if (session !== this.#active?.handle.agent.session) return
         if (key === 'sessionStats' || key === 'tokenUsage' || key === 'contextPressure'
           || key === 'plan' || key === 'permissions') this.#presentation.sessionInfoChanged()
-      }))
-    }
+      },
+    })
+    this.#off.push(connectSharedCatalogChanges(ctx, {
+      commandsChanged: () => { this.#pushCommands() },
+      skillsChanged: () => this.#refreshSkills(),
+      toolsChanged: () => {
+        const rootTranscriptChanged = this.#pushTools()
+        const transcriptChanged = this.#inspectedId === undefined
+          ? rootTranscriptChanged
+          : this.#inspectedTranscriptToolsChanged()
+        const active = this.#active
+        if (transcriptChanged && active !== undefined) this.#replaceVisibleTranscript()
+      },
+    }))
   }
 
   get agent(): Agent | undefined {
@@ -808,6 +878,7 @@ export class SessionRuntime {
     // the interrupted-turn repair runs only on load: release the owner first so
     // the reload closes the tail turn exactly like a process restart does.
     this.#active = undefined
+    this.#sessionEvents.unbindRoot()
     try {
       await active.handle.dispose()
       await this.#activate(await this.#resume(id, selection, signal ?? new AbortController().signal))
@@ -1490,9 +1561,11 @@ export class SessionRuntime {
   async dispose(): Promise<void> {
     if (this.#disposed) return
     this.#disposed = true
+    this.#sessionEvents.dispose()
     this.#presentation.dispose()
     this.#cancelTurnRecovery()
     this.#subagentEpoch += 1
+    this.#skillsEpoch += 1
     this.#inspectedId = undefined
     this.#subagents.reset()
     this.#tui.setInspectedSubagent(undefined)
@@ -1576,8 +1649,9 @@ export class SessionRuntime {
 
   #activate(next: ActiveSession, hydrate = true): void {
     const previous = this.#active
-    this.#active = next
     const agent = next.handle.agent
+    this.#sessionEvents.bindRoot(agent.id)
+    this.#active = next
     const managerSource = this.#ctx.get('sessionPersistence') === undefined
       ? undefined
       : this.sessionManagerSource(agent)
@@ -1585,7 +1659,12 @@ export class SessionRuntime {
       ? undefined
       : activeTranscriptSource(managerSource, () => this.#active === next && !this.#disposed))
     this.#inspectedId = undefined
+    this.#skillsEpoch += 1
     this.#skillCommands = []
+    this.#commandsCache = undefined
+    this.#toolsCache = undefined
+    this.#toolCatalogSnapshot = undefined
+    this.#inspectedToolCatalogSnapshot = undefined
     this.#tui.setInspectedSubagent(undefined)
     this.#tui.setStatus(agent.status)
     this.#syncSubagents()
@@ -1642,27 +1721,65 @@ export class SessionRuntime {
       commands.push(skill)
       names.add(skill.name)
     }
+    if (shallowRecordsEqual(this.#commandsCache, commands)) return
+    this.#commandsCache = commands
     this.#tui.setCommands(commands)
   }
 
-  #pushTools(): void {
+  /** Update the visible tool catalog and report whether replay inputs changed. */
+  #pushTools(): boolean {
     const agent = this.agent
-    const tools = agent === undefined
-      ? []
-      : (this.#ctx.get('tools')?.schemas(agent).map(schema => ({
-          name: schema.name,
-          description: schema.description,
-        })) ?? [])
-    this.#tui.setTools(tools)
+    const registry = this.#ctx.get('tools')
+    const schemas = agent === undefined ? [] : (registry?.schemas(agent) ?? [])
+    const tools = schemas.map(schema => ({ name: schema.name, description: schema.description }))
+    if (!shallowRecordsEqual(this.#toolsCache, tools)) {
+      this.#toolsCache = tools
+      this.#tui.setTools(tools)
+    }
+
+    const bridge = this.#ctx.get('tuiToolPresentation')
+    const presentation = agent === undefined || bridge === undefined
+      ? NO_TOOL_PRESENTATION
+      : bridge.catalogIdentity?.(agent, schemas.map(schema => schema.name))
+    const next: ToolCatalogSnapshot = {
+      schema: catalogFingerprint(schemas),
+      presentation,
+    }
+    const previous = this.#toolCatalogSnapshot
+    this.#toolCatalogSnapshot = next
+    return toolCatalogChanged(previous, next)
+  }
+
+  #inspectedTranscriptToolsChanged(): boolean {
+    const id = this.#inspectedId
+    if (id === undefined) return false
+    const agent = this.#ctx.get('agents')?.get(SessionId(id))
+    if (agent === undefined) {
+      this.#inspectedToolCatalogSnapshot = undefined
+      return false
+    }
+    const schemas = this.#ctx.get('tools')?.schemas(agent) ?? []
+    const bridge = this.#ctx.get('tuiToolPresentation')
+    const next: ToolCatalogSnapshot = {
+      schema: catalogFingerprint(schemas),
+      presentation: bridge === undefined
+        ? NO_TOOL_PRESENTATION
+        : bridge.catalogIdentity?.(agent, schemas.map(schema => schema.name)),
+    }
+    const previous = this.#inspectedToolCatalogSnapshot
+    this.#inspectedToolCatalogSnapshot = { agent, snapshot: next }
+    return previous?.agent !== agent || toolCatalogChanged(previous.snapshot, next)
   }
 
   async #refreshSkills(signal?: AbortSignal, expected: ActiveSession | undefined = this.#active): Promise<void> {
+    const request = this.#skillsEpoch + 1
+    this.#skillsEpoch = request
     const agent = expected?.handle.agent
     const skills = this.#ctx.get('skills')
     const commands = agent === undefined || skills === undefined
       ? []
       : userSkillCommands(await skills.list({ cwd: agent.session.header.cwd, scope: agent, signal }))
-    if (expected !== this.#active) return
+    if (request !== this.#skillsEpoch || expected !== this.#active || this.#disposed) return
     this.#skillCommands = commands
     this.#pushCommands()
   }
@@ -1812,8 +1929,19 @@ export class SessionRuntime {
   }
 
   #replaceTranscript(agent: Agent): void {
-    const events = agent.session.events
-    this.#tui.replaceSession(events, this.#ctx.get('tuiToolPresentation')?.session(agent, events), agent.status)
+    this.#replaceTranscriptEvents(agent.session.events, agent, agent.status)
+  }
+
+  #replaceTranscriptEvents(events: readonly SessionEvent[], agent: Agent | undefined, status: TuiStatus): void {
+    const visible = this.#tui.replaceSessionTail === undefined ? events : remoteTranscriptTail(events)
+    const presentations = agent === undefined
+      ? undefined
+      : this.#ctx.get('tuiToolPresentation')?.session(agent, visible)
+    if (this.#tui.replaceSessionTail !== undefined) {
+      this.#tui.replaceSessionTail(visible, presentations, status, events.length)
+      return
+    }
+    this.#tui.replaceSession(visible, presentations, status)
   }
 
   #replaceVisibleTranscript(): void {
@@ -1829,6 +1957,7 @@ export class SessionRuntime {
     if (this.#inspectedId === undefined) return
     this.#inspectEpoch += 1
     this.#inspectedId = undefined
+    this.#inspectedToolCatalogSnapshot = undefined
     this.#tui.setInspectedSubagent(undefined)
     const agent = this.#active?.handle.agent
     if (agent === undefined) return
@@ -1862,11 +1991,7 @@ export class SessionRuntime {
     if (request !== this.#inspectEpoch) return
     this.#inspectedId = id
     const child = this.#ctx.get('agents')?.get(SessionId(id))
-    this.#tui.replaceSession(
-      events,
-      child === undefined ? undefined : this.#ctx.get('tuiToolPresentation')?.session(child, events),
-      child?.status ?? 'idle',
-    )
+    this.#replaceTranscriptEvents(events, child, child?.status ?? 'idle')
     this.#tui.setInspectedSubagent(this.#inspectView(
       id,
       child?.status === 'running' ? 'running' : 'waiting',
