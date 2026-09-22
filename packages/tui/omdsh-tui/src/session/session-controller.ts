@@ -59,6 +59,7 @@ import type {
   TuiSubmission,
   TuiInputImage,
 } from '../definition.ts'
+import { hasOrphanedTurn, ORPHANED_TURN_GRACE_MS } from './turn-recovery.ts'
 import { descendantDepth, isSteerableSubagent, SubagentRoster } from './subagent-roster.ts'
 import type {} from '../runtime/tool-presentation.ts'
 import type { StartupMilestone } from '../runtime/startup-telemetry.ts'
@@ -607,6 +608,7 @@ export class SessionRuntime {
   readonly #hydrations = new Set<Promise<void>>()
   readonly #retired: AgentHandle[] = []
   #disposed = false
+  #turnRecoveryTimer: ReturnType<typeof setTimeout> | undefined
   readonly #off: Array<() => void> = []
   readonly #subagents = new SubagentRoster()
   #subagentEpoch = 0
@@ -646,6 +648,8 @@ export class SessionRuntime {
     this.#off.push(ctx.on('agent/status', (payload) => {
       if (payload.agent === this.#active?.handle.agent) {
         if (this.#inspectedId === undefined) tui.setStatus(payload.status)
+        if (payload.status === 'running') this.#cancelTurnRecovery()
+        else this.#scheduleTurnRecovery()
         return
       }
       if (payload.agent.id === this.#inspectedId) tui.setStatus(payload.status)
@@ -764,6 +768,10 @@ export class SessionRuntime {
     const submission = typeof input === 'string' ? { text: input, images: [] } : input
     const message = await createSubmissionMessage(submission, this.#ctx.get('attachments'))
     this.assertActive(agent)
+    if (hasOrphanedTurn(agent)) {
+      await this.recoverOrphanedTurn()
+      agent = this.#requiredAgent()
+    }
     const previous = agent.inbox.nextTurn.at(-1)
     if (cumulativeQueuedFollowup(previous, message) && previous !== undefined && agent.inbox.remove(previous.id)) {
       try {
@@ -775,6 +783,67 @@ export class SessionRuntime {
       }
     }
     agent.followup(message)
+  }
+
+  /**
+   * Reload a session whose live turn was orphaned by a stopped driver.
+   *
+   * The load path closes an interrupted tail turn and discards input queued
+   * behind it, so a reload is the only recovery that restarts the driver. This
+   * is what makes a session that reads as idle but never runs input usable
+   * again. Returns whether a reload happened.
+   *
+   * @param signal - optional cancellation for the resume.
+   * @returns whether the active session was reloaded.
+   */
+  async recoverOrphanedTurn(signal?: AbortSignal): Promise<boolean> {
+    const active = this.#active
+    if (active === undefined) return false
+    const agent = active.handle.agent
+    if (!hasOrphanedTurn(agent)) return false
+    const queued = agent.inbox.nextTurn.length
+    const id = String(agent.session.id)
+    const selection = this.selection(agent)
+    // Loading a session refuses while it still has a live persistence owner, and
+    // the interrupted-turn repair runs only on load: release the owner first so
+    // the reload closes the tail turn exactly like a process restart does.
+    this.#active = undefined
+    try {
+      await active.handle.dispose()
+      await this.#activate(await this.#resume(id, selection, signal ?? new AbortController().signal))
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      this.#tui.notice(`Could not recover the interrupted turn: ${detail}`, { level: 'error' })
+      throw error
+    }
+    this.#tui.notice(
+      queued === 0
+        ? 'Closed an interrupted turn so the session can continue.'
+        : `Closed an interrupted turn. ${queued} queued message${queued === 1 ? '' : 's'} could not be kept — please send again.`,
+    )
+    return true
+  }
+
+  /**
+   * Defer the orphaned-turn check past the settling window.
+   *
+   * The status event can arrive while a healthy turn boundary is still
+   * settling, so the check runs later and re-verifies from scratch; a turn
+   * that closed meanwhile produces no repair.
+   */
+  #scheduleTurnRecovery(): void {
+    this.#cancelTurnRecovery()
+    this.#turnRecoveryTimer = setTimeout(() => {
+      this.#turnRecoveryTimer = undefined
+      void this.recoverOrphanedTurn().catch(() => undefined)
+    }, ORPHANED_TURN_GRACE_MS + 250)
+  }
+
+  /** Drop a pending orphaned-turn check. */
+  #cancelTurnRecovery(): void {
+    if (this.#turnRecoveryTimer === undefined) return
+    clearTimeout(this.#turnRecoveryTimer)
+    this.#turnRecoveryTimer = undefined
   }
 
   /** Remove and rehydrate the newest durable human follow-up for queue browsing. */
@@ -1422,6 +1491,7 @@ export class SessionRuntime {
     if (this.#disposed) return
     this.#disposed = true
     this.#presentation.dispose()
+    this.#cancelTurnRecovery()
     this.#subagentEpoch += 1
     this.#inspectedId = undefined
     this.#subagents.reset()
