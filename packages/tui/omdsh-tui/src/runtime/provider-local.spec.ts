@@ -658,6 +658,37 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('keeps one unbracketed multiline clipboard chunk atomic until explicit submit', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const answer = tui.readline()
+    let settled = false
+    void answer.then(() => { settled = true })
+    const table = '| Name | Value |\r\n| --- | --- |\r\n| alpha | one |'
+
+    press(term, table)
+    await flushAsyncPaste()
+
+    expect(settled).toBe(false)
+    expect(stripAnsi(term.captured)).not.toContain('Queued')
+    press(term, '\r')
+    await expect(answer).resolves.toBe(table.replaceAll('\r\n', '\n'))
+    tui.dispose()
+  })
+
+  it('still submits separately typed lines that arrive in separate chunks', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const first = tui.readline()
+    press(term, 'first\r')
+    await expect(first).resolves.toBe('first')
+
+    const second = tui.readline()
+    press(term, 'second\r')
+    await expect(second).resolves.toBe('second')
+    tui.dispose()
+  })
+
   it('clears the screen before the first frame in tty mode', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
@@ -1014,7 +1045,8 @@ describe('LocalTui (tty)', () => {
   it('restores the newest queued line into an empty composer with shift+up', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
-    press(term, 'first queued\rsecond queued\r')
+    press(term, 'first queued\r')
+    press(term, 'second queued\r')
     expect(stripAnsi(term.captured)).toContain('Queued · 2')
     press(term, '\x1b[1;2A')
     const restored = stripAnsi(term.captured)
@@ -1028,7 +1060,9 @@ describe('LocalTui (tty)', () => {
   it('walks backward through queued lines with repeated shift+up without reordering them', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
-    press(term, 'first queued\rsecond queued\rthird queued\r')
+    press(term, 'first queued\r')
+    press(term, 'second queued\r')
+    press(term, 'third queued\r')
 
     press(term, '\x1b[1;2A\x1b[1;2A!\r')
 

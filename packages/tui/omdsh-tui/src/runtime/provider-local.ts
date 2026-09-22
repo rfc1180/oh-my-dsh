@@ -169,6 +169,25 @@ const DEFAULT_STREAM_RENDER_MS = 50
 // between events: that periodic work competes directly with raw-key input.
 const HOST_TELEMETRY_HEARTBEAT_MS = 30_000
 
+/**
+ * Recover a multiline clipboard write when the terminal host omitted bracketed-paste markers.
+ *
+ * Interactive typing arrives as separate raw-data chunks in practice. A single printable chunk
+ * containing an embedded line break and more text afterwards is therefore paste-shaped. Treating
+ * it as text keeps CR/LF inside the composer instead of turning every row into Enter/queued turns.
+ */
+export function unbracketedMultilinePaste(input: string): string | undefined {
+  if (input.includes('\x1b') || !/[\r\n]/u.test(input)) return undefined
+  for (const character of input) {
+    const code = character.charCodeAt(0)
+    if (code < 0x20 && character !== '\r' && character !== '\n' && character !== '\t') return undefined
+  }
+  const normalized = input.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+  const firstBreak = normalized.indexOf('\n')
+  if (firstBreak < 0 || normalized.slice(firstBreak + 1).length === 0) return undefined
+  return normalized
+}
+
 function shortenPath(cwd: string): string {
   const home = homedir()
   if (cwd === home) return '~'
@@ -1434,12 +1453,20 @@ export class LocalTui implements TuiService {
   }
 
   #onData(chunk: Buffer): void {
-    const { events, rest } = parseKeys(this.#pendingKeys + chunk.toString('utf8'))
-    this.#pendingKeys = rest
+    const input = this.#pendingKeys + chunk.toString('utf8')
+    const recoveredPaste = this.#pendingKeys === '' && !this.#paste
+      ? unbracketedMultilinePaste(input)
+      : undefined
     if (this.#escapeTimer !== null) {
       clearTimeout(this.#escapeTimer)
       this.#escapeTimer = null
     }
+    if (recoveredPaste !== undefined) {
+      this.#startAsyncPaste(this.#acceptPastedText(recoveredPaste))
+      return
+    }
+    const { events, rest } = parseKeys(input)
+    this.#pendingKeys = rest
     this.#dispatchInputEvents(events)
     if (rest.startsWith('\x1b') && rest.length <= MAX_PENDING_ESCAPE_BYTES) {
       this.#escapeTimer = setTimeout(() => {
