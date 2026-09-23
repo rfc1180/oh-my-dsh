@@ -60,6 +60,21 @@ describe('applyHistorySearchEvent', () => {
     expect(applyHistorySearchEvent(state, key('escape'), history)).toEqual({ kind: 'cancel' })
   })
 
+  it('requests an older page at the result edge and renders an honest marker', () => {
+    const state = createHistorySearch(history, true)
+    const atEnd = { ...state, selected: state.results.length - 1 }
+    expect(applyHistorySearchEvent(atEnd, key('down'), history)).toEqual({ kind: 'loadMore' })
+    expect(renderHistorySearch(state, theme, 80).lines.join('\n')).toContain('More history available')
+  })
+
+  it('marks resident result truncation instead of silently hiding it', () => {
+    const many = Array.from({ length: 150 }, (_, index) => `match ${index}`)
+    const state = createHistorySearch(many, true)
+    expect(state.results).toHaveLength(100)
+    expect(state.truncated).toBe(true)
+    expect(renderHistorySearch(state, theme, 80).lines.join('\n')).toContain('newest 100+')
+  })
+
   it('edits the query without wrapping list movement', () => {
     let state = createHistorySearch(history)
     const typed = applyHistorySearchEvent(state, text('list x'), history)

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  loadProjectPathResult,
   loadProjectPaths,
   ProjectFileSearch,
   rankProjectPaths,
@@ -48,6 +49,38 @@ describe('project file search', () => {
     search.invalidate('/project')
     await search.search('/project', 'index')
     expect(loads).toBe(2)
+  })
+
+  it('keeps the array API while reporting top-100 truncation through additive metadata', async () => {
+    const entries = Array.from({ length: 150 }, (_, index) => ({
+      path: `src/match-${String(index).padStart(3, '0')}.ts`,
+      directory: false,
+    }))
+    const search = new ProjectFileSearch(async () => entries, 10_000)
+
+    const compatible = await search.search('/project', 'match')
+    const detailed = await search.search.detailed?.('/project', 'match')
+
+    expect(compatible).toHaveLength(100)
+    expect(detailed).toMatchObject({
+      total: 150,
+      truncated: true,
+      source: 'custom',
+      complete: true,
+    })
+    expect(detailed?.items).toHaveLength(100)
+  })
+
+  it('reports bounded walk fallback instead of hiding Git discovery errors', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'omdsh-file-fallback-'))
+    temporaryDirectories.push(root)
+    writeFileSync(path.join(root, 'plain.txt'), '')
+
+    const result = await loadProjectPathResult(root)
+
+    expect(result.source).toBe('walk')
+    expect(result.items.map(entry => entry.path)).toContain('plain.txt')
+    expect(result.complete).toBe(true)
   })
 
   it('uses Git visibility rules, including hidden files, without exposing .git', async () => {

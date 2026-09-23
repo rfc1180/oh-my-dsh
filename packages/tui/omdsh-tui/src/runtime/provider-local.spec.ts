@@ -5,8 +5,9 @@
  * cross-turn quit latch, plain-mode line input, and event rendering.
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
@@ -2329,6 +2330,23 @@ describe('LocalTui (tty)', () => {
     press(term, '\x12')
     expect(term.captured).toContain('Search History')
     expect(term.captured).toContain('find the files')
+    tui.dispose()
+  })
+
+  it('loads older Ctrl+R pages on demand beyond 2500 durable prompts', () => {
+    const historyPath = join(mkdtempSync(join(tmpdir(), 'omdsh-provider-history-')), 'history.jsonl')
+    const entries = Array.from({ length: 2_507 }, (_, index) => index === 0
+      ? 'oldest needle prompt'
+      : `ordinary prompt ${index}`)
+    writeFileSync(historyPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { historyPath })
+
+    press(term, '\x12oldest needle')
+    expect(stripAnsi(term.captured)).toContain('More history available')
+    press(term, '\x1b[6~\x1b[6~')
+
+    expect(stripAnsi(term.captured)).toContain('oldest needle prompt')
     tui.dispose()
   })
 

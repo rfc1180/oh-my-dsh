@@ -12,6 +12,7 @@ import { activeAtToken } from '@deepseek-ai/dsh-file-reference/grammar'
 import {
   ProjectFileSearch,
   type PathSearcher,
+  type ProjectPathSearchResult,
 } from '../session/project-file-search.ts'
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -204,7 +205,18 @@ export function pathSuggestions(
   return { items, prefix: text.slice(token.start, cursor) }
 }
 
-/** Async `@query` search with prefix-listing fallback. */
+function projectSearchHeading(result: ProjectPathSearchResult, shown: number): AutocompleteItem {
+  const lowerBound = result.complete ? String(result.total) : String(result.total) + '+'
+  const more = result.truncated ? ' · more — refine query' : ''
+  const fallback = result.source === 'walk' ? ' · fallback scan' : ''
+  return {
+    value: '',
+    label: `Files & folders · ${shown}/${lowerBound}${more}${fallback}`,
+    kind: 'heading',
+  }
+}
+
+/** Async `@query` search with prefix-listing fallback and honest caps. */
 export async function searchPathSuggestions(
   text: string,
   cursor: number,
@@ -233,12 +245,21 @@ export async function searchPathSuggestions(
   const relative = path.relative(opts.projectRoot, searchDir)
   const outside = path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)
   if (outside) return pathSuggestions(text, cursor, opts, commands)
-  const matches = await opts.searchFiles(searchDir, query, {
+  const searchOptions = {
     ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     maxResults: 100,
-  })
-  if (matches.length === 0) return pathSuggestions(text, cursor, opts, commands)
-  const items = matches.flatMap((entry): AutocompleteItem[] => {
+  }
+  const detailed = opts.searchFiles.detailed
+  const result = detailed === undefined
+    ? await opts.searchFiles(searchDir, query, searchOptions).then((items): ProjectPathSearchResult => ({
+      items,
+      total: items.length,
+      truncated: false,
+      source: 'custom',
+      complete: true,
+    }))
+    : await detailed(searchDir, query, searchOptions)
+  const items = result.items.flatMap((entry): AutocompleteItem[] => {
     const relativePath = entry.path.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '')
     if (relativePath === '' || /(^|\/)\.git(\/|$)/u.test(relativePath)) return []
     const displayPath = displayBase + relativePath
@@ -251,8 +272,14 @@ export async function searchPathSuggestions(
       kind: 'path',
     }]
   })
-  if (items.length === 0) return pathSuggestions(text, cursor, opts, commands)
-  return { items, prefix: text.slice(token.start, cursor) }
+  const fallback = items.length === 0 ? pathSuggestions(text, cursor, opts, commands) : null
+  const visible = items.length === 0 ? (fallback?.items ?? []) : items
+  const shouldExplain = result.source !== 'custom' || result.truncated
+  if (visible.length === 0 && !shouldExplain) return null
+  return {
+    items: shouldExplain ? [projectSearchHeading(result, visible.length), ...visible] : visible,
+    prefix: text.slice(token.start, cursor),
+  }
 }
 
 /** Replace the live path token with the selected value. */
