@@ -876,6 +876,7 @@ describe('SessionRuntime startup', () => {
 
     expect(agents.create).not.toHaveBeenCalled()
     expect(replaceViewportTail).toHaveBeenCalledOnce()
+    expect(replaceViewportTail).toHaveBeenCalledWith(session.events, 1)
     expect(replaceSession).toHaveBeenCalledOnce()
     expect(replaceSession.mock.calls[0]?.[0]).toBe(session.events)
     expect(activateInput).toHaveBeenCalledOnce()

@@ -430,7 +430,7 @@ export interface TuiService {
   /** Browse indexed durable sessions and return one safe resume action. */
   openSessionManager(source: TuiSessionManagerSource, signal?: AbortSignal): Promise<TuiSessionManagerResult | null>
   /** Stage a read-only durable tail while the authoritative Agent is still validating. */
-  replaceViewportTail(events: readonly SessionEvent[]): void
+  replaceViewportTail(events: readonly SessionEvent[], totalEvents?: number): void
   /** Replace the transcript atomically when a new or resumed session becomes authoritative. */
   replaceSession(
     events: readonly SessionEvent[],

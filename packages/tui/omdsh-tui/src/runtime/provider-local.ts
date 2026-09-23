@@ -729,7 +729,7 @@ export class LocalTui implements TuiService {
     return pending
   }
 
-  replaceViewportTail(events: readonly SessionEvent[]): void {
+  replaceViewportTail(events: readonly SessionEvent[], _totalEvents?: number): void {
     if (!this.#tty || events.length === 0) return
     const state = replayEvents(events)
     this.#state = { ...state, status: 'idle', compactCommandId: undefined }

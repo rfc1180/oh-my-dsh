@@ -867,7 +867,7 @@ export class SessionRuntime {
     if (viewport !== undefined) {
       void viewport.then((snapshot) => {
         if (!targetSettled && snapshot !== undefined && snapshot.id === resumeId) {
-          this.#tui.replaceViewportTail(snapshot.events)
+          this.#tui.replaceViewportTail(snapshot.events, snapshot.eventCount)
         }
       }, () => undefined)
     }
