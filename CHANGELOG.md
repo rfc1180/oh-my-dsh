@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Preserve semantic turn boundaries in bounded remote transcripts, keep partial viewport tails for oversized active turns, and page up to 100 history interactions without dropping the oldest edge.
 - Recover a session whose live turn was orphaned by a stopped driver: an idle agent that still carries an open turn now reloads its session automatically, closing the interrupted turn and reporting queued messages that could not be kept, instead of queueing input forever while the agent reads as idle.
 - Collapse queued cumulative prompt snapshots into their newest complete text so unbracketed multiline input cannot become many duplicated user turns.
 - Expose user-invocable skills as first-class slash commands in autocomplete and `/help`, so a skill such as `/razbor` behaves like the built-in terminal commands.

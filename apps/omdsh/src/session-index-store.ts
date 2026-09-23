@@ -14,6 +14,7 @@ const INDEX_SCHEMA = 1
 const INDEX_FILENAME = '.omdsh-session-index-v1.json'
 const VIEWPORT_SCHEMA = 1
 const VIEWPORT_EVENT_LIMIT = 1_024
+const VIEWPORT_BYTE_LIMIT = 512 * 1_024
 const STATUS_VALUES = new Set(['done', 'failed', 'blocked', 'interrupted'])
 
 export interface IndexedRecentSession {
@@ -64,6 +65,10 @@ export interface IndexedViewportTail {
   readonly checkpointSeq: number
   readonly eventCount: number
   readonly events: readonly SessionEvent[]
+  /** The snapshot starts inside an older semantic boundary rather than at session start. */
+  readonly partial?: boolean
+  /** Exact sequence-prefix length omitted from this display-only snapshot. */
+  readonly omittedEvents?: number
 }
 
 interface ViewportTailSnapshot extends IndexedViewportTail {
@@ -141,6 +146,31 @@ function viewportDigest(snapshot: Omit<ViewportTailSnapshot, 'digest'>): string 
   return createHash('sha256').update(viewportPayload(snapshot)).digest('hex')
 }
 
+function viewportEventsWithinByteLimit(events: readonly unknown[]): boolean {
+  return events.length === 1 || Buffer.byteLength(JSON.stringify(events), 'utf8') <= VIEWPORT_BYTE_LIMIT
+}
+
+function boundedViewportEvents(events: readonly SessionEvent[]): SessionEvent[] {
+  let bytes = 2 // JSON array brackets
+  let start = events.length
+  while (start > 0 && events.length - start < VIEWPORT_EVENT_LIMIT) {
+    const event = events[start - 1]
+    if (event === undefined) break
+    const eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + (start < events.length ? 1 : 0)
+    if (start < events.length && bytes + eventBytes > VIEWPORT_BYTE_LIMIT) break
+    bytes += eventBytes
+    start -= 1
+  }
+  const bounded = events.slice(start)
+  if (bounded.length === 0) return []
+
+  // Prefer a replayable semantic boundary when one exists inside the bounded
+  // suffix. A single oversized turn intentionally stays partial instead of
+  // dropping the cache altogether.
+  const boundary = bounded.findIndex(event => event.type === 'turn/start' || event.type === 'user/message')
+  return structuredClone(boundary > 0 ? bounded.slice(boundary) : bounded)
+}
+
 function buildViewportTail(
   generation: string,
   id: string,
@@ -149,26 +179,10 @@ function buildViewportTail(
   events: readonly SessionEvent[],
 ): ViewportTailSnapshot | undefined {
   if (events.length === 0) return undefined
-  const candidateStart = Math.max(0, events.length - VIEWPORT_EVENT_LIMIT)
-  let start = -1
-  for (let index = candidateStart; index < events.length; index += 1) {
-    if (events[index]?.type === 'turn/start') {
-      start = index
-      break
-    }
-  }
-  if (start < candidateStart) {
-    for (let index = candidateStart; index < events.length; index += 1) {
-      if (events[index]?.type === 'user/message') {
-        start = index
-        break
-      }
-    }
-  }
-  if (start < candidateStart) return undefined
-  const tail = structuredClone(events.slice(start))
+  const tail = boundedViewportEvents(events)
   const first = tail[0]
   if (first === undefined) return undefined
+  const omittedEvents = Math.max(0, first.seq)
   const payload: Omit<ViewportTailSnapshot, 'digest'> = {
     schema: VIEWPORT_SCHEMA,
     generation,
@@ -177,6 +191,7 @@ function buildViewportTail(
     checkpointSeq: first.seq,
     eventCount,
     events: tail,
+    ...(omittedEvents === 0 ? {} : { partial: true, omittedEvents }),
   }
   return { ...payload, digest: viewportDigest(payload) }
 }
@@ -469,6 +484,8 @@ export class DurableSessionIndex {
       checkpointSeq: viewport.checkpointSeq,
       eventCount: viewport.eventCount,
       events: structuredClone(viewport.events),
+      ...(viewport.partial === true ? { partial: true } : {}),
+      ...(viewport.omittedEvents === undefined ? {} : { omittedEvents: viewport.omittedEvents }),
     }
   }
 
@@ -571,8 +588,12 @@ export class DurableSessionIndex {
           || typeof raw.viewport.revision !== 'string' || typeof raw.viewport.digest !== 'string'
           || !Number.isSafeInteger(raw.viewport.checkpointSeq) || Number(raw.viewport.checkpointSeq) < 0
           || !Number.isSafeInteger(raw.viewport.eventCount) || Number(raw.viewport.eventCount) < 0
+          || (raw.viewport.partial !== undefined && raw.viewport.partial !== true)
+          || (raw.viewport.omittedEvents !== undefined
+            && (!Number.isSafeInteger(raw.viewport.omittedEvents) || Number(raw.viewport.omittedEvents) < 1))
           || !Array.isArray(raw.viewport.events) || raw.viewport.events.length > VIEWPORT_EVENT_LIMIT
-          || !raw.viewport.events.every(isSnapshotEvent)) return undefined
+          || !raw.viewport.events.every(isSnapshotEvent)
+          || !viewportEventsWithinByteLimit(raw.viewport.events)) return undefined
         const payload: Omit<ViewportTailSnapshot, 'digest'> = {
           schema: VIEWPORT_SCHEMA,
           generation: this.#viewportGeneration,
@@ -581,9 +602,13 @@ export class DurableSessionIndex {
           checkpointSeq: Number(raw.viewport.checkpointSeq),
           eventCount: Number(raw.viewport.eventCount),
           events: structuredClone(raw.viewport.events),
+          ...(raw.viewport.partial === true ? { partial: true } : {}),
+          ...(raw.viewport.omittedEvents === undefined ? {} : { omittedEvents: Number(raw.viewport.omittedEvents) }),
         }
         if (viewportDigest(payload) !== raw.viewport.digest
-          || payload.events[0]?.seq !== payload.checkpointSeq) return undefined
+          || payload.events[0]?.seq !== payload.checkpointSeq
+          || (payload.omittedEvents !== undefined && payload.omittedEvents !== payload.checkpointSeq)
+          || (payload.partial === true) !== (payload.omittedEvents !== undefined)) return undefined
         viewport = { ...payload, digest: raw.viewport.digest }
       }
       entries[id] = {
