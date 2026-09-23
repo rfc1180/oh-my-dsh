@@ -26,8 +26,8 @@ function assertRequest(request: TuiActiveTranscriptPageRequestV2, sessionId: str
   if (request.cursor !== undefined && (typeof request.cursor !== 'string' || request.cursor === '')) {
     throw new Error('Malformed session.history.page.v2 cursor.')
   }
-  if (request.limit !== undefined && (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 50)) {
-    throw new Error('session.history.page.v2 limit must be an integer from 1 to 50.')
+  if (request.limit !== undefined && (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 100)) {
+    throw new Error('session.history.page.v2 limit must be an integer from 1 to 100.')
   }
 }
 

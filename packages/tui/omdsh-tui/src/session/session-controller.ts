@@ -134,13 +134,70 @@ function catalogFingerprint(value: unknown): string | undefined {
 }
 export const REMOTE_TRANSCRIPT_EVENT_LIMIT = 1_024
 
+function assistantStreamKey(event: SessionEvent): string | undefined {
+  if (event.type !== 'assistant/chunk' && event.type !== 'assistant/message') return undefined
+  return `${event.data.turn}:${event.data.step}`
+}
+
+/**
+ * Remove settled text/reasoning deltas only after the authoritative message is
+ * known to preserve exactly the same visible content. Tool-call deltas and an
+ * incomplete stream always remain replayable.
+ */
+function compactCompletedAssistantChunks(events: readonly SessionEvent[]): SessionEvent[] {
+  const pending = new Map<string, Array<{ index: number; kind: 'text' | 'reasoning'; text: string }>>()
+  const omitted = new Set<number>()
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type === 'assistant/chunk') {
+      const chunk = event.data.chunk
+      const key = assistantStreamKey(event)
+      if ((chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && key !== undefined) {
+        const rows = pending.get(key) ?? []
+        rows.push({ index, kind: chunk.type === 'text-delta' ? 'text' : 'reasoning', text: chunk.text })
+        pending.set(key, rows)
+      }
+      continue
+    }
+    if (event?.type !== 'assistant/message') continue
+    const key = assistantStreamKey(event)
+    const rows = key === undefined ? undefined : pending.get(key)
+    if (key !== undefined) pending.delete(key)
+    if (rows === undefined || rows.length === 0) continue
+    const streamedText = rows.filter(row => row.kind === 'text').map(row => row.text).join('')
+    const streamedReasoning = rows.filter(row => row.kind === 'reasoning').map(row => row.text).join('')
+    const settledText = event.data.message.content
+      .filter(block => block.type === 'text').map(block => block.text).join('')
+    const settledReasoning = event.data.message.content
+      .filter(block => block.type === 'reasoning').map(block => block.text).join('')
+    if (streamedText === settledText && streamedReasoning === settledReasoning) {
+      for (const row of rows) omitted.add(row.index)
+    }
+  }
+  return events.filter((_event, index) => !omitted.has(index))
+}
+
+function semanticTailStart(events: readonly SessionEvent[], candidate: number): number {
+  let turnStart: number | undefined
+  let legacyUserStart: number | undefined
+  for (let index = 0; index <= candidate; index += 1) {
+    const event = events[index]
+    if (event?.type === 'turn/start') turnStart = index
+    else if (event?.type === 'user/message') legacyUserStart = index
+  }
+  return turnStart ?? legacyUserStart ?? 0
+}
+
 /** Bound only remote presentation state; the durable Agent session remains authoritative and complete. */
 export function remoteTranscriptTail(
   events: readonly SessionEvent[],
   limit = REMOTE_TRANSCRIPT_EVENT_LIMIT,
 ): readonly SessionEvent[] {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('remote transcript limit must be a positive integer')
-  return events.length <= limit ? events : events.slice(events.length - limit)
+  const replayable = compactCompletedAssistantChunks(events)
+  if (replayable.length <= limit) return replayable
+  const candidate = replayable.length - limit
+  return replayable.slice(semanticTailStart(replayable, candidate))
 }
 
 /** Keep transcript delivery immediate while coalescing aggregate footer projections. */
@@ -661,6 +718,8 @@ interface ViewportPersistenceExtension {
     checkpointSeq: number
     eventCount: number
     events: readonly SessionEvent[]
+    partial?: boolean
+    omittedEvents?: number
   } | undefined>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
 }
@@ -1417,7 +1476,7 @@ export class SessionRuntime {
       signal?.throwIfAborted()
       const beforeSeq = cursor?.beforeSeq ?? Number.MAX_SAFE_INTEGER
       const eligible = projection.interactions.filter(interaction => interaction.input.ref.seq < beforeSeq)
-      const limit = Math.max(1, Math.min(request.limit ?? 20, 50))
+      const limit = Math.max(1, Math.min(request.limit ?? 20, 100))
       const interactions = eligible.slice(-limit)
       const first = interactions[0]
       const hasMore = first !== undefined && eligible.some(interaction => interaction.input.ref.seq < first.input.ref.seq)

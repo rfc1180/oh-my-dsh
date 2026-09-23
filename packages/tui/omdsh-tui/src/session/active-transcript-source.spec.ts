@@ -58,7 +58,7 @@ describe('active transcript source', () => {
     await expect(active.request({
       method: 'session.history.page.v2',
       sessionId: 'session-current',
-      limit: 20,
+      limit: 100,
     })).resolves.toEqual({
       schemaVersion: 2,
       sessionId: 'session-current',
@@ -75,7 +75,7 @@ describe('active transcript source', () => {
       hasMore: true,
     })
     expect(source.historyPage).toHaveBeenCalledWith(
-      { id: 'session-current', limit: 20 },
+      { id: 'session-current', limit: 100 },
       undefined,
     )
   })
@@ -94,6 +94,11 @@ describe('active transcript source', () => {
       sessionId: 'session-current',
       cursor: '',
     })).rejects.toThrow('Malformed')
+    await expect(source.request({
+      method: 'session.history.page.v2',
+      sessionId: 'session-current',
+      limit: 101,
+    })).rejects.toThrow('integer from 1 to 100')
     current = false
     await expect(source.request({
       method: 'session.history.page.v2',

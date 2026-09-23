@@ -48,14 +48,57 @@ const PNG_1X1 = new Uint8Array(Buffer.from(
 ))
 
 describe('remoteTranscriptTail', () => {
-  it('keeps only the latest bounded projection without mutating durable events', () => {
-    const events = Array.from({ length: 1_500 }, (_, seq) => ({ type: 'assistant/chunk', seq })) as unknown as SessionEvent[]
+  const event = (seq: number, type: string, data: unknown): SessionEvent => ({
+    type, seq, time: seq, data,
+  }) as SessionEvent
+
+  it('compacts 1500 completed chunks only when the authoritative message preserves their content', () => {
+    const streamed = Array.from({ length: 1_500 }, (_, offset) => event(offset + 2, 'assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', text: 'x' },
+    }))
+    const events = [
+      event(0, 'turn/start', { turn: 1 }),
+      event(1, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'question' }] }),
+      ...streamed,
+      event(1_502, 'assistant/message', {
+        turn: 1, step: 1, message: { content: [{ type: 'text', text: 'x'.repeat(1_500) }] },
+      }),
+      event(1_503, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+    ]
+
     const tail = remoteTranscriptTail(events)
-    expect(tail).toHaveLength(1_024)
-    expect(tail[0]?.seq).toBe(476)
-    expect(tail.at(-1)?.seq).toBe(1_499)
-    expect(events).toHaveLength(1_500)
-    expect(remoteTranscriptTail(events.slice(0, 2))).toHaveLength(2)
+    expect(tail.map(candidate => candidate.type)).toEqual([
+      'turn/start', 'user/message', 'assistant/message', 'turn/end',
+    ])
+    expect(events).toHaveLength(1_504)
+  })
+
+  it('keeps an active incomplete turn whole even when it exceeds the nominal limit', () => {
+    const events = [
+      event(0, 'turn/start', { turn: 1 }),
+      event(1, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'active' }] }),
+      ...Array.from({ length: 1_500 }, (_, offset) => event(offset + 2, 'assistant/chunk', {
+        turn: 1, step: 1, chunk: { type: 'text-delta', text: 'x' },
+      })),
+    ]
+    const tail = remoteTranscriptTail(events)
+    expect(tail).toHaveLength(1_502)
+    expect(tail[0]?.type).toBe('turn/start')
+    expect(tail[1]?.type).toBe('user/message')
+    expect(tail.at(-1)?.seq).toBe(1_501)
+  })
+
+  it('does not discard chunks when the settled message differs', () => {
+    const events = [
+      event(0, 'turn/start', { turn: 1 }),
+      event(1, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'question' }] }),
+      event(2, 'assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', text: 'draft' } }),
+      event(3, 'assistant/message', { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'final' }] } }),
+      event(4, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+    ]
+    expect(remoteTranscriptTail(events, 2).map(candidate => candidate.type)).toEqual([
+      'turn/start', 'user/message', 'assistant/chunk', 'assistant/message', 'turn/end',
+    ])
     expect(() => remoteTranscriptTail(events, 0)).toThrow('positive integer')
   })
 })
@@ -690,6 +733,45 @@ describe('SessionRuntime.createDetachedFork', () => {
       cursor: first?.previousCursor,
     })).rejects.toThrow('belongs to another session')
     expect(fixture.sessionPersistence.omdshProjectSessionHistory).toHaveBeenCalledTimes(projectionCalls)
+    await fixture.runtime.dispose()
+  })
+
+  it('pages 205 interactions in exact 100-row windows without gaps or duplicates', async () => {
+    const fixture = detachedForkRuntime()
+    fixture.sessionPersistence.omdshProjectSessionHistory.mockImplementation(async (id: string) => ({
+      version: 1 as const,
+      sessionId: id,
+      title: id,
+      createdAt: 1,
+      updatedAt: 205,
+      classification: { bucket: 'human' as const },
+      interactions: Array.from({ length: 205 }, (_, seq) => ({
+        id: `event:${seq}`,
+        input: {
+          kind: 'input' as const,
+          content: { format: 'markdown' as const, text: `prompt ${seq}` },
+          ref: { seq, time: seq, type: 'user/message' },
+        },
+        outcome: { kind: 'completed' as const },
+        technicalTrace: [],
+      })),
+    }))
+    await fixture.runtime.start('parent-session')
+    const source = fixture.runtime.sessionManagerSource(fixture.parent)
+    const seen: string[] = []
+    let cursor: string | undefined
+    const sizes: number[] = []
+    do {
+      const page = await source.historyPage?.({ id: 'parent-session', cursor, limit: 100 })
+      expect(page).toBeDefined()
+      sizes.push(page!.interactions.length)
+      seen.unshift(...page!.interactions.map(row => row.id))
+      cursor = page!.previousCursor
+    } while (cursor !== undefined)
+
+    expect(sizes).toEqual([100, 100, 5])
+    expect(seen).toEqual(Array.from({ length: 205 }, (_, seq) => `event:${seq}`))
+    expect(new Set(seen)).toHaveLength(205)
     await fixture.runtime.dispose()
   })
 })

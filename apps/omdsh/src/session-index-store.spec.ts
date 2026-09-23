@@ -160,7 +160,57 @@ describe('DurableSessionIndex', () => {
     await expect(index.viewportTail(item.header.id)).resolves.toMatchObject({
       checkpointSeq: 976,
       eventCount: 2_000,
+      partial: true,
+      omittedEvents: 976,
     })
+  })
+
+  it('keeps a bounded partial tail for an active turn with 1500 streaming chunks', async () => {
+    const item = await fixture()
+    item.events.splice(0, item.events.length,
+      { seq: 0, time: 1, type: 'turn/start', data: { turn: 1 } } as SessionEvent,
+      { seq: 1, time: 2, type: 'user/message', data: {
+        source: { kind: 'user' }, content: [{ type: 'text', text: 'active request' }],
+      } } as SessionEvent,
+      ...Array.from({ length: 1_500 }, (_, offset) => ({
+        seq: offset + 2,
+        time: offset + 3,
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'text-delta', text: 'x' } },
+      }) as SessionEvent),
+    )
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.refreshViewportTail(item.header.id, item.fallback, undefined, 1_502)
+
+    const tail = await index.viewportTail(item.header.id)
+    expect(item.reads).toEqual([478])
+    expect(tail).toMatchObject({
+      checkpointSeq: 478,
+      eventCount: 1_502,
+      partial: true,
+      omittedEvents: 478,
+    })
+    expect(tail?.events).toHaveLength(1_024)
+    expect(tail?.events[0]?.type).toBe('assistant/chunk')
+    expect(tail?.events.at(-1)?.seq).toBe(1_501)
+  })
+
+  it('applies a byte guard as well as the event-count guard', async () => {
+    const item = await fixture()
+    item.events.splice(0, item.events.length, ...Array.from({ length: 20 }, (_, seq) => ({
+      seq,
+      time: seq + 1,
+      type: 'test/event',
+      data: { payload: 'x'.repeat(100_000) },
+    }) as SessionEvent))
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.refreshViewportTail(item.header.id, item.fallback, undefined, 20)
+
+    const tail = await index.viewportTail(item.header.id)
+    expect(tail).toBeDefined()
+    expect(tail!.events.length).toBeGreaterThan(0)
+    expect(tail!.events.length).toBeLessThan(20)
+    expect(Buffer.byteLength(JSON.stringify(tail!.events), 'utf8')).toBeLessThan(512 * 1_024)
   })
 
   it('rejects corrupt and identity-mismatched viewport snapshots without scanning the journal', async () => {
