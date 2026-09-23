@@ -2342,11 +2342,18 @@ describe('LocalTui (tty)', () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false, 'dark', copyToClipboard, { historyPath })
 
+    press(term, '\x1b[1;2A'.repeat(1_001))
+    expect(stripAnsi(term.captured)).toContain('ordinary prompt 1506')
+
     press(term, '\x12oldest needle')
     expect(stripAnsi(term.captured)).toContain('More history available')
     press(term, '\x1b[6~\x1b[6~')
-
     expect(stripAnsi(term.captured)).toContain('oldest needle prompt')
+
+    press(term, '\x03')
+    const beforeNewer = term.captured.length
+    press(term, '\x1b[1;2B')
+    expect(stripAnsi(term.captured.slice(beforeNewer))).toContain('ordinary prompt 1507')
     tui.dispose()
   })
 
