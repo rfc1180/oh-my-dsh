@@ -105,7 +105,7 @@ import { TUI_SETTINGS_NAMESPACE, TuiSettingsSchema } from '../session/tui-settin
 import { defaultStatusBarConfig, resolveStatusBarConfig, type StatusBarConfig } from '../chrome/status-config.ts'
 import { encodeHostTelemetryOsc, hostTelemetryPayload } from '../chrome/host-telemetry.ts'
 import { sessionStatusGroups } from '../chrome/status-line.ts'
-import { HistoryStore } from '../views/history-store.ts'
+import { HistoryCursorWindow, HistoryStore } from '../views/history-store.ts'
 import {
   addTrajectoryDiagnostic,
   appendTrajectoryEvent,
@@ -163,7 +163,6 @@ import type { StartupChangelogMode } from '../session/release-notes.ts'
 const DOUBLE_CTRL_C_MS = 500
 const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
-const MAX_RESIDENT_HISTORY_ENTRIES = 3_000
 // Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
 const DEFAULT_STREAM_RENDER_MS = 50
 // Spinner frames advance with real Agent/roster events. A cosmetic interval
@@ -271,8 +270,10 @@ export class LocalTui implements TuiService {
   readonly #editor = new InputEditor()
   #history: string[] = []
   #historyIndex = 0
-  #historyCursor: string | undefined
-  #historyHasMore = false
+  readonly #historyPager: HistoryCursorWindow | undefined
+  #searchHistory: string[] = []
+  #searchHistoryCursor: string | undefined
+  #searchHistoryHasMore = false
   #draft = ''
   #ac: { items: AutocompleteItem[]; selected: number } | null = null
   #search: HistorySearchState | null = null
@@ -425,10 +426,8 @@ export class LocalTui implements TuiService {
     this.#readClipboardImage = paths.readClipboardImage ?? readImageFromClipboard
     this.#readClipboardFiles = paths.readClipboardFiles ?? readMacClipboardFiles
     this.#historyStore = paths.historyPath === undefined ? undefined : new HistoryStore(paths.historyPath)
-    const historyPage = this.#historyStore?.loadPage()
-    this.#history = historyPage?.entries ?? []
-    this.#historyCursor = historyPage?.previousCursor
-    this.#historyHasMore = historyPage?.hasMore ?? false
+    this.#historyPager = this.#historyStore === undefined ? undefined : new HistoryCursorWindow(this.#historyStore)
+    this.#history = [...(this.#historyPager?.entries ?? [])]
     this.#keybindings = loadKeybindings(paths.keybindingsPath)
     const fallback = defaultPathSource()
     this.#cwd = paths.cwd ?? fallback.cwd
@@ -1146,7 +1145,7 @@ export class LocalTui implements TuiService {
   #replaceInput(submission: TuiSubmission): void {
     this.#images = submission.images.map(image => ({ ...image }))
     this.#editor.setText(submission.text)
-    this.#historyIndex = 0
+    this.#resetHistoryNavigation()
     this.#refreshAutocomplete()
     if (this.#tty) this.#render()
   }
@@ -1770,7 +1769,7 @@ export class LocalTui implements TuiService {
       } else {
         this.#editor.clear()
         this.#images = []
-        this.#historyIndex = 0
+        this.#resetHistoryNavigation()
         this.#ac = null
         this.#render()
       }
@@ -1786,7 +1785,11 @@ export class LocalTui implements TuiService {
     }
     if (event.type === 'key' && event.id === 'ctrl+r') {
       if (this.#images.length > 0) return
-      this.#search = createHistorySearch(this.#history, this.#historyHasMore)
+      const page = this.#historyStore?.loadPage()
+      this.#searchHistory = page?.entries ?? this.#history
+      this.#searchHistoryCursor = page?.previousCursor
+      this.#searchHistoryHasMore = page?.hasMore ?? false
+      this.#search = createHistorySearch(this.#searchHistory, this.#searchHistoryHasMore)
       this.#ac = null
       this.#render()
       return
@@ -2189,22 +2192,32 @@ export class LocalTui implements TuiService {
 
   #applySearch(event: KeyEvent): void {
     if (this.#search === null) return
-    const command = applyHistorySearchEvent(this.#search, event, this.#history)
+    const command = applyHistorySearchEvent(this.#search, event, this.#searchHistory)
     if (command.kind === 'update') {
       this.#search = command.state
       this.#render()
       return
     }
     if (command.kind === 'loadMore') {
-      this.#loadOlderHistory()
-      this.#search = refreshHistorySearch(this.#search, this.#history, this.#historyHasMore)
+      if (this.#searchHistoryHasMore && this.#searchHistoryCursor !== undefined && this.#historyStore !== undefined) {
+        const page = this.#historyStore.loadPage(this.#searchHistoryCursor)
+        this.#searchHistory = page.entries
+        this.#searchHistoryCursor = page.previousCursor
+        this.#searchHistoryHasMore = page.hasMore
+      }
+      this.#search = refreshHistorySearch(
+        this.#search,
+        this.#searchHistory,
+        this.#searchHistoryHasMore,
+        true,
+      )
       this.#render()
       return
     }
     if (command.kind === 'select') {
       this.#search = null
       this.#editor.setText(command.text)
-      this.#historyIndex = 0
+      this.#resetHistoryNavigation()
       this.#refreshAutocomplete()
       this.#render()
       return
@@ -2398,7 +2411,7 @@ export class LocalTui implements TuiService {
   #applyCommand(command: EditorCommand): void {
     if (command.kind === 'changed') {
       this.#reconcileImageDrafts()
-      if (command.edited === true) this.#historyIndex = 0
+      if (command.edited === true) this.#resetHistoryNavigation()
       this.#refreshAutocomplete()
       this.#render()
       return
@@ -2431,7 +2444,7 @@ export class LocalTui implements TuiService {
       this.#images = []
       this.#queueEditNewer = null
       this.#queueEditPending = false
-      this.#historyIndex = 0
+      this.#resetHistoryNavigation()
       this.#ac = null
       this.#search = null
       this.#render()
@@ -2451,36 +2464,26 @@ export class LocalTui implements TuiService {
     }
   }
 
-  #boundRecentHistory(): void {
-    if (this.#history.length <= MAX_RESIDENT_HISTORY_ENTRIES) return
-    if (this.#historyStore !== undefined) {
-      const page = this.#historyStore.loadPage(undefined, MAX_RESIDENT_HISTORY_ENTRIES)
-      this.#history = page.entries
-      this.#historyCursor = page.previousCursor
-      this.#historyHasMore = page.hasMore
-      return
+  #resetHistoryNavigation(): void {
+    if (this.#historyPager !== undefined && this.#historyPager.index !== 0) {
+      this.#historyPager.reset()
+      this.#history = [...this.#historyPager.entries]
     }
-    this.#history.splice(0, this.#history.length - MAX_RESIDENT_HISTORY_ENTRIES)
-  }
-
-  #loadOlderHistory(): boolean {
-    if (!this.#historyHasMore || this.#historyCursor === undefined || this.#historyStore === undefined) return false
-    const page = this.#historyStore.loadPage(this.#historyCursor)
-    this.#historyCursor = page.previousCursor
-    this.#historyHasMore = page.hasMore
-    if (page.entries.length === 0) return false
-    this.#history.unshift(...page.entries)
-    const overflow = Math.max(0, this.#history.length - MAX_RESIDENT_HISTORY_ENTRIES)
-    if (overflow > 0) {
-      this.#history.splice(this.#history.length - overflow, overflow)
-      this.#historyIndex = Math.max(0, this.#historyIndex - overflow)
-    }
-    return true
+    this.#historyIndex = 0
   }
 
   #historyPrev(): void {
     if (this.#images.length > 0) return
-    if (this.#historyIndex >= this.#history.length && !this.#loadOlderHistory()) return
+    if (this.#historyPager !== undefined) {
+      if (this.#historyPager.index === 0) this.#draft = this.#editor.text
+      const text = this.#historyPager.older()
+      this.#historyIndex = this.#historyPager.index
+      if (text === undefined) return
+      this.#editor.setText(text)
+      this.#refreshAutocomplete()
+      this.#render()
+      return
+    }
     if (this.#history.length === 0 || this.#historyIndex >= this.#history.length) return
     if (this.#historyIndex === 0) this.#draft = this.#editor.text
     this.#historyIndex += 1
@@ -2520,8 +2523,15 @@ export class LocalTui implements TuiService {
   }
 
   #historyNext(): void {
-    if (this.#images.length > 0) return
-    if (this.#historyIndex === 0) return
+    if (this.#images.length > 0 || this.#historyIndex === 0) return
+    if (this.#historyPager !== undefined) {
+      const text = this.#historyPager.newer()
+      this.#historyIndex = this.#historyPager.index
+      this.#editor.setText(text ?? this.#draft)
+      this.#refreshAutocomplete()
+      this.#render()
+      return
+    }
     this.#historyIndex -= 1
     this.#editor.setText(
       this.#historyIndex === 0 ? this.#draft : (this.#history[this.#history.length - this.#historyIndex] ?? ''),
@@ -2557,7 +2567,10 @@ export class LocalTui implements TuiService {
     if (historyText !== '' && this.#history[this.#history.length - 1] !== historyText) {
       this.#history.push(historyText)
       this.#historyStore?.add(historyText)
-      this.#boundRecentHistory()
+      if (this.#historyPager !== undefined) {
+        this.#historyPager.reset()
+        this.#history = [...this.#historyPager.entries]
+      }
     }
     this.#historyIndex = 0
     this.#draft = ''
@@ -2602,7 +2615,10 @@ export class LocalTui implements TuiService {
     if (historyText !== '' && this.#history[this.#history.length - 1] !== historyText) {
       this.#history.push(historyText)
       this.#historyStore?.add(historyText)
-      this.#boundRecentHistory()
+      if (this.#historyPager !== undefined) {
+        this.#historyPager.reset()
+        this.#history = [...this.#historyPager.entries]
+      }
     }
     this.#historyIndex = 0
     this.#draft = ''

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { HistoryStore } from './history-store.ts'
+import { HistoryCursorWindow, HistoryStore } from './history-store.ts'
 
 describe('HistoryStore', () => {
   it('round-trips multiline prompts as JSONL', () => {
@@ -30,5 +30,29 @@ describe('HistoryStore', () => {
 
     expect(pages.flat()).toEqual(expected)
     expect(store.load()).toEqual(expected.slice(-1_000))
+  })
+
+  it('round-trips 7000 unique entries newest-to-oldest-to-newest without gaps or duplicates', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'omdsh-history-roundtrip-')), 'history.jsonl')
+    const expected = Array.from({ length: 7_000 }, (_, index) => `unique-${String(index).padStart(4, '0')}`)
+    writeFileSync(path, expected.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const window = new HistoryCursorWindow(new HistoryStore(path, 137))
+    const older: string[] = []
+    let value: string | undefined
+
+    while ((value = window.older()) !== undefined) {
+      older.push(value)
+      expect(window.entries.length).toBeLessThanOrEqual(137)
+    }
+    expect(older).toEqual([...expected].reverse())
+
+    const newer: string[] = []
+    while (window.index > 0) {
+      value = window.newer()
+      if (value !== undefined) newer.push(value)
+      expect(window.entries.length).toBeLessThanOrEqual(137)
+    }
+    expect(newer).toEqual(expected.slice(1))
+    expect(window.index).toBe(0)
   })
 })
