@@ -1569,13 +1569,13 @@ export function renderQueuedSubmissions(
   if (labels.length === 1) {
     return [alignAction(
       rail + queueLabel + theme.fg('dim', ' · ') + theme.fg('text', labels[0] ?? ''),
-      theme.fg('dim', '↑ edit'),
+      theme.fg('dim', '↑ edit · /queue cancel'),
     )]
   }
   const summary = ` · ${labels.length}${hidden === 0 ? '' : ` · ${hidden} earlier`}`
   const visibleLabels = labels.slice(start)
   const lines = [
-    alignAction(rail + queueLabel + theme.fg('dim', summary), theme.fg('dim', '↑ edit latest'), false),
+    alignAction(rail + queueLabel + theme.fg('dim', summary), theme.fg('dim', '↑ edit latest · /queue cancel'), false),
     ...visibleLabels.map((label, index) =>
       rail + theme.fg(index === visibleLabels.length - 1 ? 'accent' : 'dim', String(start + index + 1))
         + '  ' + theme.fg('text', label)),

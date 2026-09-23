@@ -189,6 +189,15 @@ export function unbracketedMultilinePaste(input: string): string | undefined {
   return normalized
 }
 
+/** One-line preview used by the queued-turn listing. */
+function firstLinePreview(text: string): string {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed !== '') return trimmed.replace(/\s+/gu, ' ').slice(0, 80)
+  }
+  return '(empty)'
+}
+
 function shortenPath(cwd: string): string {
   const home = homedir()
   if (cwd === home) return '~'
@@ -323,6 +332,8 @@ export class LocalTui implements TuiService {
   #images: TuiInputImage[] = []
   /** Composer text that a prompt temporarily took ownership of; never consumed as an answer. */
   #promptDraft = ''
+  /** True while a durable queued follow-up is being dropped instead of edited. */
+  #queueCancelPending = false
   #lineReader: Interface | null = null
   #plainPending: PendingRead | null = null
   #plainClosed = false
@@ -861,6 +872,15 @@ export class LocalTui implements TuiService {
   resolveQueueEdit(submission: TuiSubmission | null): void {
     if (!this.#queueEditPending) return
     this.#queueEditPending = false
+    if (this.#queueCancelPending) {
+      // Explicit cancel: the durable follow-up is already removed, so drop the
+      // returned draft instead of putting it back into the composer.
+      this.#queueCancelPending = false
+      this.#queueEditNewer = null
+      this.#notice('Queued turn cancelled.')
+      this.#render()
+      return
+    }
     if (submission === null) {
       if (this.#editor.text === '' && this.#images.length === 0 && this.#queueEditNewer?.length === 0) {
         this.#queueEditNewer = null
@@ -2540,6 +2560,78 @@ export class LocalTui implements TuiService {
     return true
   }
 
+  /** Local submissions waiting for the runner, in queue order. */
+  #localQueuedSubmissions(): TuiSubmission[] {
+    return this.#queueEditNewer === null
+      ? [...this.#queuedSubmissions]
+      : [...this.#queuedSubmissions, ...this.#queueEditNewer]
+  }
+
+  /**
+   * Drop the newest queued turn without editing it.
+   *
+   * Local pending submissions are removed directly. A durable follow-up is
+   * removed through the same edit channel, but the returned draft is discarded.
+   */
+  #cancelQueuedTurn(): boolean {
+    if (this.#queueEditNewer !== null && this.#queueEditNewer.length > 0) {
+      this.#queueEditNewer.pop()
+      if (this.#queueEditNewer.length === 0) this.#queueEditNewer = null
+      this.#render()
+      return true
+    }
+    if (this.#queuedSubmissions.pop() !== undefined) {
+      this.#render()
+      return true
+    }
+    const durable = this.#state.nextTurnInbox.filter(message => message.source.kind === 'user')
+    if (durable.length === 0 || this.#queueEdits.size === 0 || this.#queueEditPending) {
+      return false
+    }
+    this.#queueCancelPending = true
+    this.#queueEditPending = true
+    for (const listener of this.#queueEdits) listener()
+    return true
+  }
+
+  #runQueue(args: string): void {
+    const action = args.trim().toLowerCase()
+    if (action === '') {
+      const local = this.#localQueuedSubmissions()
+      const durable = this.#state.nextTurnInbox.filter(message => message.source.kind === 'user')
+      const total = local.length + durable.length
+      if (total === 0) {
+        this.#notice('No queued turns.')
+        this.#render()
+        return
+      }
+      const lines = [`Queued turns: ${total}`]
+      local.forEach((submission, index) => {
+        lines.push(`${index + 1}. ${firstLinePreview(submission.text)}`)
+      })
+      durable.forEach((message, index) => {
+        const text = message.content.map(part => (part.type === 'text' ? part.text : '')).join(' ').trim()
+        lines.push(`${local.length + index + 1}. ${firstLinePreview(text)}`)
+      })
+      lines.push('', 'Shift+↑ edits the newest · /queue cancel drops it')
+      this.#notice(lines.join('\n'))
+      this.#render()
+      return
+    }
+    if (action === 'cancel' || action === 'drop') {
+      if (!this.#cancelQueuedTurn()) {
+        this.#notice('No queued turn to cancel.')
+        this.#render()
+        return
+      }
+      this.#notice('Queued turn cancelled.')
+      this.#render()
+      return
+    }
+    this.#notice('Usage: /queue [cancel]')
+    this.#render()
+  }
+
   #historyNext(): void {
     if (this.#images.length > 0 || this.#historyIndex === 0) return
     if (this.#historyPager !== undefined) {
@@ -2679,6 +2771,10 @@ export class LocalTui implements TuiService {
       this.#followTail()
       this.#renderer.startEpoch()
       this.#render()
+      return
+    }
+    if (command.name === 'queue') {
+      this.#runQueue(args)
       return
     }
     if (command.name === 'trajectory' && this.#trajectorySource !== null) {

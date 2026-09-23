@@ -57,14 +57,13 @@ describe('buildSlashCommandCompletions', () => {
   it('keeps registry order for an empty prefix', () => {
     const items = buildSlashCommandCompletions(BUILTIN_SLASH_COMMANDS, '')
     expect(items.map((item) => item.value)).toEqual([
-      'help', 'settings', 'detail', 'copy', 'tools', 'clear', 'quit',
+      'help', 'settings', 'detail', 'copy', 'tools', 'queue', 'clear', 'quit',
     ])
   })
 
   it('matches aliases and still completes the canonical name', () => {
     const items = buildSlashCommandCompletions(BUILTIN_SLASH_COMMANDS, 'q')
-    expect(items).toHaveLength(1)
-    expect(items[0]?.value).toBe('quit')
+    expect(items.map((item) => item.value)).toEqual(['quit', 'queue'])
     expect(items[0]?.label).toBe('q')
   })
 })
@@ -199,8 +198,8 @@ describe('formatHelpText / renderAutocomplete', () => {
       { name: 'research', description: 'Investigate a question against high-trust primary sources', kind: 'skill' },
     ])
     const lines = text.split('\n')
-    expect(lines[0]).toBe('Commands · 8 core · 2 skills')
-    expect(text).toContain('**Terminal Commands · 7**')
+    expect(lines[0]).toBe('Commands · 9 core · 2 skills')
+    expect(text).toContain('**Terminal Commands · 8**')
     expect(text).toContain('**Agent Commands · 1**')
     expect(text).not.toContain('| Command | Description |')
     expect(text).toContain('/resume [session-id]')
@@ -208,7 +207,7 @@ describe('formatHelpText / renderAutocomplete', () => {
     expect(text).toContain('/code-review')
     expect(text).toContain('/research')
     expect(text).not.toContain('/skill:')
-    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(10)
+    expect(lines.filter(line => line.startsWith('- `/'))).toHaveLength(11)
   })
 
   it('paints the selected row with a cursor and windows long lists', () => {

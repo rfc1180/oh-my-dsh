@@ -1129,6 +1129,58 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('lists queued turns and drops the newest with /queue cancel', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    press(term, 'first queued\r')
+    press(term, 'second queued\r')
+
+    press(term, '/queue\r')
+    expect(stripAnsi(term.captured)).toContain('Queued turns: 2')
+    expect(stripAnsi(term.captured)).toContain('second queued')
+    expect(stripAnsi(term.captured)).toContain('/queue cancel')
+
+    press(term, '/queue cancel\r')
+    expect(stripAnsi(term.captured)).toContain('Queued turn cancelled.')
+
+    expect(await tui.readline()).toBe('first queued')
+    tui.dispose()
+  })
+
+  it('reports an empty queue instead of inventing a cancel', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+
+    press(term, '/queue\r')
+    expect(stripAnsi(term.captured)).toContain('No queued turns.')
+    press(term, '/queue cancel\r')
+    expect(stripAnsi(term.captured)).toContain('No queued turn to cancel.')
+    tui.dispose()
+  })
+
+  it('drops a durable queued follow-up without pulling it into the composer', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    let editRequests = 0
+    tui.onQueueEdit(() => { editRequests += 1 })
+    tui.event(ev('agent/inbox/spliced', {
+      target: 'next-turn',
+      start: 0,
+      inserted: [{ id: 'queued-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'durable queued' }] }],
+    }, 1))
+
+    const pending = tui.readline()
+    press(term, '/queue cancel\r')
+    expect(editRequests).toBe(1)
+
+    tui.resolveQueueEdit({ text: 'durable queued', images: [] })
+    expect(stripAnsi(term.captured)).toContain('Queued turn cancelled.')
+
+    press(term, '\r')
+    expect(await pending).toBe('')
+    tui.dispose()
+  })
+
   it('recalls history with shift+up while plain up remains caret motion', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
@@ -1829,7 +1881,7 @@ describe('LocalTui (tty)', () => {
     expect(term.captured).not.toContain('/pwd')
     expect(term.captured).not.toContain('/dirs')
     expect(term.captured).toContain('/copy')
-    expect(term.captured).toContain('1/7')
+    expect(term.captured).toContain('1/8')
     tui.dispose()
   })
 
@@ -2104,7 +2156,7 @@ describe('LocalTui (tty)', () => {
     const cases = [
       {
         command: '/help\r',
-        heading: 'Commands · 31 core',
+        heading: 'Commands · 32 core',
         prepare: (tui: LocalTui): void => {
           tui.setCommands(Array.from({ length: 24 }, (_, index) => ({
             name: `runtime-${index}`,

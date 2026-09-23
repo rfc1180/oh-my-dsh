@@ -46,6 +46,10 @@ const HELP_ARGUMENTS: readonly SlashArgument[] = [
   { value: 'full', description: 'Include every keyboard shortcut' },
 ]
 
+const QUEUE_ARGUMENTS: readonly SlashArgument[] = [
+  { value: 'cancel', aliases: ['drop'], description: 'Drop the newest queued turn' },
+]
+
 const DETAIL_ARGUMENTS: readonly SlashArgument[] = ACTIVITY_DETAIL_MODES.map(value => ({
   value,
   description: ACTIVITY_DETAIL_DESCRIPTIONS[value],
@@ -58,6 +62,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'detail', description: 'Choose how much reasoning and tool activity to show', arguments: DETAIL_ARGUMENTS },
   { name: 'copy', description: 'Pick text, code, or a command to copy', arguments: COPY_ARGUMENTS },
   { name: 'tools', description: 'Show tools visible to the agent' },
+  { name: 'queue', description: 'List queued turns or cancel the newest', arguments: QUEUE_ARGUMENTS },
   { name: 'clear', description: 'Clear the transcript display' },
   { name: 'quit', aliases: ['q', 'exit'], description: 'Quit the application' },
 ]

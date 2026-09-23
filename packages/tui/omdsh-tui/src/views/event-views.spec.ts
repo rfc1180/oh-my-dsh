@@ -1015,7 +1015,7 @@ describe('renderView', () => {
     })
     const editorStart = composerStart(frame.lines)
     const queue = frame.lines.slice(editorStart - 3, editorStart)
-    expect(queue[0]).toMatch(/^  │ Queued · 2\s+↑ edit latest$/u)
+    expect(queue[0]).toMatch(/^  │ Queued · 2\s+↑ edit latest · \/queue cancel$/u)
     expect(queue.slice(1)).toEqual([
       '  │ 1  first queued',
       '  │ 2  second ↵ queued',
@@ -1026,7 +1026,9 @@ describe('renderView', () => {
     const lines = renderQueuedSubmissions([
       { text: 'one queued message', images: [] },
     ], createTheme(false), 48)
-    expect(lines[0]).toMatch(/^  │ Queued · one queued message\s+↑ edit$/u)
+    // The longer action label truncates the preview, so assert the row shape.
+    expect(lines[0]).toMatch(/^  │ Queued · one queued/u)
+    expect(lines[0]).toContain('↑ edit · /queue cancel')
   })
 
   it('caps and truncates queued submission previews', () => {
