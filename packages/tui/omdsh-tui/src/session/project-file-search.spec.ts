@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  isGitBufferOverflow,
   loadProjectPathResult,
   loadProjectPaths,
   ProjectFileSearch,
@@ -82,6 +83,27 @@ describe('project file search', () => {
     expect(result.items.map(entry => entry.path)).toContain('plain.txt')
     expect(result.complete).toBe(true)
   })
+
+  it.each(['ENOBUFS', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'] as const)(
+    'marks an injected %s Git overflow fallback incomplete',
+    async (code) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'omdsh-file-overflow-'))
+      temporaryDirectories.push(root)
+      writeFileSync(path.join(root, 'visible.txt'), '')
+      const error = Object.assign(new Error(`git failed: ${code}`), { code })
+
+      const result = await loadProjectPathResult(root, undefined, async () => { throw error })
+
+      expect(isGitBufferOverflow(error)).toBe(true)
+      expect(result).toMatchObject({
+        total: 1,
+        truncated: true,
+        source: 'walk',
+        complete: false,
+      })
+      expect(result.items.map(entry => entry.path)).toEqual(['visible.txt'])
+    },
+  )
 
   it('uses Git visibility rules, including hidden files, without exposing .git', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'omdsh-file-search-'))
