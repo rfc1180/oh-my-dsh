@@ -46,6 +46,7 @@ export interface PathSearcher {
 }
 
 export type ProjectPathLoader = (root: string, signal?: AbortSignal) => Promise<readonly ProjectPathEntry[]>
+export type GitProjectPathLoader = (root: string, signal?: AbortSignal) => Promise<readonly ProjectPathEntry[]>
 
 function abortError(): Error {
   const error = new Error('Project file search aborted')
@@ -55,6 +56,23 @@ function abortError(): Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted === true) throw abortError()
+}
+
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown }).name === 'AbortError'
+}
+
+/** Node uses either code for an execFile maxBuffer overflow across supported releases. */
+export function isGitBufferOverflow(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3 && current !== undefined && current !== null; depth += 1) {
+    const value = current as { code?: unknown; message?: unknown; cause?: unknown }
+    if (value.code === 'ENOBUFS' || value.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return true
+    if (typeof value.message === 'string'
+      && /ERR_CHILD_PROCESS_STDIO_MAXBUFFER|\bENOBUFS\b|maxBuffer length exceeded/iu.test(value.message)) return true
+    current = value.cause
+  }
+  return false
 }
 
 function normalizedRelativePath(value: string): string | undefined {
@@ -81,7 +99,7 @@ function indexedGitPaths(stdout: string): ProjectPathEntry[] {
   }))
 }
 
-async function gitProjectPaths(root: string, signal?: AbortSignal): Promise<ProjectPathEntry[] | undefined> {
+const gitProjectPaths: GitProjectPathLoader = async (root, signal) => {
   throwIfAborted(signal)
   return new Promise((resolve, reject) => {
     const options = {
@@ -100,7 +118,7 @@ async function gitProjectPaths(root: string, signal?: AbortSignal): Promise<Proj
           return
         }
         if (error !== null) {
-          resolve(undefined)
+          reject(error)
           return
         }
         resolve(indexedGitPaths(stdout))
@@ -150,12 +168,20 @@ async function walkedProjectPaths(root: string, signal?: AbortSignal): Promise<P
 }
 
 /** Load discovery metadata without hiding Git fallback or the walk ceiling. */
-export async function loadProjectPathResult(root: string, signal?: AbortSignal): Promise<ProjectPathSearchResult> {
-  const git = await gitProjectPaths(root, signal)
-  if (git !== undefined) {
+export async function loadProjectPathResult(
+  root: string,
+  signal?: AbortSignal,
+  loadGit: GitProjectPathLoader = gitProjectPaths,
+): Promise<ProjectPathSearchResult> {
+  try {
+    const git = await loadGit(root, signal)
     return { items: git, total: git.length, truncated: false, source: 'git', complete: true }
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted === true) throw error
+    const walk = await walkedProjectPaths(root, signal)
+    if (!isGitBufferOverflow(error)) return walk
+    return { ...walk, truncated: true, complete: false }
   }
-  return walkedProjectPaths(root, signal)
 }
 
 /** Compatibility helper returning only the discovered paths. */
