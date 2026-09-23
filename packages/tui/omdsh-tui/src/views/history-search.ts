@@ -33,12 +33,17 @@ export interface HistorySearchState {
   cursor: number
   selected: number
   results: readonly string[]
+  /** Older durable pages exist but are not resident yet. */
+  hasMore: boolean
+  /** More matches exist in the resident bounded window than are displayed. */
+  truncated: boolean
 }
 
 /** Outcome of one key against the overlay. */
 export type HistorySearchCommand =
   | { kind: 'update'; state: HistorySearchState }
   | { kind: 'select'; text: string }
+  | { kind: 'loadMore' }
   | { kind: 'cancel' }
   | { kind: 'ignore' }
 
@@ -70,17 +75,33 @@ export function searchHistory(
   return matched.slice(0, Math.max(0, limit))
 }
 
-/** Open the overlay on the current session history. */
-export function createHistorySearch(history: readonly string[]): HistorySearchState {
-  return { query: '', cursor: 0, selected: 0, results: searchHistory(history, '') }
+function resultsPage(history: readonly string[], query: string): { results: string[]; truncated: boolean } {
+  const matches = searchHistory(history, query, HISTORY_SEARCH_LIMIT + 1)
+  return { results: matches.slice(0, HISTORY_SEARCH_LIMIT), truncated: matches.length > HISTORY_SEARCH_LIMIT }
+}
+
+/** Open the overlay on the current resident history window. */
+export function createHistorySearch(history: readonly string[], hasMore = false): HistorySearchState {
+  const page = resultsPage(history, '')
+  return { query: '', cursor: 0, selected: 0, ...page, hasMore }
+}
+
+/** Re-run the current query after an older durable page is loaded. */
+export function refreshHistorySearch(
+  state: HistorySearchState,
+  history: readonly string[],
+  hasMore = state.hasMore,
+  resetSelected = false,
+): HistorySearchState {
+  const page = resultsPage(history, state.query)
+  const selected = resetSelected
+    ? 0
+    : Math.min(state.selected, Math.max(0, page.results.length - 1))
+  return { ...state, ...page, selected, hasMore }
 }
 
 function refresh(state: HistorySearchState, history: readonly string[], resetSelected: boolean): HistorySearchState {
-  const results = searchHistory(history, state.query)
-  const selected = resetSelected
-    ? 0
-    : Math.min(state.selected, Math.max(0, results.length - 1))
-  return { query: state.query, cursor: state.cursor, selected, results }
+  return refreshHistorySearch(state, history, state.hasMore, resetSelected)
 }
 
 function insertQuery(state: HistorySearchState, value: string, history: readonly string[]): HistorySearchState {
@@ -132,6 +153,11 @@ export function applyHistorySearchEvent(
     return { kind: 'update', state: insertQuery(state, value, history) }
   }
   if (event.type !== 'key') return { kind: 'ignore' }
+  const atLastResult = state.results.length === 0 || state.selected >= state.results.length - 1
+  if (state.hasMore && !state.truncated && atLastResult
+    && (event.id === 'down' || event.id === 'tab' || event.id === 'pageDown' || event.id === 'end')) {
+    return { kind: 'loadMore' }
+  }
   switch (event.id) {
     case 'enter': {
       const text = state.results[state.selected]
@@ -227,10 +253,15 @@ export function renderHistorySearch(
   const tokens = queryTokens(state.query.trim())
   const visible = Math.max(1, maxVisible)
   const resultLines = renderHistoryResults(state, tokens, theme, width, visible)
+  const marker = state.truncated
+    ? ['  ' + theme.fg('warning', `Showing newest ${HISTORY_SEARCH_LIMIT}+ matches · refine query`)]
+    : state.hasMore
+      ? ['  ' + theme.fg('warning', 'More history available · ↓/PgDn loads older entries')]
+      : []
   const hints = ' ' + theme.fg('dim', '↑↓ navigate') + theme.fg('dim', ' · ')
     + theme.fg('dim', 'enter select') + theme.fg('dim', ' · ')
     + theme.fg('dim', 'esc cancel')
-  const lines = ['', title, '', ...editor.lines, '', ...resultLines, '', hints]
+  const lines = ['', title, '', ...editor.lines, '', ...resultLines, ...marker, '', hints]
   return {
     lines,
     cursor: { row: 3 + editor.cursor.row, column: editor.cursor.column },

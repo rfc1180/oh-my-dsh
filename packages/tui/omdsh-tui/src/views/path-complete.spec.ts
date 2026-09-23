@@ -226,6 +226,28 @@ describe('searchPathSuggestions', () => {
     })
   })
 
+  it('shows top-cap counts and fallback markers from additive metadata', async () => {
+    const cappedSearch: PathSearcher = async () => []
+    cappedSearch.detailed = async () => ({
+      items: Array.from({ length: 100 }, (_, index) => ({ path: `match-${index}.ts`, directory: false })),
+      total: 143,
+      truncated: true,
+      source: 'walk',
+      complete: false,
+    })
+
+    const result = await searchPathSuggestions('@match', 6, {
+      ...opts,
+      projectRoot: '/proj',
+      searchFiles: cappedSearch,
+    })
+
+    expect(result?.items[0]?.kind).toBe('heading')
+    expect(result?.items[0]?.label).toContain('100/143+')
+    expect(result?.items[0]?.label).toContain('more — refine query')
+    expect(result?.items[0]?.label).toContain('fallback scan')
+  })
+
   it('keeps a trailing-slash directory browse synchronous', async () => {
     let searches = 0
     const result = await searchPathSuggestions('@src/', 5, {
