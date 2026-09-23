@@ -73,7 +73,7 @@ describe('remoteTranscriptTail', () => {
     expect(events).toHaveLength(1_504)
   })
 
-  it('keeps an active incomplete turn whole even when it exceeds the nominal limit', () => {
+  it('keeps an active incomplete turn as an explicit bounded partial suffix', () => {
     const events = [
       event(0, 'turn/start', { turn: 1 }),
       event(1, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'active' }] }),
@@ -82,10 +82,25 @@ describe('remoteTranscriptTail', () => {
       })),
     ]
     const tail = remoteTranscriptTail(events)
-    expect(tail).toHaveLength(1_502)
-    expect(tail[0]?.type).toBe('turn/start')
-    expect(tail[1]?.type).toBe('user/message')
+    expect(tail).toHaveLength(1_024)
+    expect(tail[0]?.type).toBe('assistant/chunk')
+    expect(tail[0]?.seq).toBe(478)
     expect(tail.at(-1)?.seq).toBe(1_501)
+  })
+
+  it('applies the byte guard without splitting or retaining an oversized event', () => {
+    const events = [
+      event(0, 'turn/start', { turn: 1 }),
+      event(1, 'assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', text: 'x'.repeat(700) } }),
+      event(2, 'assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', text: 'y'.repeat(700) } }),
+    ]
+    const tail = remoteTranscriptTail(events, 1_024, 1_000)
+    expect(tail).toHaveLength(1)
+    expect(tail[0]?.seq).toBe(2)
+    expect(remoteTranscriptTail([event(3, 'assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', text: 'z'.repeat(2_000) },
+    })], 1_024, 1_000)).toEqual([])
+    expect(() => remoteTranscriptTail(events, 1_024, 0)).toThrow('positive integer')
   })
 
   it('does not discard chunks when the settled message differs', () => {
@@ -96,8 +111,11 @@ describe('remoteTranscriptTail', () => {
       event(3, 'assistant/message', { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'final' }] } }),
       event(4, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
     ]
-    expect(remoteTranscriptTail(events, 2).map(candidate => candidate.type)).toEqual([
+    expect(remoteTranscriptTail(events, 10).map(candidate => candidate.type)).toEqual([
       'turn/start', 'user/message', 'assistant/chunk', 'assistant/message', 'turn/end',
+    ])
+    expect(remoteTranscriptTail(events, 2).map(candidate => candidate.type)).toEqual([
+      'assistant/message', 'turn/end',
     ])
     expect(() => remoteTranscriptTail(events, 0)).toThrow('positive integer')
   })

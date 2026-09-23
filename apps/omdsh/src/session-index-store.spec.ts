@@ -213,6 +213,20 @@ describe('DurableSessionIndex', () => {
     expect(Buffer.byteLength(JSON.stringify(tail!.events), 'utf8')).toBeLessThan(512 * 1_024)
   })
 
+  it('does not persist a single event larger than the viewport byte budget', async () => {
+    const item = await fixture()
+    item.events.splice(0, item.events.length, {
+      seq: 0,
+      time: 1,
+      type: 'test/event',
+      data: { payload: 'x'.repeat(600 * 1_024) },
+    } as SessionEvent)
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await index.refreshViewportTail(item.header.id, item.fallback, undefined, 1)
+
+    await expect(index.viewportTail(item.header.id)).resolves.toBeUndefined()
+  })
+
   it('rejects corrupt and identity-mismatched viewport snapshots without scanning the journal', async () => {
     const item = await fixture()
     await new DurableSessionIndex(item.root, 'none', item.persistence)

@@ -147,7 +147,7 @@ function viewportDigest(snapshot: Omit<ViewportTailSnapshot, 'digest'>): string 
 }
 
 function viewportEventsWithinByteLimit(events: readonly unknown[]): boolean {
-  return events.length === 1 || Buffer.byteLength(JSON.stringify(events), 'utf8') <= VIEWPORT_BYTE_LIMIT
+  return Buffer.byteLength(JSON.stringify(events), 'utf8') <= VIEWPORT_BYTE_LIMIT
 }
 
 function boundedViewportEvents(events: readonly SessionEvent[]): SessionEvent[] {
@@ -157,7 +157,7 @@ function boundedViewportEvents(events: readonly SessionEvent[]): SessionEvent[] 
     const event = events[start - 1]
     if (event === undefined) break
     const eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + (start < events.length ? 1 : 0)
-    if (start < events.length && bytes + eventBytes > VIEWPORT_BYTE_LIMIT) break
+    if (bytes + eventBytes > VIEWPORT_BYTE_LIMIT) break
     bytes += eventBytes
     start -= 1
   }
@@ -165,8 +165,8 @@ function boundedViewportEvents(events: readonly SessionEvent[]): SessionEvent[] 
   if (bounded.length === 0) return []
 
   // Prefer a replayable semantic boundary when one exists inside the bounded
-  // suffix. A single oversized turn intentionally stays partial instead of
-  // dropping the cache altogether.
+  // suffix. A single event larger than the byte budget is not cached; durable
+  // history remains authoritative and will be loaded normally.
   const boundary = bounded.findIndex(event => event.type === 'turn/start' || event.type === 'user/message')
   return structuredClone(boundary > 0 ? bounded.slice(boundary) : bounded)
 }

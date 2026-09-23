@@ -133,6 +133,7 @@ function catalogFingerprint(value: unknown): string | undefined {
   }
 }
 export const REMOTE_TRANSCRIPT_EVENT_LIMIT = 1_024
+export const REMOTE_TRANSCRIPT_BYTE_LIMIT = 512 * 1_024
 
 function assistantStreamKey(event: SessionEvent): string | undefined {
   if (event.type !== 'assistant/chunk' && event.type !== 'assistant/message') return undefined
@@ -144,60 +145,125 @@ function assistantStreamKey(event: SessionEvent): string | undefined {
  * known to preserve exactly the same visible content. Tool-call deltas and an
  * incomplete stream always remain replayable.
  */
-function compactCompletedAssistantChunks(events: readonly SessionEvent[]): SessionEvent[] {
-  const pending = new Map<string, Array<{ index: number; kind: 'text' | 'reasoning'; text: string }>>()
-  const omitted = new Set<number>()
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index]
-    if (event?.type === 'assistant/chunk') {
-      const chunk = event.data.chunk
-      const key = assistantStreamKey(event)
-      if ((chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && key !== undefined) {
-        const rows = pending.get(key) ?? []
-        rows.push({ index, kind: chunk.type === 'text-delta' ? 'text' : 'reasoning', text: chunk.text })
-        pending.set(key, rows)
-      }
-      continue
-    }
-    if (event?.type !== 'assistant/message') continue
-    const key = assistantStreamKey(event)
-    const rows = key === undefined ? undefined : pending.get(key)
-    if (key !== undefined) pending.delete(key)
-    if (rows === undefined || rows.length === 0) continue
-    const streamedText = rows.filter(row => row.kind === 'text').map(row => row.text).join('')
-    const streamedReasoning = rows.filter(row => row.kind === 'reasoning').map(row => row.text).join('')
-    const settledText = event.data.message.content
-      .filter(block => block.type === 'text').map(block => block.text).join('')
-    const settledReasoning = event.data.message.content
-      .filter(block => block.type === 'reasoning').map(block => block.text).join('')
-    if (streamedText === settledText && streamedReasoning === settledReasoning) {
-      for (const row of rows) omitted.add(row.index)
-    }
-  }
-  return events.filter((_event, index) => !omitted.has(index))
+interface StreamComparison {
+  readonly messageIndex: number
+  readonly blocks: Record<'text' | 'reasoning', readonly string[]>
+  readonly positions: Record<'text' | 'reasoning', { block: number; offset: number }>
+  valid: boolean
+  chunks: number
 }
 
-function semanticTailStart(events: readonly SessionEvent[], candidate: number): number {
-  let turnStart: number | undefined
-  let legacyUserStart: number | undefined
-  for (let index = 0; index <= candidate; index += 1) {
-    const event = events[index]
-    if (event?.type === 'turn/start') turnStart = index
-    else if (event?.type === 'user/message') legacyUserStart = index
+function consumeStreamText(comparison: StreamComparison, kind: 'text' | 'reasoning', text: string): boolean {
+  const blocks = comparison.blocks[kind]
+  const position = comparison.positions[kind]
+  let consumed = 0
+  while (consumed < text.length) {
+    const block = blocks[position.block]
+    if (block === undefined) return false
+    const available = block.length - position.offset
+    const count = Math.min(available, text.length - consumed)
+    if (block.slice(position.offset, position.offset + count) !== text.slice(consumed, consumed + count)) return false
+    position.offset += count
+    consumed += count
+    if (position.offset === block.length) {
+      position.block += 1
+      position.offset = 0
+    }
   }
-  return turnStart ?? legacyUserStart ?? 0
+  return true
+}
+
+function streamConsumed(comparison: StreamComparison, kind: 'text' | 'reasoning'): boolean {
+  const blocks = comparison.blocks[kind]
+  const position = comparison.positions[kind]
+  while (position.block < blocks.length && blocks[position.block] === '') position.block += 1
+  return position.block === blocks.length && position.offset === 0
+}
+
+function compactCompletedAssistantChunks(events: readonly SessionEvent[]): SessionEvent[] {
+  // Keep O(messages) cursors, not O(chunks) copied rows/text. The authoritative
+  // assistant message already owns the settled strings; comparisons only retain
+  // references and offsets into those blocks.
+  const comparisons = new Map<string, StreamComparison>()
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type !== 'assistant/message') continue
+    const key = assistantStreamKey(event)
+    if (key === undefined) continue
+    comparisons.set(key, {
+      messageIndex: index,
+      blocks: {
+        text: event.data.message.content.filter(block => block.type === 'text').map(block => block.text),
+        reasoning: event.data.message.content.filter(block => block.type === 'reasoning').map(block => block.text),
+      },
+      positions: { text: { block: 0, offset: 0 }, reasoning: { block: 0, offset: 0 } },
+      valid: true,
+      chunks: 0,
+    })
+  }
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type !== 'assistant/chunk') continue
+    const chunk = event.data.chunk
+    if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') continue
+    const comparison = comparisons.get(assistantStreamKey(event) ?? '')
+    if (comparison === undefined || index >= comparison.messageIndex) continue
+    comparison.chunks += 1
+    if (comparison.valid) {
+      comparison.valid = consumeStreamText(
+        comparison,
+        chunk.type === 'text-delta' ? 'text' : 'reasoning',
+        chunk.text,
+      )
+    }
+  }
+  const matched = new Set([...comparisons.entries()]
+    .filter(([, comparison]) => comparison.valid && comparison.chunks > 0
+      && streamConsumed(comparison, 'text') && streamConsumed(comparison, 'reasoning'))
+    .map(([key]) => key))
+  return events.filter((event, index) => {
+    if (event.type !== 'assistant/chunk') return true
+    const chunk = event.data.chunk
+    const key = assistantStreamKey(event) ?? ''
+    const comparison = comparisons.get(key)
+    return (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta')
+      || !matched.has(key) || comparison === undefined || index >= comparison.messageIndex
+  })
+}
+
+function semanticTailStart(events: readonly SessionEvent[], start: number): number {
+  for (let index = start; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type === 'turn/start' || event?.type === 'user/message') return index
+  }
+  return start
+}
+
+function eventJsonBytes(event: SessionEvent): number {
+  return new TextEncoder().encode(JSON.stringify(event)).byteLength
 }
 
 /** Bound only remote presentation state; the durable Agent session remains authoritative and complete. */
 export function remoteTranscriptTail(
   events: readonly SessionEvent[],
   limit = REMOTE_TRANSCRIPT_EVENT_LIMIT,
+  byteLimit = REMOTE_TRANSCRIPT_BYTE_LIMIT,
 ): readonly SessionEvent[] {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('remote transcript limit must be a positive integer')
+  if (!Number.isSafeInteger(byteLimit) || byteLimit < 1) throw new RangeError('remote transcript byte limit must be a positive integer')
   const replayable = compactCompletedAssistantChunks(events)
-  if (replayable.length <= limit) return replayable
-  const candidate = replayable.length - limit
-  return replayable.slice(semanticTailStart(replayable, candidate))
+  let start = replayable.length
+  let bytes = 2 // JSON array brackets
+  while (start > 0 && replayable.length - start < limit) {
+    const event = replayable[start - 1]
+    if (event === undefined) break
+    const eventBytes = eventJsonBytes(event) + (start < replayable.length ? 1 : 0)
+    if (bytes + eventBytes > byteLimit) break
+    bytes += eventBytes
+    start -= 1
+  }
+  if (start === replayable.length) return []
+  return replayable.slice(semanticTailStart(replayable, start))
 }
 
 /** Keep transcript delivery immediate while coalescing aggregate footer projections. */
