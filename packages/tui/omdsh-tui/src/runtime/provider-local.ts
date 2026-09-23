@@ -321,6 +321,8 @@ export class LocalTui implements TuiService {
   #pasteInFlight = 0
   #deferredPasteEvents: KeyEvent[] = []
   #images: TuiInputImage[] = []
+  /** Composer text that a prompt temporarily took ownership of; never consumed as an answer. */
+  #promptDraft = ''
   #lineReader: Interface | null = null
   #plainPending: PendingRead | null = null
   #plainClosed = false
@@ -642,6 +644,9 @@ export class LocalTui implements TuiService {
     }
     if (this.#prompt !== null) return Promise.reject(new Error('omdsh-tui: prompt already in flight'))
     if (this.#disposed || request.signal?.aborted === true) return Promise.resolve(null)
+    // A draft typed before the prompt opened is not an answer to it, so keep it
+    // instead of discarding the user's text with the composer.
+    this.#promptDraft = this.#editor.text
     this.#editor.setText('')
     this.#ac = null
     return new Promise((resolve) => {
@@ -1909,7 +1914,15 @@ export class LocalTui implements TuiService {
         }
         return false
       }
-      if (submit) return true
+      if (submit) {
+        // Nothing matched the query: keep what the user typed when this prompt
+        // also accepts a custom answer instead of swallowing the submission.
+        const typed = this.#editor.text.trim()
+        this.#editor.setText('')
+        this.#finishPrompt(prompt.request.allowCustom !== false && typed !== '' ? typed : null)
+        this.#render()
+        return true
+      }
       const command = this.#editor.handle(event)
       if (command.kind === 'changed') {
         this.#prompt = { ...prompt, selected: 0 }
@@ -1940,8 +1953,13 @@ export class LocalTui implements TuiService {
       return true
     }
     if (submit && prompt.request.filterable === true) {
-      this.#finishPrompt(selectedFilteredPromptAnswer(prompt, this.#editor.text))
+      // A query that matches no row must not silently discard what the user
+      // typed when this prompt also accepts a custom answer.
+      const picked = selectedFilteredPromptAnswer(prompt, this.#editor.text)
+      const typed = this.#editor.text.trim()
+      const answer = picked ?? (prompt.request.allowCustom !== false && typed !== '' ? typed : null)
       this.#editor.setText('')
+      this.#finishPrompt(answer)
       this.#render()
       return true
     }
@@ -2772,6 +2790,11 @@ export class LocalTui implements TuiService {
     if (pending === null) return
     this.#prompt = null
     pending.offAbort?.()
+    // The pre-prompt draft always comes back rather than disappearing behind an
+    // answer the user never intended to give.
+    const draft = this.#promptDraft
+    this.#promptDraft = ''
+    if (draft !== '' && this.#editor.text === '') this.#editor.setText(draft)
     pending.resolve(answer)
   }
 

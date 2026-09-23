@@ -925,6 +925,62 @@ describe('LocalTui (tty)', () => {
     tui.dispose()
   })
 
+  it('keeps the composer draft when a prompt opens over it', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    press(term, 'draft I was writing')
+    const answer = tui.prompt({
+      title: 'Choice',
+      question: 'Pick one',
+      options: [{ label: 'Alpha' }, { label: 'Beta' }],
+      allowCustom: true,
+    })
+
+    press(term, '\x1b')
+    expect(await answer).toBe(null)
+
+    const pending = tui.readline()
+    press(term, '\r')
+    expect(await pending).toBe('draft I was writing')
+    tui.dispose()
+  })
+
+  it('returns a typed answer from a filterable prompt that matches no row', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const answer = tui.prompt({
+      title: 'Question',
+      question: 'Which one?',
+      presentation: 'fullscreen-list',
+      filterable: true,
+      allowCustom: true,
+      options: [{ label: 'Alpha', value: 'alpha' }],
+    })
+
+    press(term, 'neither of these\r')
+
+    expect(await answer).toBe('neither of these')
+    tui.dispose()
+  })
+
+  it('still cancels an unmatched query on a fixed-choice filterable prompt', async () => {
+    const term = new FakeTerminal()
+    const tui = new LocalTui(term, 'm', false)
+    const answer = tui.prompt({
+      title: 'Resume Session',
+      question: '',
+      presentation: 'fullscreen-list',
+      filterable: true,
+      allowCustom: false,
+      options: [{ label: 'Alpha session', value: 'session-alpha' }],
+    })
+
+    press(term, 'zzz\r')
+
+    expect(await answer).toBe(null)
+    tui.dispose()
+  })
+
   it('renders a fixed-choice prompt without a custom-answer editor', async () => {
     const term = new FakeTerminal()
     const tui = new LocalTui(term, 'm', false)
