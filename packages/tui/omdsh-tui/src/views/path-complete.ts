@@ -31,7 +31,14 @@ export interface DirEntry {
 /** Read one directory; undefined when it cannot be listed. */
 export type DirReader = (dir: string) => readonly DirEntry[] | undefined
 
-export type { PathSearcher, ProjectPathEntry } from '../session/project-file-search.ts'
+export type {
+  DetailedPathSearcher,
+  PathSearchOptions,
+  PathSearcher,
+  ProjectPathEntry,
+  ProjectPathSearchResult,
+  ProjectPathSource,
+} from '../session/project-file-search.ts'
 
 /** Token in the buffer that should complete as a path. */
 export interface PathToken {
