@@ -6,7 +6,8 @@ import path from 'node:path'
 
 const DEFAULT_CACHE_TTL_MS = 2_000
 const DEFAULT_MAX_RESULTS = 100
-const MAX_WALK_ENTRIES = 200_000
+const GIT_MAX_BUFFER_BYTES = 8 * 1024 * 1024
+export const MAX_WALK_ENTRIES = 200_000
 const FALLBACK_SKIPPED_DIRECTORIES = new Set(['.git', '.hg', '.svn', 'node_modules'])
 
 /** One project-relative path returned by the asynchronous file index. */
@@ -15,12 +16,34 @@ export interface ProjectPathEntry {
   directory: boolean
 }
 
-/** Recursive project-file search used by `@query`. */
-export type PathSearcher = (
+export interface PathSearchOptions {
+  signal?: AbortSignal
+  maxResults?: number
+}
+
+export type ProjectPathSource = 'git' | 'walk' | 'custom'
+
+/** Additive discovery metadata; `total` is a lower bound when `complete` is false. */
+export interface ProjectPathSearchResult {
+  items: readonly ProjectPathEntry[]
+  total: number
+  truncated: boolean
+  source: ProjectPathSource
+  complete: boolean
+}
+
+export type DetailedPathSearcher = (
   root: string,
   query: string,
-  options?: { signal?: AbortSignal; maxResults?: number },
-) => Promise<readonly ProjectPathEntry[]>
+  options?: PathSearchOptions,
+) => Promise<ProjectPathSearchResult>
+
+/** Recursive project-file search used by `@query`; old array callers stay valid. */
+export interface PathSearcher {
+  (root: string, query: string, options?: PathSearchOptions): Promise<readonly ProjectPathEntry[]>
+  /** Optional additive metadata channel for aware callers. */
+  detailed?: DetailedPathSearcher
+}
 
 export type ProjectPathLoader = (root: string, signal?: AbortSignal) => Promise<readonly ProjectPathEntry[]>
 
@@ -64,7 +87,7 @@ async function gitProjectPaths(root: string, signal?: AbortSignal): Promise<Proj
     const options = {
       cwd: root,
       encoding: 'utf8' as const,
-      maxBuffer: 32 * 1024 * 1024,
+      maxBuffer: GIT_MAX_BUFFER_BYTES,
       ...(signal === undefined ? {} : { signal }),
     }
     execFile(
@@ -86,9 +109,10 @@ async function gitProjectPaths(root: string, signal?: AbortSignal): Promise<Proj
   })
 }
 
-async function walkedProjectPaths(root: string, signal?: AbortSignal): Promise<ProjectPathEntry[]> {
+async function walkedProjectPaths(root: string, signal?: AbortSignal): Promise<ProjectPathSearchResult> {
   const entries: ProjectPathEntry[] = []
   const pending = ['']
+  let capped = false
   while (pending.length > 0 && entries.length < MAX_WALK_ENTRIES) {
     throwIfAborted(signal)
     const relativeDir = pending.shift() ?? ''
@@ -109,17 +133,34 @@ async function walkedProjectPaths(root: string, signal?: AbortSignal): Promise<P
       } else {
         entries.push({ path: relative, directory: false })
       }
-      if (entries.length >= MAX_WALK_ENTRIES) break
+      if (entries.length >= MAX_WALK_ENTRIES) {
+        capped = true
+        break
+      }
     }
   }
-  return entries
+  const complete = !capped && pending.length === 0
+  return {
+    items: entries,
+    total: entries.length,
+    truncated: !complete,
+    source: 'walk',
+    complete,
+  }
 }
 
-/** Load files tracked or visible to Git; fall back to a bounded async walk. */
-export async function loadProjectPaths(root: string, signal?: AbortSignal): Promise<readonly ProjectPathEntry[]> {
+/** Load discovery metadata without hiding Git fallback or the walk ceiling. */
+export async function loadProjectPathResult(root: string, signal?: AbortSignal): Promise<ProjectPathSearchResult> {
   const git = await gitProjectPaths(root, signal)
-  if (git !== undefined) return git
+  if (git !== undefined) {
+    return { items: git, total: git.length, truncated: false, source: 'git', complete: true }
+  }
   return walkedProjectPaths(root, signal)
+}
+
+/** Compatibility helper returning only the discovered paths. */
+export async function loadProjectPaths(root: string, signal?: AbortSignal): Promise<readonly ProjectPathEntry[]> {
+  return (await loadProjectPathResult(root, signal)).items
 }
 
 function subsequenceScore(query: string, target: string): number | undefined {
@@ -158,14 +199,13 @@ export function fuzzyProjectPathScore(query: string, candidate: string): number 
   return undefined
 }
 
-/** Rank a stable project index for one live query. */
-export function rankProjectPaths(
-  entries: readonly ProjectPathEntry[],
+function rankProjectPathResult(
+  load: ProjectPathSearchResult,
   query: string,
   maxResults = DEFAULT_MAX_RESULTS,
-): ProjectPathEntry[] {
-  if (maxResults <= 0) return []
-  return entries
+): ProjectPathSearchResult {
+  const limit = Math.max(0, maxResults)
+  const ranked = load.items
     .flatMap((entry) => {
       const entryPath = normalizedRelativePath(entry.path)
       if (entryPath === undefined) return []
@@ -181,13 +221,35 @@ export function rankProjectPaths(
       || Number(right.entry.directory) - Number(left.entry.directory)
       || left.depth - right.depth
       || left.entry.path.localeCompare(right.entry.path))
-    .slice(0, maxResults)
-    .map(result => result.entry)
+  const total = ranked.length
+  const capped = total > limit
+  return {
+    items: ranked.slice(0, limit).map(result => result.entry),
+    total,
+    truncated: load.truncated || capped,
+    source: load.source,
+    complete: load.complete,
+  }
+}
+
+/** Rank a stable project index for one live query. */
+export function rankProjectPaths(
+  entries: readonly ProjectPathEntry[],
+  query: string,
+  maxResults = DEFAULT_MAX_RESULTS,
+): ProjectPathEntry[] {
+  return [...rankProjectPathResult({
+    items: entries,
+    total: entries.length,
+    truncated: false,
+    source: 'custom',
+    complete: true,
+  }, query, maxResults).items]
 }
 
 /** Per-TUI project index cache; search remains asynchronous and cancellable. */
 export class ProjectFileSearch {
-  readonly #cache = new Map<string, { expiresAt: number; entries: readonly ProjectPathEntry[] }>()
+  readonly #cache = new Map<string, { expiresAt: number; load: ProjectPathSearchResult }>()
   readonly #loader: ProjectPathLoader
   readonly #cacheTtlMs: number
 
@@ -196,21 +258,33 @@ export class ProjectFileSearch {
     this.#cacheTtlMs = cacheTtlMs
   }
 
-  readonly search: PathSearcher = async (root, query, options = {}) => {
+  readonly searchDetailed: DetailedPathSearcher = async (root, query, options = {}) => {
     throwIfAborted(options.signal)
     const cacheKey = path.resolve(root)
     const now = Date.now()
     const cached = this.#cache.get(cacheKey)
-    let entries: readonly ProjectPathEntry[]
+    let load: ProjectPathSearchResult
     if (cached !== undefined && cached.expiresAt >= now) {
-      entries = cached.entries
-    } else {
-      entries = await this.#loader(cacheKey, options.signal)
+      load = cached.load
+    } else if (this.#loader === loadProjectPaths) {
+      load = await loadProjectPathResult(cacheKey, options.signal)
       throwIfAborted(options.signal)
-      this.#cache.set(cacheKey, { entries, expiresAt: Date.now() + this.#cacheTtlMs })
+      this.#cache.set(cacheKey, { load, expiresAt: Date.now() + this.#cacheTtlMs })
+    } else {
+      const items = await this.#loader(cacheKey, options.signal)
+      throwIfAborted(options.signal)
+      load = { items, total: items.length, truncated: false, source: 'custom', complete: true }
+      this.#cache.set(cacheKey, { load, expiresAt: Date.now() + this.#cacheTtlMs })
     }
-    return rankProjectPaths(entries, query, options.maxResults ?? DEFAULT_MAX_RESULTS)
+    return rankProjectPathResult(load, query, options.maxResults ?? DEFAULT_MAX_RESULTS)
   }
+
+  /** Existing callers still receive an array; metadata-aware callers use `.detailed`. */
+  readonly search: PathSearcher = Object.assign(
+    async (root: string, query: string, options: PathSearchOptions = {}) =>
+      (await this.searchDetailed(root, query, options)).items,
+    { detailed: this.searchDetailed },
+  )
 
   invalidate(root?: string): void {
     if (root === undefined) this.#cache.clear()

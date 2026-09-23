@@ -81,7 +81,10 @@ function mergeAtItems(
   sessions: readonly AutocompleteItem[],
 ): AutocompleteItem[] {
   const items: AutocompleteItem[] = []
-  if (files.length > 0) items.push(FILE_HEADING, ...files)
+  if (files.length > 0) {
+    if (files[0]?.kind === 'heading') items.push(...files)
+    else items.push(FILE_HEADING, ...files)
+  }
   if (sessions.length > 0) items.push(SESSION_HEADING, ...sessions)
   return items
 }

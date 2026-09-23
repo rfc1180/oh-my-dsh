@@ -75,6 +75,7 @@ import { buildCopyTargets, extractCopyTarget, parseCopyKind } from '../views/cop
 import {
   applyHistorySearchEvent,
   createHistorySearch,
+  refreshHistorySearch,
   type HistorySearchState,
 } from '../views/history-search.ts'
 import { type EditorCommand, InputEditor, lineEnd, lineStart } from '../input/editor.ts'
@@ -162,6 +163,7 @@ import type { StartupChangelogMode } from '../session/release-notes.ts'
 const DOUBLE_CTRL_C_MS = 500
 const DOUBLE_ESCAPE_MS = 500
 const MAX_PENDING_ESCAPE_BYTES = 4096
+const MAX_RESIDENT_HISTORY_ENTRIES = 3_000
 // Streaming reparses the growing live Markdown block; leave event-loop time for raw-key input.
 const DEFAULT_STREAM_RENDER_MS = 50
 // Spinner frames advance with real Agent/roster events. A cosmetic interval
@@ -269,6 +271,8 @@ export class LocalTui implements TuiService {
   readonly #editor = new InputEditor()
   #history: string[] = []
   #historyIndex = 0
+  #historyCursor: string | undefined
+  #historyHasMore = false
   #draft = ''
   #ac: { items: AutocompleteItem[]; selected: number } | null = null
   #search: HistorySearchState | null = null
@@ -421,7 +425,10 @@ export class LocalTui implements TuiService {
     this.#readClipboardImage = paths.readClipboardImage ?? readImageFromClipboard
     this.#readClipboardFiles = paths.readClipboardFiles ?? readMacClipboardFiles
     this.#historyStore = paths.historyPath === undefined ? undefined : new HistoryStore(paths.historyPath)
-    this.#history = this.#historyStore?.load() ?? []
+    const historyPage = this.#historyStore?.loadPage()
+    this.#history = historyPage?.entries ?? []
+    this.#historyCursor = historyPage?.previousCursor
+    this.#historyHasMore = historyPage?.hasMore ?? false
     this.#keybindings = loadKeybindings(paths.keybindingsPath)
     const fallback = defaultPathSource()
     this.#cwd = paths.cwd ?? fallback.cwd
@@ -1779,7 +1786,7 @@ export class LocalTui implements TuiService {
     }
     if (event.type === 'key' && event.id === 'ctrl+r') {
       if (this.#images.length > 0) return
-      this.#search = createHistorySearch(this.#history)
+      this.#search = createHistorySearch(this.#history, this.#historyHasMore)
       this.#ac = null
       this.#render()
       return
@@ -2188,6 +2195,12 @@ export class LocalTui implements TuiService {
       this.#render()
       return
     }
+    if (command.kind === 'loadMore') {
+      this.#loadOlderHistory()
+      this.#search = refreshHistorySearch(this.#search, this.#history, this.#historyHasMore)
+      this.#render()
+      return
+    }
     if (command.kind === 'select') {
       this.#search = null
       this.#editor.setText(command.text)
@@ -2438,8 +2451,36 @@ export class LocalTui implements TuiService {
     }
   }
 
+  #boundRecentHistory(): void {
+    if (this.#history.length <= MAX_RESIDENT_HISTORY_ENTRIES) return
+    if (this.#historyStore !== undefined) {
+      const page = this.#historyStore.loadPage(undefined, MAX_RESIDENT_HISTORY_ENTRIES)
+      this.#history = page.entries
+      this.#historyCursor = page.previousCursor
+      this.#historyHasMore = page.hasMore
+      return
+    }
+    this.#history.splice(0, this.#history.length - MAX_RESIDENT_HISTORY_ENTRIES)
+  }
+
+  #loadOlderHistory(): boolean {
+    if (!this.#historyHasMore || this.#historyCursor === undefined || this.#historyStore === undefined) return false
+    const page = this.#historyStore.loadPage(this.#historyCursor)
+    this.#historyCursor = page.previousCursor
+    this.#historyHasMore = page.hasMore
+    if (page.entries.length === 0) return false
+    this.#history.unshift(...page.entries)
+    const overflow = Math.max(0, this.#history.length - MAX_RESIDENT_HISTORY_ENTRIES)
+    if (overflow > 0) {
+      this.#history.splice(this.#history.length - overflow, overflow)
+      this.#historyIndex = Math.max(0, this.#historyIndex - overflow)
+    }
+    return true
+  }
+
   #historyPrev(): void {
     if (this.#images.length > 0) return
+    if (this.#historyIndex >= this.#history.length && !this.#loadOlderHistory()) return
     if (this.#history.length === 0 || this.#historyIndex >= this.#history.length) return
     if (this.#historyIndex === 0) this.#draft = this.#editor.text
     this.#historyIndex += 1
@@ -2516,6 +2557,7 @@ export class LocalTui implements TuiService {
     if (historyText !== '' && this.#history[this.#history.length - 1] !== historyText) {
       this.#history.push(historyText)
       this.#historyStore?.add(historyText)
+      this.#boundRecentHistory()
     }
     this.#historyIndex = 0
     this.#draft = ''
@@ -2560,6 +2602,7 @@ export class LocalTui implements TuiService {
     if (historyText !== '' && this.#history[this.#history.length - 1] !== historyText) {
       this.#history.push(historyText)
       this.#historyStore?.add(historyText)
+      this.#boundRecentHistory()
     }
     this.#historyIndex = 0
     this.#draft = ''
