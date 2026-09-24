@@ -69,6 +69,35 @@ function readyState() {
   return setTrajectorySnapshot(listed, snapshot())
 }
 
+/** Two steps where a read result grows the prompt from 4.1K to 90.9K tokens. */
+const growthEvents: SessionEvent[] = [
+  event('turn/start', 0, 1_000, { turn: 1 }),
+  event('step/start', 1, 1_010, { turn: 1, step: 1 }),
+  event('tool/call', 2, 1_020, { turn: 1, step: 1, callId: 'c1', name: 'read', arguments: '{"file_path":"src/bridge.go"}' }),
+  event('tool/result', 3, 1_060, { message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'baseline body' }] }] } }),
+  event('assistant/message', 4, 1_100, {
+    turn: 1,
+    step: 1,
+    message: { source: { provider: 'openai', model: 'gpt' }, content: [{ type: 'text', text: 'baseline' }] },
+    usage: { inputTokens: 4_000, outputTokens: 100 },
+  }),
+  event('step/end', 5, 1_110, { turn: 1, step: 1 }),
+  event('step/start', 6, 1_120, { turn: 1, step: 2 }),
+  event('tool/call', 7, 1_130, { turn: 1, step: 2, callId: 'c2', name: 'read', arguments: '{"file_path":"bridge.go"}' }),
+  event('tool/result', 8, 1_200, { message: { content: [{ type: 'tool-result', toolCallId: 'c2', content: [{ type: 'text', text: 'huge body' }] }] } }),
+  event('assistant/message', 9, 1_300, {
+    turn: 1,
+    step: 2,
+    message: { source: { provider: 'openai', model: 'gpt' }, content: [{ type: 'text', text: 'grown' }] },
+    usage: { inputTokens: 90_000, outputTokens: 900 },
+  }),
+  event('step/end', 10, 1_310, { turn: 1, step: 2 }),
+]
+
+function growthState(mode: 'flow' | 'overview' | 'raw' = 'flow') {
+  return setTrajectorySnapshot(createTrajectoryState('root', { mode }), snapshot(growthEvents))
+}
+
 describe('Trajectory projection', () => {
   it('parses canonical modes, legacy aliases, and bounded limits', () => {
     const modes = ['overview', 'flow', 'runs', 'tools', 'changes', 'problems', 'raw'] as const
@@ -128,6 +157,68 @@ describe('Trajectory projection', () => {
     expect(state.rows[0]).toMatchObject({ type: 'tool/lifecycle', label: 'bash', durationMs: 250, sourceSeqs: [1, 2] })
     expect(state.rows[1]?.diagnostic).toContain('unmatched tool end')
     expect(filteredTrajectoryRows({ ...state, query: 'status:completed tool:bash' })).toHaveLength(1)
+  })
+
+  it('measures context growth against the previous assistant step and names its tool', () => {
+    const rows = buildTrajectoryRows(growthEvents)
+    expect(rows.find(row => row.seq === 4)?.growthTokens).toBeUndefined()
+    expect(rows.find(row => row.seq === 9)).toMatchObject({
+      growthTokens: 86_800,
+      growthSource: 'read bridge.go',
+    })
+  })
+
+  it('counts prompt-side cache buckets in the step context size', () => {
+    const rows = buildTrajectoryRows([
+      event('assistant/message', 0, 1, { usage: { inputTokens: 1_000, outputTokens: 100 } }),
+      event('tool/call', 1, 2, { callId: 'c1', name: 'bash', arguments: '{"command":"pnpm test"}' }),
+      event('assistant/message', 2, 3, { usage: { inputTokens: 2_000, cacheReadTokens: 50_000, cacheWriteTokens: 1_000, outputTokens: 500 } }),
+    ])
+    expect(rows.find(row => row.seq === 2)).toMatchObject({
+      growthTokens: 52_400,
+      growthSource: 'bash pnpm test',
+    })
+  })
+
+  it('leaves small or proportionally tiny growth without an annotation', () => {
+    const small = buildTrajectoryRows([
+      event('tool/call', 0, 1, { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' }),
+      event('assistant/message', 1, 2, { usage: { inputTokens: 4_000, outputTokens: 100 } }),
+      event('tool/call', 2, 3, { callId: 'c2', name: 'read', arguments: '{"file_path":"b.ts"}' }),
+      event('assistant/message', 3, 4, { usage: { inputTokens: 4_500, outputTokens: 100 } }),
+    ])
+    expect(small.find(row => row.seq === 3)?.growthTokens).toBeUndefined()
+    // 3K inside a 200K prompt is real growth, but not one worth a row annotation.
+    const diluted = buildTrajectoryRows([
+      event('tool/call', 0, 1, { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' }),
+      event('assistant/message', 1, 2, { usage: { inputTokens: 200_000, outputTokens: 100 } }),
+      event('tool/call', 2, 3, { callId: 'c2', name: 'read', arguments: '{"file_path":"b.ts"}' }),
+      event('assistant/message', 3, 4, { usage: { inputTokens: 203_000, outputTokens: 100 } }),
+    ])
+    expect(diluted.find(row => row.seq === 3)?.growthTokens).toBeUndefined()
+  })
+
+  it('keeps steps without usage or without a preceding tool stable', () => {
+    const rows = buildTrajectoryRows([
+      event('tool/call', 0, 1, { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' }),
+      event('assistant/message', 1, 2, { usage: { inputTokens: 4_000, outputTokens: 100 } }),
+      event('assistant/message', 2, 3, { message: { content: [{ type: 'text', text: 'no usage' }] } }),
+      event('turn/start', 3, 4, { turn: 2 }),
+      event('user/message', 4, 5, { turn: 2, source: { kind: 'user' }, content: [{ type: 'text', text: 'next prompt' }] }),
+      event('assistant/message', 5, 6, { usage: { inputTokens: 120_000, outputTokens: 900 } }),
+    ])
+    expect(rows.find(row => row.seq === 2)?.growthSource).toBeUndefined()
+    // A new turn and its prompt, not the stale read, caused this growth.
+    expect(rows.find(row => row.seq === 5)?.growthTokens).toBeUndefined()
+    // A compaction rewrote the prompt, so the pre-compaction tool is no longer its source.
+    const compacted = buildTrajectoryRows([
+      event('tool/call', 0, 1, { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' }),
+      event('assistant/message', 1, 2, { usage: { inputTokens: 10_000, outputTokens: 100 } }),
+      event('compaction/start', 2, 3, { compactionId: 'k1' }),
+      event('compaction/end', 3, 4, { compactionId: 'k1' }),
+      event('assistant/message', 4, 5, { usage: { inputTokens: 40_000, outputTokens: 400 } }),
+    ])
+    expect(compacted.find(row => row.seq === 4)?.growthTokens).toBeUndefined()
   })
 
   it('keeps descendants directly below their durable parent', () => {
@@ -238,6 +329,43 @@ describe('renderTrajectory', () => {
     expect(output).toContain('T1/S1/C:call-1')
     expect(output).toMatch(/[┌│└]T1/u)
     expect(output).toContain('Ship the terminal trajectory')
+  })
+
+  it('shows what inflated the context on the assistant row, its details, and overview', () => {
+    const state = growthState('flow')
+    const rowIndex = filteredTrajectoryRows(state).findIndex(row => row.seq === 9)
+    const flow = renderTrajectory({ ...state, selectedEvent: rowIndex, follow: false, focus: 'timeline' as const }, createTheme(false), 120, 32)
+    const flowOutput = flow.lines.map(stripAnsi).join('\n')
+    expect(flowOutput).toContain('+87K ← read bridge.go')
+    expect(flow.lines.every(line => visibleWidth(line) <= 120)).toBe(true)
+
+    const details = renderTrajectory({ ...state, selectedEvent: rowIndex, follow: false, focus: 'details' as const }, createTheme(false), 120, 32)
+    expect(details.lines.map(stripAnsi).join('\n')).toContain('Context growth: +87K tokens ← read bridge.go')
+
+    const overviewState = { ...state, mode: 'overview' as const, follow: false }
+    const overviewIndex = filteredTrajectoryRows(overviewState).findIndex(row => row.seq === 9)
+    const overview = renderTrajectory({ ...overviewState, selectedEvent: overviewIndex }, createTheme(false), 120, 32)
+    const overviewOutput = overview.lines.map(stripAnsi).join('\n')
+    expect(overviewOutput).toContain('Selected now: #9 assistant/message')
+    expect(overviewOutput).toContain('+87K ← read bridge.go')
+
+    const narrow = renderTrajectory({ ...state, selectedEvent: rowIndex, follow: false }, createTheme(false), 70, 22)
+    expect(narrow.lines.every(line => visibleWidth(line) <= 70)).toBe(true)
+  })
+
+  it('keeps Raw one-to-one and width-safe while carrying the growth annotation', () => {
+    const state = growthState('raw')
+    expect(state.rawRows).toHaveLength(growthEvents.length)
+    expect(state.rawRows.filter(row => row.growthTokens !== undefined).map(row => row.seq)).toEqual([9])
+    const rowIndex = state.rawRows.findIndex(row => row.seq === 9)
+    const list = renderTrajectory({ ...state, selectedEvent: rowIndex, follow: false, focus: 'timeline' as const }, createTheme(false), 120, 32)
+    expect(list.lines.every(line => visibleWidth(line) <= 120)).toBe(true)
+    expect(list.lines.map(stripAnsi).join('\n')).toContain('+87K ← read bridge.go')
+    const details = renderTrajectory({ ...state, selectedEvent: rowIndex, follow: false, focus: 'details' as const }, createTheme(false), 120, 32)
+    const output = details.lines.map(stripAnsi).join('\n')
+    expect(details.lines.every(line => visibleWidth(line) <= 120)).toBe(true)
+    expect(output).toContain('"type": "assistant/message"')
+    expect(output).toContain('"seq": 9')
   })
 
   it('redacts reasoning blocks and nested chunk objects from raw details', () => {

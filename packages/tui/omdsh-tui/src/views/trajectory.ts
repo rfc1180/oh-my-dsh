@@ -41,6 +41,10 @@ export interface TrajectoryEventRow {
   readonly glyph: string
   readonly label: string
   readonly summary: string
+  /** Tokens this assistant step added to the prompt context, once the growth cleared both thresholds. */
+  readonly growthTokens?: number | undefined
+  /** `read bridge.go` — the tool activity preceding the step that explained the growth. */
+  readonly growthSource?: string | undefined
   readonly status: 'unknown' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted'
   readonly durationMs?: number | undefined
   readonly sourceSeqs: readonly number[]
@@ -236,6 +240,65 @@ function usageSummary(value: unknown): string {
   return fields.join(' ')
 }
 
+/** A step must add this many tokens before the row explains what inflated the context. */
+const CONTEXT_GROWTH_MIN_TOKENS = 2_000
+/** …and at least this share of the previous step's prompt size, so large contexts stay quiet. */
+const CONTEXT_GROWTH_MIN_RATIO = 0.05
+/** Argument keys that identify one tool call, most file-specific first. */
+const TOOL_HINT_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'query', 'url', 'name', 'description', 'prompt'] as const
+const TOOL_HINT_LIMIT = 48
+
+/**
+ * Prompt size after one assistant step: the same prompt-side buckets the
+ * session stats project (uncached input + cache read + cache write) plus that
+ * step's own output.
+ */
+function contextSize(usage: unknown): number | undefined {
+  const value = record(usage)
+  const input = number(value.inputTokens)
+  const output = number(value.outputTokens)
+  if (input === undefined && output === undefined) return undefined
+  return (input ?? 0) + (number(value.cacheReadTokens) ?? 0) + (number(value.cacheWriteTokens) ?? 0) + (output ?? 0)
+}
+
+/** `88K` — compact magnitude for the context-growth annotation. */
+function tokenCount(value: number): string {
+  if (value < 1_000) return String(Math.round(value))
+  if (value < 1_000_000) return `${Math.round(value / 1_000)}K`
+  return `${(value / 1_000_000).toFixed(1)}M`
+}
+
+function toolArguments(raw: unknown): Readonly<Record<string, unknown>> {
+  if (typeof raw !== 'string') return record(raw)
+  try {
+    return record(JSON.parse(raw))
+  } catch {
+    return {}
+  }
+}
+
+/** `read bridge.go` — the tool name plus the argument that best identifies the call. */
+function toolHint(name: unknown, rawArguments: unknown): string | undefined {
+  const tool = compact(name, 24)
+  const args = toolArguments(rawArguments)
+  let argument = ''
+  for (const key of TOOL_HINT_KEYS) {
+    const value = args[key]
+    if (typeof value === 'string' && value.trim() !== '') {
+      argument = compact(value, TOOL_HINT_LIMIT)
+      break
+    }
+  }
+  if (tool === '') return argument === '' ? undefined : argument
+  return argument === '' ? tool : `${tool} ${argument}`
+}
+
+/** `+88K ← read bridge.go`, only on rows whose step cleared both growth thresholds. */
+function contextGrowthNote(row: TrajectoryEventRow): string {
+  if (row.growthTokens === undefined || row.growthSource === undefined) return ''
+  return `+${tokenCount(row.growthTokens)} ← ${row.growthSource}`
+}
+
 function eventData(event: EventLike): Readonly<Record<string, unknown>> {
   return record(event.data)
 }
@@ -335,10 +398,33 @@ interface Timings {
   readonly calls: Map<string, number>
   readonly workflows: Map<string, number>
   readonly compactions: Map<string, number>
+  /** Prompt size after the previous assistant step; growth is measured against it. */
+  lastContextTokens: number | undefined
+  /** Identity of the tool activity that ran since the previous assistant step. */
+  lastToolHint: string | undefined
 }
 
 function timingKey(...parts: unknown[]): string {
   return parts.map(text).join(':')
+}
+
+/**
+ * Advance the context ledger for one assistant step and report the growth
+ * annotation. The source is the tool that ran since the previous assistant
+ * step, so a prompt, turn boundary, resume seed, or compaction clears it
+ * instead of misattributing later growth to an old result.
+ */
+function recordContextGrowth(usage: unknown, timings: Timings): Pick<TrajectoryEventRow, 'growthTokens' | 'growthSource'> {
+  const current = contextSize(usage)
+  if (current === undefined) return {}
+  const previous = timings.lastContextTokens
+  const source = timings.lastToolHint
+  timings.lastContextTokens = current
+  timings.lastToolHint = undefined
+  if (previous === undefined || source === undefined || current <= previous) return {}
+  const growth = current - previous
+  if (growth < CONTEXT_GROWTH_MIN_TOKENS || growth < previous * CONTEXT_GROWTH_MIN_RATIO) return {}
+  return { growthTokens: growth, growthSource: source }
 }
 
 function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEventRow, 'event' | 'searchText'> | undefined {
@@ -364,6 +450,7 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
   switch (event.type) {
     case 'turn/start': {
       timings.turns.set(text(data.turn), event.time)
+      timings.lastToolHint = undefined
       return { ...base, category: 'turn', tone: 'accent', glyph: '▶', label: `Turn ${text(data.turn)}`, summary: 'started', defaultVisible: true }
     }
     case 'turn/end': {
@@ -382,6 +469,7 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
     case 'user/message': {
       const source = record(data.source)
       const message = record(data.message)
+      timings.lastToolHint = undefined
       return { ...base, category: 'message', tone: source.kind === 'user' ? 'accent' : 'muted', glyph: '◆', label: source.kind === 'user' ? 'You' : `Input:${text(source.kind || record(message.source).kind)}`, summary: contentText(data.content || message.content), defaultVisible: source.kind === 'user' }
     }
     case 'assistant/chunk':
@@ -392,11 +480,12 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
       const route = [source.provider, source.model].map(text).filter(Boolean).join('/')
       const usage = usageSummary(data.usage)
       const body = contentText(message.content)
-      return { ...base, category: failed ? 'error' : 'message', tone: failed ? 'warning' : 'normal', glyph: failed ? SYMBOL.warning : '●', label: 'Assistant', summary: [route, usage, body].filter(Boolean).join(' · '), defaultVisible: true }
+      return { ...base, category: failed ? 'error' : 'message', tone: failed ? 'warning' : 'normal', glyph: failed ? SYMBOL.warning : '●', label: 'Assistant', summary: [route, usage, body].filter(Boolean).join(' · '), defaultVisible: true, ...recordContextGrowth(data.usage, timings) }
     }
     case 'tool/call': {
       const callId = text(data.callId)
       timings.calls.set(callId, event.time)
+      timings.lastToolHint = toolHint(data.name, data.arguments)
       return { ...base, category: 'tool', tone: 'accent', glyph: '↳', label: text(data.name || 'tool'), summary: compact(data.arguments), defaultVisible: true }
     }
     case 'tool/result': {
@@ -437,6 +526,7 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
     }
     case 'compaction/start':
       timings.compactions.set(text(data.compactionId), event.time)
+      timings.lastToolHint = undefined
       return { ...base, category: 'system', tone: 'warning', glyph: '◫', label: 'Compaction', summary: 'started', defaultVisible: true }
     case 'compaction/summary':
       return { ...base, category: 'system', tone: 'muted', glyph: '◫', label: 'Compaction', summary: `${text(data.shadowedTokenCount || '?')} shadow tokens · ${contentText(data.summary)}`, defaultVisible: true }
@@ -448,6 +538,8 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
     case 'llm/retry-started':
       return { ...base, category: 'error', tone: 'warning', glyph: SYMBOL.warning, label: 'Retry', summary: compact(data.reason || data.error || jsonForSearch(data)), defaultVisible: true }
     case 'session/end-seed':
+      timings.lastContextTokens = undefined
+      timings.lastToolHint = undefined
       return { ...base, category: 'system', tone: 'muted', glyph: '↻', label: 'Resume', summary: 'new process boundary', defaultVisible: false }
     default:
       return { ...base, category: failed ? 'error' : 'system', tone: failed ? 'error' : 'muted', glyph: failed ? SYMBOL.error : '·', label: event.type, summary: compact(jsonForSearch(data)), defaultVisible: failed }
@@ -461,6 +553,8 @@ function buildRawTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEven
     calls: new Map(),
     workflows: new Map(),
     compactions: new Map(),
+    lastContextTokens: undefined,
+    lastToolHint: undefined,
   }
   const rows: TrajectoryEventRow[] = []
   const ordered = [...events].sort((left, right) => (left as EventLike).seq - (right as EventLike).seq)
@@ -471,7 +565,7 @@ function buildRawTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEven
     rows.push({
       ...projected,
       event: raw,
-      searchText: `${projected.type} ${projected.label} ${projected.summary} ${jsonForSearch(event.data)}`.toLocaleLowerCase(),
+      searchText: `${projected.type} ${projected.label} ${projected.summary} ${projected.growthSource ?? ''} ${jsonForSearch(event.data)}`.toLocaleLowerCase(),
     })
   }
   return rows
@@ -748,6 +842,8 @@ function repeatSignature(row: TrajectoryEventRow): string {
     status: row.status,
     label: row.label,
     summary: row.summary,
+    growthTokens: row.growthTokens,
+    growthSource: row.growthSource,
     durationMs: row.durationMs,
     diagnostic: row.diagnostic,
     error: row.error,
@@ -1108,7 +1204,12 @@ function overviewRows(state: TrajectoryState, theme: Theme, width: number, heigh
     lines.push(`${fit(theme.bold(label), labelWidth)} ${painted}`)
   }
   lines.push(theme.fg('dim', truncateToWidth('  • event · ● several events · ◆ selected · ! problem', width)))
-  if (selected !== undefined) lines.push(truncateToWidth(`  Selected now: #${selected.seq} ${selected.type} · ${selected.summary}`, width))
+  if (selected !== undefined) {
+    const note = contextGrowthNote(selected)
+    const head = `  Selected now: #${selected.seq} ${selected.type} · `
+    const tail = note === '' ? '' : ` ${note}`
+    lines.push(truncateToWidth(head + truncateToWidth(selected.summary, Math.max(0, width - visibleWidth(head) - visibleWidth(tail))) + tail, width))
+  }
   return lines.slice(0, height)
 }
 
@@ -1150,8 +1251,13 @@ function eventRows(state: TrajectoryState, theme: Theme, width: number, height: 
     const label = fit(paintTone(theme, row.tone, labelText), labelWidth)
     const repeat = row.repeatCount > 1 ? ` ×${row.repeatCount}` : ''
     const summaryText = (state.mode === 'changes' ? row.change ?? '' : row.summary) + repeat
+    const note = contextGrowthNote(row)
     const summaryWidth = Math.max(0, width - 2 - 6 - 2 - labelWidth - 1)
-    const summary = truncateToWidth(paintTone(theme, row.tone === 'accent' ? 'normal' : row.tone, summaryText), summaryWidth)
+    // Reserve the annotation's width first so a long summary never pushes it off the row.
+    const bodyWidth = Math.max(0, summaryWidth - (note === '' ? 0 : visibleWidth(note) + 1))
+    const body = truncateToWidth(paintTone(theme, row.tone === 'accent' ? 'normal' : row.tone, summaryText), bodyWidth)
+    const annotated = note === '' ? '' : paintTone(theme, 'accent', note)
+    const summary = body === '' || annotated === '' ? body + annotated : `${body} ${annotated}`
     const line = `${marker} ${elapsed} ${glyph} ${label} ${summary}`
     visible.push(active ? theme.inverse(fit(line, width)) : fit(line, width))
   }
@@ -1191,6 +1297,9 @@ function detailRows(state: TrajectoryState, theme: Theme, width: number, height:
         `Status: ${row.status}${row.durationMs === undefined ? '' : ` · duration ${duration(row.durationMs)}`}`,
         `Source events: ${row.sourceSeqs.map(seq => `#${seq}`).join(', ')}${row.repeatCount > 1 ? ` · repeated ${row.repeatCount}×` : ''}`,
         `Summary: ${row.summary}`,
+        row.growthTokens === undefined || row.growthSource === undefined
+          ? undefined
+          : `Context growth: +${tokenCount(row.growthTokens)} tokens ← ${row.growthSource}`,
         row.change === undefined ? undefined : `Change: ${row.change}`,
         row.filePaths.length === 0 ? undefined : `Files: ${row.filePaths.join(', ')}`,
         row.omittedChars === 0 ? undefined : `Excerpt: ${row.omittedChars} characters omitted from the row`,

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Explain context growth in Trajectory: an assistant step whose prompt grew by more than 2K tokens and more than 5% now shows a `+88K ← read bridge.go` tail naming the tool activity that inflated it, in the event row, the overview selection line, and Details.
 - Separate clean (uncached) prompt input from the cumulative input total in the status footer and estimate the next step's cache read from the current context, with full, dense, and nano copy.
 - Ship a complete semantic TUI theme catalog with 19 new light, dark, OLED, and high-contrast palettes, friendly `/settings` metadata, truecolor rendering, and light/dark ANSI16 fallbacks while preserving existing theme ids.
 - Expose a reusable `SessionRuntime` API that durably creates a detached conversational fork without switching the active conversation or changing the composer, including safe snapshots while the parent is still working.
