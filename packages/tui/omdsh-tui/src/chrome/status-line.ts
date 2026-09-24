@@ -143,7 +143,8 @@ function metric(label: string, value: string, tone: StatusTone = 'value'): Statu
 /**
  * English semantic groups; language selection will replace copy here. Dense
  * prefixes are T/S (turns/steps), L/Tl (LLM/tools), F/R (first token/rate),
- * C (cache), I/O (tokens), and X (context).
+ * C (cache plus the estimated next read), I/N/O (all/new/out tokens), and X
+ * (context).
  */
 function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): StatusGroup[] {
   const groups: StatusGroup[] = []
@@ -224,11 +225,33 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
   if (stats.inputTokens > 0 || stats.outputTokens > 0) {
     if (stats.inputTokens > 0) {
       const cachePercent = `${Math.round(stats.cacheReadTokens / stats.inputTokens * 100)}%`
+      // The next step resends the whole current context, so its cache read is
+      // approximated by the context occupancy we already know.
+      const nextRead = stats.contextTokens !== undefined && stats.contextTokens > 0 ? stats.contextTokens : undefined
       groups.push({
         id: 'cache',
-        parts: metric('Cache', cachePercent, 'positive'),
-        denseParts: [part(`C${cachePercent}`, 'positive')],
-        nanoParts: [part(`C${cachePercent}`, 'positive')],
+        parts: nextRead === undefined
+          ? metric('Cache', cachePercent, 'positive')
+          : [
+              ...metric('Cache', cachePercent, 'positive'),
+              part(' · ', 'separator'),
+              part('next ', 'label'),
+              part(formatTokens(nextRead), 'token'),
+            ],
+        denseParts: nextRead === undefined
+          ? [part(`C${cachePercent}`, 'positive')]
+          : [
+              part(`C${cachePercent}`, 'positive'),
+              part('→', 'separator'),
+              part(formatTokens(nextRead), 'token'),
+            ],
+        nanoParts: nextRead === undefined
+          ? [part(`C${cachePercent}`, 'positive')]
+          : [
+              part(`C${cachePercent}`, 'positive'),
+              part('→', 'separator'),
+              part(formatNanoTokens(nextRead), 'token'),
+            ],
       })
     }
     groups.push({
@@ -237,16 +260,23 @@ function buildStatusGroups(stats: TuiSessionStats, config: StatusBarConfig): Sta
         part(formatTokens(stats.inputTokens), 'token'),
         part(' in', 'label'),
         part(' · ', 'separator'),
+        part(formatTokens(stats.uncachedInputTokens), 'token'),
+        part(' new', 'label'),
+        part(' · ', 'separator'),
         part(formatTokens(stats.outputTokens), 'token'),
         part(' out', 'label'),
       ],
       denseParts: [
         part(`I${formatTokens(stats.inputTokens)}`, 'token'),
         part('/', 'separator'),
+        part(`N${formatTokens(stats.uncachedInputTokens)}`, 'token'),
+        part('/', 'separator'),
         part(`O${formatTokens(stats.outputTokens)}`, 'token'),
       ],
       nanoParts: [
         part(`↓${formatNanoTokens(stats.inputTokens)}`, 'token'),
+        part('/', 'separator'),
+        part(`N${formatNanoTokens(stats.uncachedInputTokens)}`, 'token'),
         part('/', 'separator'),
         part(`↑${formatNanoTokens(stats.outputTokens)}`, 'token'),
       ],
@@ -351,20 +381,50 @@ function selectStableGroups(
   return best.length > greedy.length ? best : greedy
 }
 
-/** Keep the product telemetry priority while retaining the user's visual order. */
+/**
+ * Keep the product telemetry priority while retaining the user's visual order.
+ * A single priority sweep is not monotonic in the terminal width: admitting a
+ * wide high-priority group at the next column can evict two narrower ones and
+ * lose coverage. The selection here keeps the largest group count that fits,
+ * prefers the highest-priority metrics inside that count, and picks the
+ * narrowest form on a full tie — so a wider terminal never drops a metric and
+ * the lowest-priority group is the first to go.
+ *
+ * The priority objective is lexicographic over covered groups, which is not
+ * decomposable, so a per-count knapsack would discard feasible selections. The
+ * group vocabulary is the fixed six `STATUS_GROUP_IDS`, so enumerating subsets
+ * is at most 64 candidates per paint.
+ */
+function comparePrioritySelections(
+  a: readonly StatusGroup[],
+  b: readonly StatusGroup[],
+  measure: (selection: readonly StatusGroup[]) => number,
+): number {
+  const aIds = new Set(a.map(group => group.id))
+  const bIds = new Set(b.map(group => group.id))
+  for (const id of NARROW_TELEMETRY_PRIORITY) {
+    const inA = aIds.has(id)
+    const inB = bIds.has(id)
+    if (inA !== inB) return inA ? -1 : 1
+  }
+  return measure(a) - measure(b)
+}
+
 function selectPriorityGroups(
   groups: readonly StatusGroup[],
   capacity: number,
   measure: (selection: readonly StatusGroup[]) => number,
 ): StatusGroup[] {
-  const selected = new Set<StatusGroupId>()
-  for (const id of NARROW_TELEMETRY_PRIORITY) {
-    if (!groups.some(group => group.id === id)) continue
-    const candidateIds = new Set(selected).add(id)
-    const candidate = groups.filter(group => candidateIds.has(group.id))
-    if (measure(candidate) <= capacity) selected.add(id)
+  let best: StatusGroup[] = []
+  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
+    const candidate = groups.filter((_, index) => (mask & (1 << index)) !== 0)
+    if (candidate.length < best.length) continue
+    if (measure(candidate) > capacity) continue
+    if (candidate.length > best.length || comparePrioritySelections(candidate, best, measure) < 0) {
+      best = candidate
+    }
   }
-  return groups.filter(group => selected.has(group.id))
+  return best
 }
 
 /**
@@ -689,7 +749,8 @@ export function renderStatusFooter(options: StatusFooterOptions, theme: Theme): 
     options.stats === undefined ? null : [
       options.stats.turns, options.stats.steps, options.stats.llmMs, options.stats.toolMs,
       options.stats.ttftMs, options.stats.ttftSteps, options.stats.decodeMs, options.stats.decodeTokens,
-      options.stats.inputTokens, options.stats.outputTokens, options.stats.cacheReadTokens,
+      options.stats.inputTokens, options.stats.uncachedInputTokens, options.stats.outputTokens,
+      options.stats.cacheReadTokens,
       options.stats.cacheWriteTokens, options.stats.contextTokens, options.stats.contextWindow,
     ],
     width,
