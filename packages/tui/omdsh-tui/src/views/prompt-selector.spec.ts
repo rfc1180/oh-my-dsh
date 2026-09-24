@@ -143,4 +143,30 @@ describe('full-screen selector density', () => {
     expect(rows.some(row => row.includes('deepseek-v4-flash — DeepSeek-V4-Flash'))).toBe(true)
     expect(rows.some(row => row.includes('deepseek-v4-pro — DeepSeek-V4-Pro'))).toBe(true)
   })
+
+  it('windows a long compact list to ten rows even on a tall terminal', () => {
+    const state: PromptSelectorState = {
+      request: {
+        title: 'Model',
+        question: 'Choose a model for openrouter',
+        presentation: 'fullscreen-list',
+        optionLayout: 'compact',
+        filterable: true,
+        allowCustom: false,
+        options: Array.from({ length: 30 }, (_, index) => ({ label: `model-${index + 1}` })),
+      },
+      selected: 0,
+      checked: new Set(),
+    }
+
+    const frame = renderPromptSelectorPage(state, createTheme(false), 100, 60, '', 0, 'omdsh')
+    const rows = frame.lines.map(stripAnsi)
+    const optionRows = rows.filter(row => /model-\d+/u.test(row))
+
+    expect(optionRows).toHaveLength(10)
+    expect(optionRows[0]).toContain('model-1')
+    expect(optionRows[9]).toContain('model-10')
+    expect(rows.some(row => row.includes('/30'))).toBe(true)
+    expect(rows.some(row => row.includes('model-11'))).toBe(false)
+  })
 })

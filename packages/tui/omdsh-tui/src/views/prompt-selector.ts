@@ -134,9 +134,15 @@ export function renderPromptSelectorPage(
   const selected = Math.max(0, Math.min(state.selected, Math.max(0, options.length - 1)))
   const compact = state.request.optionLayout === 'compact'
   const fixedRows = compact ? 9 : 11
-  const visibleCount = compact
+  const availableRows = compact
     ? Math.max(1, pageHeight - fixedRows)
     : Math.max(1, Math.floor((pageHeight - fixedRows) / 4))
+  // A long full-screen list must not paint every match: compact rows are capped
+  // to the same window the prompt card uses, so the search field can filter the
+  // whole catalog without a tall screen turning one keystroke into a big repaint.
+  const visibleCount = compact
+    ? Math.min(availableRows, PROMPT_SELECTOR_MAX_VISIBLE)
+    : availableRows
   const { start, end } = promptSelectorVisibleRange(options.length, selected, visibleCount)
   const detail = state.request.detail === undefined || state.request.detail === ''
     ? ''

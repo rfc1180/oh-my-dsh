@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Open the current conversation's live Trajectory as a rich native read-only TUI in the current terminal with `/trajectory`, `/trajectory screen`, or Alt+T; use `/trajectory companion` when a separate Surfterm block is preferred. Both surfaces scope the run tree to the active root and its descendants and expose numbered overview, flow, runs, tools, changes, problems, and raw views alongside search, follow mode, refresh, event details, clipboard copy, and Trajectory-only mouse-wheel scrolling.
 - Project durable journals into a versioned semantic session-history model with explainable human/internal/subagent/legacy classification, safe interaction content, final-answer boundaries, and cursor-based catalog/history pages for native terminal consumers.
 - Bind a revocable `session.history.page.v2` source for supporting terminal hosts, restricted to the active session and exposing only direct user prompts and final assistant answers through opaque cursors.
+- Let `/model` open on per-provider favorite models configured under `omdsh-tui.modelFavorites` while its search field still filters the entire provider catalog, and window long compact pickers to ten rows so a large catalog stays responsive.
 
 ### Changed
 

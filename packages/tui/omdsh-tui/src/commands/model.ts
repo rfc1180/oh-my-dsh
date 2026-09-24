@@ -28,6 +28,32 @@ function selected(raw: string, values: readonly string[]): string | undefined {
   return index >= 0 ? values[index] : raw
 }
 
+/**
+ * Put the configured favorite models first without dropping the rest of the
+ * catalog. The picker shows a bounded window of this order, so the unfiltered
+ * view opens on the favorites while the search field still reaches every model.
+ * @param models - every model the provider serves, in catalog order.
+ * @param favorites - configured model ids, most preferred first.
+ * @returns the reordered list; a model named by both keeps its favorite slot.
+ */
+export function orderModelsByFavorite<T extends { id: string }>(
+  models: readonly T[],
+  favorites: readonly string[],
+): T[] {
+  if (favorites.length === 0) return [...models]
+  const byId = new Map(models.map(model => [model.id, model]))
+  const placed = new Set<string>()
+  const ordered: T[] = []
+  for (const id of favorites) {
+    const model = byId.get(id)
+    if (model === undefined || placed.has(model.id)) continue
+    placed.add(model.id)
+    ordered.push(model)
+  }
+  for (const model of models) if (!placed.has(model.id)) ordered.push(model)
+  return ordered
+}
+
 async function selectModel(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
   if (invocation.rawInput.trim() !== '') return { kind: 'error', text: 'Usage: /model' }
   const providers = ctx.llm.listProviders()
@@ -53,7 +79,10 @@ async function selectModel(ctx: Context, invocation: CommandInvocation): Promise
     }
   }
   if (provider === undefined) return { kind: 'error', text: 'No model provider is available.' }
-  const models = await ctx.llm.listModels(provider)
+  const models = orderModelsByFavorite(
+    await ctx.llm.listModels(provider),
+    ctx.tui.modelFavorites?.(provider) ?? [],
+  )
   if (models.length === 0) return { kind: 'error', text: `No models are available for ${provider}.` }
   const modelRaw = await ctx.tui.prompt({
     ...fixedChoice(models.length),

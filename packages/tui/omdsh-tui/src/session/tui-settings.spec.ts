@@ -19,6 +19,7 @@ describe('TuiSettingsSchema', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      modelFavorites: {},
     })
     expect(validate({ theme: 'light', colors: false, expandTools: true })).toEqual({
       theme: 'light',
@@ -27,6 +28,7 @@ describe('TuiSettingsSchema', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      modelFavorites: {},
     })
     expect(validate({ statusBar: { enabled: false, labels: 'full', groups: ['tokens', 'cache'] } })).toMatchObject({
       statusBar: { enabled: false, labels: 'full', groups: ['tokens', 'cache'] },

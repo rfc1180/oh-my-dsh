@@ -22,6 +22,32 @@ import { THEME_NAMES, type ThemeName } from '../chrome/theme.ts'
 /** Settings namespace owned by the local TUI provider. */
 export const TUI_SETTINGS_NAMESPACE = 'omdsh-tui'
 
+/**
+ * Model ids listed ahead of the rest of the catalog, keyed by provider route.
+ * The picker still offers the whole catalog to the search field; this only
+ * decides which models the default (unfiltered) view shows first.
+ */
+export type ModelFavorites = Record<string, string[]>
+
+/** Drop blank ids and blank providers from a configured favorites map. */
+export function normalizeModelFavorites(value: ModelFavorites | undefined): ModelFavorites {
+  const normalized: ModelFavorites = {}
+  for (const [provider, ids] of Object.entries(value ?? {})) {
+    const route = provider.trim()
+    if (route === '') continue
+    const seen = new Set<string>()
+    const kept: string[] = []
+    for (const id of ids) {
+      const model = id.trim()
+      if (model === '' || seen.has(model)) continue
+      seen.add(model)
+      kept.push(model)
+    }
+    if (kept.length > 0) normalized[route] = kept
+  }
+  return normalized
+}
+
 /** Durable TUI section stored in the user settings document. */
 export interface TuiSettings {
   theme: ThemeName
@@ -33,6 +59,8 @@ export interface TuiSettings {
   statusBar?: StatusBarConfig
   /** Legacy input retained so older settings documents can be migrated. */
   statusPreset?: StatusPreset
+  /** Per-provider model ids the picker lists before the rest of the catalog. */
+  modelFavorites?: ModelFavorites
 }
 
 /** Schema: palette, SGR, activity disclosure, tool expansion, and status-line detail. */
@@ -66,4 +94,5 @@ export const TuiSettingsSchema: z<TuiSettings> = z.object({
     sides: z.object(Object.fromEntries(STATUS_ITEM_IDS.map(id => [id, z.union([...STATUS_SIDES])]))),
   })]),
   statusPreset: z.union([...STATUS_PRESETS]),
+  modelFavorites: z.dict(z.array(z.string())),
 })

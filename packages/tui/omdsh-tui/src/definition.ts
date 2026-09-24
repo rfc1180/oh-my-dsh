@@ -421,6 +421,12 @@ export interface TuiService {
   commandOutput(command: string, text: string): void
   /** Temporarily own the composer and collect one human answer. */
   prompt(request: TuiPrompt): Promise<string | null>
+  /**
+   * Model ids the picker should list before the rest of the provider catalog.
+   * Optional so service fakes that never open `/model` stay valid.
+   * @param provider - provider route key.
+   */
+  modelFavorites?(provider: string): readonly string[]
   /** Replace the optional source used by `/trajectory` and the Trajectory hotkey. */
   setTrajectorySource(source?: TuiTrajectorySource): void
   /** Bind or unbind the safe transcript source for the current active session. */
