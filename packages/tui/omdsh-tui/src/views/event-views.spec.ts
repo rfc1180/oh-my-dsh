@@ -1326,6 +1326,7 @@ describe('renderView', () => {
         decodeMs: 922_500,
         decodeTokens: 73_800,
         inputTokens: 5_900_000,
+        uncachedInputTokens: 59_000,
         outputTokens: 73_800,
         cacheReadTokens: 5_841_000,
         cacheWriteTokens: 0,
@@ -1342,7 +1343,7 @@ describe('renderView', () => {
     expect(plain[modelRow]).toContain('deepseek-v4-pro · max')
     expect(plain[modelRow]).not.toContain('omdsh')
     expect(plain.at(-1)).toContain('1 turn · 74 steps')
-    expect(plain.at(-1)).toContain('5.9M in · 73.8K out')
+    expect(plain.at(-1)).toContain('5.9M in · 59K new · 73.8K out')
     expect(frame.lines[editorStart + editorRows - 1]).toMatch(/^╰─+╯$/)
     expect(frame.lines).toHaveLength(24)
   })
@@ -1382,6 +1383,7 @@ describe('renderView', () => {
         decodeMs: 0,
         decodeTokens: 0,
         inputTokens: 0,
+        uncachedInputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,

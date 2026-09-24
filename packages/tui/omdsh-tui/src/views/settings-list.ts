@@ -490,6 +490,7 @@ const STATUS_PREVIEW_STATS = {
   decodeMs: 922_500,
   decodeTokens: 73_800,
   inputTokens: 5_900_000,
+  uncachedInputTokens: 59_000,
   outputTokens: 73_800,
   cacheReadTokens: 5_841_000,
   cacheWriteTokens: 0,

@@ -22,6 +22,7 @@ const stats: TuiSessionStats = {
   decodeMs: 922_500,
   decodeTokens: 73_800,
   inputTokens: 5_900_000,
+  uncachedInputTokens: 59_000,
   outputTokens: 73_800,
   cacheReadTokens: 5_841_000,
   cacheWriteTokens: 0,
@@ -43,6 +44,7 @@ describe('session status line', () => {
       decodeMs: 0,
       decodeTokens: 0,
       inputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
@@ -66,7 +68,7 @@ describe('session status line', () => {
   it('formats concise English metric groups', () => {
     expect(sessionStatusGroups(stats)).toEqual([
       'Cache 99%',
-      '5.9M in · 73.8K out',
+      '5.9M in · 59K new · 73.8K out',
       'TTFT 1.2s · 80 tok/s',
       'LLM 16m51s · Tools 3m33s',
       '1 turn · 74 steps',
@@ -86,7 +88,7 @@ describe('session status line', () => {
   it('switches to dense copy and keeps every group on a narrow terminal', () => {
     const line = renderSessionStatusLabel(stats, statusBar(), createTheme(false), 76)
     expect(line).toContain('C99%')
-    expect(line).toContain('I5.9M/O73.8K')
+    expect(line).toContain('I5.9M/N59K/O73.8K')
     expect(line).toContain('F1.2s/R80')
     expect(line).toContain('L16:51/Tl3:33')
     expect(line).toContain('T1/S74')
@@ -96,7 +98,7 @@ describe('session status line', () => {
 
   it('uses a continuous border label and includes every group when space allows', () => {
     const line = renderSessionStatusLabel(stats, statusBar(), createTheme(false), 160)
-    expect(line).toContain('Cache 99% • 5.9M in · 73.8K out • TTFT 1.2s · 80 tok/s')
+    expect(line).toContain('Cache 99% • 5.9M in · 59K new · 73.8K out • TTFT 1.2s · 80 tok/s')
     expect(line).toContain('LLM 16m51s · Tools 3m33s • 1 turn · 74 steps')
     expect(stripAnsi(line)).toMatch(/^ .* $/)
     expect(line).not.toContain('轮')
@@ -108,7 +110,7 @@ describe('session status line', () => {
     const full = statusBar({ labels: 'full' })
     expect(sessionStatusGroups({ ...stats, turns: 1, steps: 1 }, full)).toContain('1 turn · 1 step')
     expect(sessionStatusGroups({ ...stats, turns: 2, steps: 74 }, full)).toContain('2 turns · 74 steps')
-    const rendered = renderSessionStatusLabel(stats, full, createTheme(false), 80)
+    const rendered = renderSessionStatusLabel(stats, full, createTheme(false), 90)
     expect(rendered).toContain('Cache 99%')
     expect(rendered).toContain('1 turn · 74 steps')
     expect(rendered).not.toContain('C99%')
@@ -146,7 +148,7 @@ describe('session status line', () => {
       order: ['tokens', 'cache', 'counts'],
     })
     expect(sessionStatusGroups(stats, custom)).toEqual([
-      '5.9M in · 73.8K out',
+      '5.9M in · 59K new · 73.8K out',
       'Cache 99%',
       '1 turn · 74 steps',
     ])
@@ -159,7 +161,7 @@ describe('session status line', () => {
       'LLM 16m51s · Tools 3m33s',
       'TTFT 1.2s · 80 tok/s',
       'Cache 99%',
-      '5.9M in · 73.8K out',
+      '5.9M in · 59K new · 73.8K out',
     ])
   })
 
@@ -183,7 +185,7 @@ describe('session status line', () => {
     expect(lines).toHaveLength(2)
     expect(lines.every(line => visibleWidth(line) === 140)).toBe(true)
     expect(stripAnsi(lines[0] ?? '')).toMatch(/^  deepseek-v4-pro · max\s+~\/Workspace\/dsh-tui · main \*6 \?4  $/)
-    expect(stripAnsi(lines[1] ?? '')).toMatch(/^  Cache 99% • 5\.9M in · 73\.8K out • TTFT 1\.2s · 80 tok\/s\s+LLM 16m51s · Tools 3m33s • 1 turn · 74 steps  $/)
+    expect(stripAnsi(lines[1] ?? '')).toMatch(/^  Cache 99% • 5\.9M in · 59K new · 73\.8K out • TTFT 1\.2s · 80 tok\/s\s+LLM 16m51s · Tools 3m33s • 1 turn · 74 steps  $/)
   })
 
   it('keeps collaboration and access controls visible in metadata', () => {
@@ -290,7 +292,7 @@ describe('session status line', () => {
     expect(completed[0]).toContain('LOOP DONE · 3 REPEATS')
   })
 
-  it('keeps every Web-style metric at 46 columns with unit-aware nano copy', () => {
+  it('keeps every Web-style metric at 58 columns and degrades low-priority groups at 46', () => {
     const webOrder = statusBar({
       groups: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
       order: ['counts', 'durations', 'speed', 'cache', 'tokens', 'context'],
@@ -308,18 +310,37 @@ describe('session status line', () => {
       model: 'm',
       stats: contextual,
       config: webOrder,
-      width: 46,
+      width: 58,
     }, createTheme(false))
     const telemetry = stripAnsi(lines[1] ?? '')
     expect(lines).toHaveLength(2)
-    expect(lines.every(line => visibleWidth(line) === 46)).toBe(true)
+    expect(lines.every(line => visibleWidth(line) === 58)).toBe(true)
     expect(telemetry).toContain('1/74')
     expect(telemetry).toContain('L17m/T4')
     expect(telemetry).toContain('F1.2/R80')
-    expect(telemetry).toContain('C99%')
-    expect(telemetry).toContain('↓5.9M/↑74K')
+    expect(telemetry).toContain('C99%→96K')
+    expect(telemetry).toContain('↓5.9M/N59K/↑74K')
     expect(telemetry).toContain('X1.6%')
     expect(telemetry).not.toContain('…')
+
+    // At 46 columns coverage stays maximal and priority-ordered: the duration
+    // group is the one dropped, while cache, tokens, speed, context, and the
+    // turn/step counts remain.
+    const narrow = renderStatusFooter({
+      model: 'm',
+      stats: contextual,
+      config: webOrder,
+      width: 46,
+    }, createTheme(false))
+    const narrowTelemetry = stripAnsi(narrow[1] ?? '')
+    expect(narrow.every(line => visibleWidth(line) === 46)).toBe(true)
+    expect(narrowTelemetry).toContain('C99%→96K')
+    expect(narrowTelemetry).toContain('↓5.9M/N59K/↑74K')
+    expect(narrowTelemetry).toContain('F1.2/R80')
+    expect(narrowTelemetry).toContain('1/74')
+    expect(narrowTelemetry).toContain('X1.6%')
+    expect(narrowTelemetry).not.toContain('L17m/T4')
+    expect(narrowTelemetry).not.toContain('…')
 
     const large = renderStatusFooter({
       model: 'm',
@@ -331,7 +352,7 @@ describe('session status line', () => {
     expect(largeTelemetry).toContain('L16.7h/T16.7')
     expect(largeTelemetry).toContain('F1.2/R80')
     expect(largeTelemetry).toContain('C99%')
-    expect(largeTelemetry).toContain('↓5.9M/↑74K')
+    expect(largeTelemetry).toContain('↓5.9M/N59K/↑74K')
     expect(largeTelemetry).not.toContain('10/1234')
   })
 
@@ -354,8 +375,8 @@ describe('session status line', () => {
       ['T3/S158', '3/158'],
       ['L16:51/Tl3:33', 'L17m/T4'],
       ['F1.2s/R80', 'F1.2/R80'],
-      ['C99%'],
-      ['I5.9M/O73.8K', '↓5.9M/↑74K'],
+      ['C99%→96K'],
+      ['I5.9M/N59K/O73.8K', '↓5.9M/N59K/↑74K'],
       ['X1.6%'],
     ]
     let previousVisible = 0
@@ -367,7 +388,7 @@ describe('session status line', () => {
       expect(lines.every(line => visibleWidth(line) === width)).toBe(true)
       expect(lines.join('\n')).not.toContain('…')
       expect(visible).toBeGreaterThanOrEqual(previousVisible)
-      if (width === 46) expect(visible).toBe(6)
+      if (width === 46) expect(visible).toBe(5)
       previousVisible = visible
     }
     const all = stripAnsi(renderStatusFooter({
@@ -384,7 +405,7 @@ describe('session status line', () => {
       model: 'm',
       stats: contextual,
       config: responsive,
-      width: 120,
+      width: 140,
     }, createTheme(false))[1] ?? '')
     expect(wide).toContain('3 turns · 158 steps')
     expect(wide).toContain('LLM 16m51s · Tools 3m33s')
@@ -396,8 +417,8 @@ describe('session status line', () => {
     const config = statusBar({ groups: [...order], order: [...order] })
     const contextual = { ...stats, contextTokens: 96_000, contextWindow: 6_000_000 }
     const markerVariants = [
-      ['I5.9M/O73.8K', '↓5.9M/↑74K'],
-      ['C99%'],
+      ['I5.9M/N59K/O73.8K', '↓5.9M/N59K/↑74K'],
+      ['C99%→96K'],
       ['T1/S74', '1/74'],
       ['X1.6%'],
       ['F1.2s/R80', 'F1.2/R80'],
@@ -431,7 +452,7 @@ describe('session status line', () => {
     expect(narrow).toHaveLength(2)
     expect(narrow.every(line => visibleWidth(line) === 76)).toBe(true)
     expect(telemetry).toContain('C99%')
-    expect(telemetry).toContain('I5.9M/O73.8K')
+    expect(telemetry).toContain('I5.9M/N59K/O73.8K')
     expect(telemetry).toContain('F1.2s/R80')
     expect(telemetry).toContain('L16:51/Tl3:33')
     expect(telemetry).toContain('T1/S74')
@@ -547,6 +568,7 @@ describe('session status line', () => {
         decodeMs: 0,
         decodeTokens: 0,
         inputTokens: 1_234_567,
+        uncachedInputTokens: 334_567,
         outputTokens: 12_345,
         cacheReadTokens: 900_000,
         cacheWriteTokens: 0,
@@ -556,5 +578,32 @@ describe('session status line', () => {
     }, createTheme(false))
     // Every returned line must respect the width even when extra groups are chosen.
     for (const line of footer) expect(visibleWidth(line)).toBeLessThanOrEqual(40)
+  })
+
+  it('separates clean input from cached input and estimates the next cache read', () => {
+    const clean: TuiSessionStats = { ...stats, uncachedInputTokens: 59_000, contextTokens: 130_000, contextWindow: 1_000_000 }
+    const full = sessionStatusGroups(clean, statusBar({ labels: 'full' }))
+    // The clean figure is distinct from the cumulative prompt-side total.
+    expect(full).toContain('5.9M in · 59K new · 73.8K out')
+    expect(full).not.toContain('5.9M in · 73.8K out')
+    expect(full).toContain('Cache 99% · next 130K')
+
+    const dense = renderSessionStatusLabel(clean, statusBar(), createTheme(false), 100)
+    expect(dense).toContain('C99%→130K')
+    expect(dense).toContain('I5.9M/N59K/O73.8K')
+
+    const nano = renderSessionStatusLabel(clean, statusBar(), createTheme(false), 60)
+    expect(nano).toContain('C99%→130K')
+    expect(nano).toContain('↓5.9M/N59K/↑74K')
+
+    // The estimate follows contextTokens, not the cumulative cache read.
+    const smaller = renderSessionStatusLabel({ ...clean, contextTokens: 20_000 }, statusBar(), createTheme(false), 100)
+    expect(smaller).toContain('C99%→20K')
+    expect(smaller).not.toContain('→130K')
+    expect(smaller).toContain('N59K')
+
+    // Without an occupancy figure the cache group keeps its previous form.
+    expect(sessionStatusGroups(stats, statusBar({ labels: 'full' }))).toContain('Cache 99%')
+    expect(sessionStatusGroups(stats, statusBar({ labels: 'full' })).join('\n')).not.toContain('next')
   })
 })

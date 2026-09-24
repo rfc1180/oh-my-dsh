@@ -478,6 +478,7 @@ export function sessionStats(
       inputTokens: projectedUsage.uncachedInputTokens
         + projectedUsage.cacheReadTokens
         + projectedUsage.cacheWriteTokens,
+      uncachedInputTokens: projectedUsage.uncachedInputTokens,
       outputTokens: projectedUsage.outputTokens,
       cacheReadTokens: projectedUsage.cacheReadTokens,
       cacheWriteTokens: projectedUsage.cacheWriteTokens,
@@ -495,6 +496,7 @@ export function sessionStats(
   let decodeMs = 0
   let decodeTokens = 0
   let inputTokens = 0
+  let uncachedInputTokens = 0
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
@@ -527,6 +529,7 @@ export function sessionStats(
           const write = usage.cacheWriteTokens ?? 0
           const billedInput = usage.inputTokens + read + write
           inputTokens += billedInput
+          uncachedInputTokens += billedInput - read - write
           outputTokens += usage.outputTokens
           cacheReadTokens += read
           cacheWriteTokens += write
@@ -582,6 +585,7 @@ export function sessionStats(
     decodeMs: projectedStats?.decodeMs ?? decodeMs,
     decodeTokens: projectedStats?.decodeTokens ?? decodeTokens,
     inputTokens: projectedInput ?? inputTokens,
+    uncachedInputTokens: projectedUsage?.uncachedInputTokens ?? uncachedInputTokens,
     outputTokens: projectedUsage?.outputTokens ?? outputTokens,
     cacheReadTokens: projectedUsage?.cacheReadTokens ?? cacheReadTokens,
     cacheWriteTokens: projectedUsage?.cacheWriteTokens ?? cacheWriteTokens,

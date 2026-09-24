@@ -513,6 +513,7 @@ describe('LocalTui (tty)', () => {
         decodeMs: 8_000,
         decodeTokens: 320,
         inputTokens: 20_000,
+        uncachedInputTokens: 2_000,
         outputTokens: 400,
         cacheReadTokens: 18_000,
         cacheWriteTokens: 0,
@@ -534,7 +535,7 @@ describe('LocalTui (tty)', () => {
     const encoded = published?.slice('\x1b]16163;'.length, -2) ?? ''
     const payload = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as { groups: string[] }
     expect(payload.groups).toContain('Ctx 8% · 8K/100K')
-    expect(payload.groups).toContain('Cache 90%')
+    expect(payload.groups).toContain('Cache 90% · next 8K')
 
     const beforeRefresh = frames().length
     tui.refresh()
@@ -1449,6 +1450,7 @@ describe('LocalTui (tty)', () => {
         decodeMs: outputTokens,
         decodeTokens: outputTokens,
         inputTokens: 10,
+        uncachedInputTokens: 10,
         outputTokens,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
@@ -1530,6 +1532,7 @@ describe('LocalTui (tty)', () => {
       decodeMs: 8,
       decodeTokens: 16,
       inputTokens: 100,
+      uncachedInputTokens: 20,
       outputTokens: 20,
       cacheReadTokens: 80,
       cacheWriteTokens: 0,

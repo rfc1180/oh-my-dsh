@@ -369,6 +369,8 @@ export interface TuiSessionStats {
   decodeTokens: number
   /** All disjoint prompt-side billing buckets combined. */
   inputTokens: number
+  /** Fresh, uncached prompt-side input: the part of {@link inputTokens} no cache served. */
+  uncachedInputTokens: number
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
