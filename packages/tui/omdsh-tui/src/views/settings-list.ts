@@ -7,6 +7,7 @@
 import type { KeyEvent } from '../input/keys.ts'
 import { ACTIVITY_DETAIL_DESCRIPTIONS, ACTIVITY_DETAIL_MODES, isActivityDetailMode, type ActivityDetailMode } from '../session/activity-detail.ts'
 import { STARTUP_CHANGELOG_MODES, type StartupChangelogMode } from '../session/release-notes.ts'
+import type { ModelFavorites } from '../session/tui-settings.ts'
 import {
   STATUS_COLOR_TOKENS,
   STATUS_GROUP_IDS,
@@ -54,6 +55,8 @@ export interface TuiPrefs {
   statusBar?: StatusBarConfig
   /** Read-only migration input for settings written before status-line customization. */
   statusPreset?: StatusPreset
+  /** Per-provider model ids the picker lists before the rest of the catalog. */
+  modelFavorites?: ModelFavorites
 }
 
 /** Live overlay state. */

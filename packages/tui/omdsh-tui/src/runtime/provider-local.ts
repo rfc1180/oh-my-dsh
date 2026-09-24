@@ -101,7 +101,7 @@ import { createTheme, detectTrueColor, parseThemeName, type ThemeName } from '..
 import { cursorOnWrapped, indexOnWrapped, wrapIndexed } from '../chrome/width.ts'
 import type { ToolInfo } from '../chrome/tools-list.ts'
 import type { TuiToolPresentation } from '../chrome/tool-renderers.ts'
-import { TUI_SETTINGS_NAMESPACE, TuiSettingsSchema } from '../session/tui-settings.ts'
+import { normalizeModelFavorites, TUI_SETTINGS_NAMESPACE, TuiSettingsSchema, type ModelFavorites } from '../session/tui-settings.ts'
 import { defaultStatusBarConfig, resolveStatusBarConfig, type StatusBarConfig } from '../chrome/status-config.ts'
 import { encodeHostTelemetryOsc, hostTelemetryPayload } from '../chrome/host-telemetry.ts'
 import { sessionStatusGroups } from '../chrome/status-line.ts'
@@ -355,6 +355,7 @@ export class LocalTui implements TuiService {
   #checkUpdates = true
   #startupChangelog: StartupChangelogMode = 'summary'
   #statusBar: StatusBarConfig = defaultStatusBarConfig()
+  #modelFavorites: ModelFavorites = {}
   #toolsExpanded = false
   #expandedToolCalls = new Set<string>()
   #tools: ToolInfo[] = []
@@ -814,6 +815,7 @@ export class LocalTui implements TuiService {
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#toolsExpanded = prefs.expandTools
+    this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
     if (this.#settings !== null) this.#settings = { ...this.#settings, prefs }
     if (this.#tty && (activityChanged || expandChanged)) this.#restartPresentationEpoch()
     if (this.#tty) this.#render()
@@ -822,6 +824,16 @@ export class LocalTui implements TuiService {
   /** Called after a live `/settings` change. */
   setPrefsPersist(persist: (prefs: TuiPrefs) => void): void {
     this.#persistPrefs = persist
+  }
+
+  /**
+   * Model ids the picker should list ahead of the rest of the provider catalog.
+   * The search field still reaches every model the provider serves.
+   * @param provider - provider route key.
+   * @returns the configured ids, or an empty list when none are set.
+   */
+  modelFavorites(provider: string): readonly string[] {
+    return this.#modelFavorites[provider] ?? []
   }
 
   readInput(): Promise<TuiSubmission | null> {
@@ -2160,6 +2172,9 @@ export class LocalTui implements TuiService {
         ...(this.#statusBar.colors === undefined ? {} : { colors: { ...this.#statusBar.colors } }),
         ...(this.#statusBar.sides === undefined ? {} : { sides: { ...this.#statusBar.sides } }),
       },
+      modelFavorites: Object.fromEntries(
+        Object.entries(this.#modelFavorites).map(([provider, ids]) => [provider, [...ids]]),
+      ),
     }
   }
 
@@ -2174,6 +2189,7 @@ export class LocalTui implements TuiService {
     this.#checkUpdates = prefs.checkUpdates ?? true
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
+    this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
     if (expandChanged) this.#toolsExpanded = prefs.expandTools
     if (this.#tty && (activityChanged || expandChanged)) this.#restartPresentationEpoch()
     this.#persistPrefs?.(prefs)

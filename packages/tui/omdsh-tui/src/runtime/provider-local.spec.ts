@@ -2364,6 +2364,7 @@ describe('LocalTui (tty)', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      modelFavorites: {},
       statusBar: {
         enabled: true,
         labels: 'compact',
