@@ -374,6 +374,7 @@ export class LocalTui implements TuiService {
   #startupChangelog: StartupChangelogMode = 'summary'
   #compactionThreshold: CompactionThresholdChoice = DEFAULT_COMPACTION_THRESHOLD_CHOICE
   #compactionSteps: CompactionStepChoice = DEFAULT_COMPACTION_STEP_CHOICE
+  #compactionAuto = false
   /** Context size that already produced an automatic offer; re-arms below the threshold. */
   #compactionOfferTokens: number | undefined
   #statusBar: StatusBarConfig = defaultStatusBarConfig()
@@ -857,6 +858,11 @@ export class LocalTui implements TuiService {
     const forecast = this.#compactionForecast()
     if (forecast === undefined) return
     this.#compactionOfferTokens = contextTokens
+    if (this.#compactionAuto && forecast.verdict === 'pays-off') {
+      this.#notice(formatCompactionForecast(forecast))
+      this.#forwardCommand('/compact')
+      return
+    }
     this.#notice(formatCompactionOffer(forecast, threshold))
   }
 
@@ -877,6 +883,7 @@ export class LocalTui implements TuiService {
     this.#compactionSteps = isCompactionStep(prefs.compactionForecastSteps)
       ? prefs.compactionForecastSteps
       : DEFAULT_COMPACTION_STEP_CHOICE
+    this.#compactionAuto = prefs.compactionAuto ?? false
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#toolsExpanded = prefs.expandTools
     this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
@@ -2241,6 +2248,7 @@ export class LocalTui implements TuiService {
       ),
       compactionThreshold: this.#compactionThreshold,
       compactionForecastSteps: this.#compactionSteps,
+      compactionAuto: this.#compactionAuto,
     }
   }
 
@@ -2260,6 +2268,7 @@ export class LocalTui implements TuiService {
     this.#compactionSteps = isCompactionStep(prefs.compactionForecastSteps)
       ? prefs.compactionForecastSteps
       : DEFAULT_COMPACTION_STEP_CHOICE
+    this.#compactionAuto = prefs.compactionAuto ?? false
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
     if (expandChanged) this.#toolsExpanded = prefs.expandTools

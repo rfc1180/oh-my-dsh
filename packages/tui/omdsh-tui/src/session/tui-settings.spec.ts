@@ -21,6 +21,7 @@ describe('TuiSettingsSchema', () => {
       startupChangelog: 'summary',
       compactionThreshold: '100k',
       compactionForecastSteps: '10',
+      compactionAuto: false,
       modelFavorites: {},
     })
     expect(validate({ theme: 'light', colors: false, expandTools: true })).toEqual({
@@ -32,6 +33,7 @@ describe('TuiSettingsSchema', () => {
       startupChangelog: 'summary',
       compactionThreshold: '100k',
       compactionForecastSteps: '10',
+      compactionAuto: false,
       modelFavorites: {},
     })
     expect(validate({ statusBar: { enabled: false, labels: 'full', groups: ['tokens', 'cache'] } })).toMatchObject({

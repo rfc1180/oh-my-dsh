@@ -68,6 +68,8 @@ export interface TuiSettings {
   compactionThreshold: CompactionThresholdChoice
   /** Steps assumed still ahead when the compaction forecast is computed. */
   compactionForecastSteps: CompactionStepChoice
+  /** Run the compaction without asking once the threshold is crossed and it pays off. */
+  compactionAuto: boolean
   statusBar?: StatusBarConfig
   /** Legacy input retained so older settings documents can be migrated. */
   statusPreset?: StatusPreset
@@ -85,6 +87,7 @@ export const TuiSettingsSchema: z<TuiSettings> = z.object({
   startupChangelog: z.union([...STARTUP_CHANGELOG_MODES]).default('summary'),
   compactionThreshold: z.union([...COMPACTION_THRESHOLD_CHOICES]).default(DEFAULT_COMPACTION_THRESHOLD_CHOICE),
   compactionForecastSteps: z.union([...COMPACTION_STEP_CHOICES]).default(DEFAULT_COMPACTION_STEP_CHOICE),
+  compactionAuto: z.boolean().default(false),
   statusBar: z.union([z.object({
     enabled: z.boolean().default(true),
     labels: z.union([...STATUS_LABEL_STYLES]).default('compact'),

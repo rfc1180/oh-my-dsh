@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Warn before a model or provider switch that drops the prompt cache: `/model` now states how many tokens the new route re-reads at full price and asks before applying the switch, because a prompt cache belongs to one model.
 - Show the session's token cost without leaving the terminal: `/cost` prints one row per model step (uncached, cache read, cache write, output, context) plus session totals, the peak context, and the cache-hit share, and `/cost sources` attributes fresh prompt tokens to the tool, prompt, or session start that produced them.
 - Give the standard agent a cost-discipline persona: locate with the code map before reading whole files, use the AST index for callers, run heavy exploration in a subagent, never paste large tool output into the conversation, keep one model route for the whole task, and compact while steps remain.
+- Compact without asking when the user opts in: the new `Compact automatically` row under `/settings` runs the compaction as soon as the context crosses the threshold and the forecast pays off, instead of only offering it.
 
 ### Changed
 

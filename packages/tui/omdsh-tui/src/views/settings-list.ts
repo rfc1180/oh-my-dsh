@@ -66,6 +66,8 @@ export interface TuiPrefs {
   compactionThreshold?: CompactionThresholdChoice
   /** Steps assumed still ahead when the compaction forecast is computed. */
   compactionForecastSteps?: CompactionStepChoice
+  /** Run the compaction without asking once the threshold is crossed and it pays off. */
+  compactionAuto?: boolean
   statusBar?: StatusBarConfig
   /** Read-only migration input for settings written before status-line customization. */
   statusPreset?: StatusPreset
@@ -198,6 +200,13 @@ export function tuiSettingItems(prefs: TuiPrefs): SettingItem[] {
       values: COMPACTION_STEP_CHOICES,
     },
     {
+      id: 'compactionAuto',
+      label: 'Compact automatically',
+      description: 'Run the compaction without asking once the context crosses the threshold and the forecast pays off',
+      value: prefs.compactionAuto === true ? 'on' : 'off',
+      values: ['off', 'on'],
+    },
+    {
       id: 'statusEnabled',
       label: 'Status line',
       description: 'Show the fixed two-line footer below the composer',
@@ -284,6 +293,7 @@ export function applySettingValue(prefs: TuiPrefs, id: string, value: string): T
   if (id === 'compactionForecastSteps' && isCompactionStep(value)) {
     return { ...prefs, compactionForecastSteps: value }
   }
+  if (id === 'compactionAuto') return { ...prefs, compactionAuto: value === 'on' }
   const statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
   if (id === 'statusEnabled') return { ...prefs, statusBar: { ...statusBar, enabled: value === 'on' } }
   if (id === 'statusLabels' && STATUS_LABEL_STYLES.includes(value as StatusBarConfig['labels'])) {
@@ -397,7 +407,7 @@ function toggleSelectedVisibility(state: SettingsState): SettingsState {
   return { selected: state.selected, prefs: { ...state.prefs, statusBar: toggleStatusItem(resolveStatusBarConfig(state.prefs.statusBar, state.prefs.statusPreset), item) } }
 }
 
-const GENERAL_SETTING_COUNT = 8
+const GENERAL_SETTING_COUNT = 9
 
 function moveSelected(state: SettingsState, next: number): SettingsState {
   const n = tuiSettingItems(state.prefs).length
