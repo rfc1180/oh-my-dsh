@@ -54,3 +54,18 @@ export function stepCacheHealth(input: {
   if (missed === undefined) return undefined
   return { promptTokens: input.promptTokens, cachedTokens: input.cachedTokens, missedTokens: missed }
 }
+
+/**
+ * Tokens a route switch pays again. A prompt cache belongs to one model, so the
+ * first step on a different provider/model re-reads the whole conversation at
+ * full price even though nothing about the context changed.
+ * @param contextTokens - the conversation size at switch time.
+ * @param sameRoute - true when the provider and model both stay the same.
+ * @returns the full-price token count when the switch is material, else undefined.
+ */
+export function routeSwitchPenalty(contextTokens: number | undefined, sameRoute: boolean): number | undefined {
+  if (sameRoute) return undefined
+  if (contextTokens === undefined || !Number.isFinite(contextTokens)) return undefined
+  if (contextTokens < CACHE_MISS_MIN_TOKENS) return undefined
+  return Math.round(contextTokens)
+}

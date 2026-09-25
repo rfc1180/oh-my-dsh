@@ -101,6 +101,49 @@ describe('model command', () => {
     await ctx.fiber.dispose()
   })
 
+  it('warns before a route switch that would re-read the whole conversation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(CommandRuntime)
+    const prompt = vi.fn()
+      .mockResolvedValueOnce('model-2')
+      .mockResolvedValueOnce('keep')
+    const changeSelection = vi.fn(async () => undefined)
+    ctx.provide('tui', { prompt } as unknown as TuiService)
+    ctx.provide('omdshSession', {
+      selection: () => ({ provider: 'deepseek-official', model: 'model-1' }),
+      stats: () => ({ contextTokens: 120_000 }),
+      changeSelection,
+    } as unknown as SessionRuntime)
+    ctx.provide('llm', {
+      listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'model-1', name: 'Model 1' }, { id: 'model-2', name: 'Model 2' }],
+      resolveModelInfo: async () => ({}),
+    } as never)
+    await ctx.plugin(commandModel)
+    const session = ctx.sessions.create(SessionId('model-command-switch-test'))
+    const agent = {
+      id: session.id,
+      session,
+      status: 'idle',
+      inbox: { nextTurn: [], nextStep: [] },
+    } as unknown as Agent
+
+    await ctx.commands.execute(agent, '/model', [], new AbortController().signal)
+
+    expect(changeSelection).not.toHaveBeenCalled()
+    expect(prompt).toHaveBeenCalledTimes(2)
+    expect(prompt).toHaveBeenLastCalledWith(expect.objectContaining({
+      initialValue: 'keep',
+      allowCustom: false,
+      options: [
+        { label: 'Switch', value: 'switch' },
+        { label: 'Keep current', value: 'keep' },
+      ],
+    }))
+    await ctx.fiber.dispose()
+  })
+
   it('opens on the configured favorites while keeping the whole catalog searchable', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

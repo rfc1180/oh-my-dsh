@@ -6,6 +6,7 @@ import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '../runtime/session-runtime.ts'
+import { routeSwitchPenalty } from '../session/cache-health.ts'
 import { registerCommands } from './registration.ts'
 
 export const name = 'omdsh-command-model'
@@ -117,6 +118,24 @@ async function selectModel(ctx: Context, invocation: CommandInvocation): Promise
       return { kind: 'error', text: `Unknown reasoning effort: ${effortRaw}` }
     }
     reasoningEffort = ReasoningEffortId(resolved)
+  }
+  const switched = provider !== current.provider || model !== current.model
+  const penalty = routeSwitchPenalty(ctx.omdshSession.stats?.(invocation.agent)?.contextTokens, !switched)
+  if (penalty !== undefined) {
+    const answer = await ctx.tui.prompt({
+      title: 'Model route',
+      question: `Switch to ${provider}/${model}?`,
+      detail: `The new route has no prompt cache for this conversation, so its first step re-reads about ${penalty.toLocaleString('en-US')} tokens at full price instead of the cache.`,
+      options: [
+        { label: 'Switch', value: 'switch' },
+        { label: 'Keep current', value: 'keep' },
+      ],
+      initialValue: 'keep',
+      allowCustom: false,
+      submitLabel: 'run',
+      signal: invocation.signal,
+    })
+    if (answer !== 'switch') return { kind: 'success', text: `Model unchanged: ${current.provider}/${current.model}` }
   }
   const selection: ModelSelection = {
     provider,

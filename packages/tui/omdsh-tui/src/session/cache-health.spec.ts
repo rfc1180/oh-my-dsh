@@ -3,6 +3,7 @@ import {
   CACHE_MISS_MIN_SHARE,
   CACHE_MISS_MIN_TOKENS,
   missedCacheTokens,
+  routeSwitchPenalty,
   stepCacheHealth,
 } from './cache-health.ts'
 
@@ -53,5 +54,21 @@ describe('stepCacheHealth', () => {
   it('exposes stable thresholds', () => {
     expect(CACHE_MISS_MIN_TOKENS).toBe(20_000)
     expect(CACHE_MISS_MIN_SHARE).toBe(0.5)
+  })
+})
+
+describe('routeSwitchPenalty', () => {
+  it('charges the whole conversation when the route changes', () => {
+    expect(routeSwitchPenalty(120_000, false)).toBe(120_000)
+  })
+
+  it('is free while the provider and model stay the same', () => {
+    expect(routeSwitchPenalty(120_000, true)).toBeUndefined()
+  })
+
+  it('ignores a small conversation and missing figures', () => {
+    expect(routeSwitchPenalty(5_000, false)).toBeUndefined()
+    expect(routeSwitchPenalty(undefined, false)).toBeUndefined()
+    expect(routeSwitchPenalty(Number.NaN, false)).toBeUndefined()
   })
 })
