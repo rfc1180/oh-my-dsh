@@ -528,8 +528,11 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
       timings.compactions.set(text(data.compactionId), event.time)
       timings.lastToolHint = undefined
       return { ...base, category: 'system', tone: 'warning', glyph: '◫', label: 'Compaction', summary: 'started', defaultVisible: true }
-    case 'compaction/summary':
-      return { ...base, category: 'system', tone: 'muted', glyph: '◫', label: 'Compaction', summary: `${text(data.shadowedTokenCount || '?')} shadow tokens · ${contentText(data.summary)}`, defaultVisible: true }
+    case 'compaction/summary': {
+      // The effect of the compaction, next to the summary that replaced it.
+      const freed = number(data.shadowedTokenCount)
+      return { ...base, category: 'system', tone: 'muted', glyph: '◫', label: 'Compaction', summary: [freed === undefined ? undefined : `freed ${tokenCount(freed)} tokens`, contentText(data.summary)].filter(Boolean).join(' · '), defaultVisible: true }
+    }
     case 'compaction/end': {
       const took = duration(event.time - (timings.compactions.get(text(data.compactionId)) ?? event.time))
       return { ...base, category: data.error === undefined ? 'system' : 'error', tone: data.error === undefined ? 'success' : 'error', glyph: data.error === undefined ? SYMBOL.success : SYMBOL.error, label: 'Compaction', summary: [took, compact(data.error)].filter(Boolean).join(' · '), defaultVisible: true }

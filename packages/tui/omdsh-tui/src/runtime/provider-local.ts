@@ -102,6 +102,21 @@ import { cursorOnWrapped, indexOnWrapped, wrapIndexed } from '../chrome/width.ts
 import type { ToolInfo } from '../chrome/tools-list.ts'
 import type { TuiToolPresentation } from '../chrome/tool-renderers.ts'
 import { normalizeModelFavorites, TUI_SETTINGS_NAMESPACE, TuiSettingsSchema, type ModelFavorites } from '../session/tui-settings.ts'
+import {
+  compactionForecastSteps,
+  compactionThresholdTokens,
+  DEFAULT_COMPACTION_STEP_CHOICE,
+  DEFAULT_COMPACTION_THRESHOLD_CHOICE,
+  forecastCompaction,
+  formatCompactionForecast,
+  formatCompactionOffer,
+  isCompactionStep,
+  isCompactionThreshold,
+  shouldOfferCompaction,
+  type CompactionForecast,
+  type CompactionStepChoice,
+  type CompactionThresholdChoice,
+} from '../session/compaction-forecast.ts'
 import { defaultStatusBarConfig, resolveStatusBarConfig, type StatusBarConfig } from '../chrome/status-config.ts'
 import { encodeHostTelemetryOsc, hostTelemetryPayload } from '../chrome/host-telemetry.ts'
 import { sessionStatusGroups } from '../chrome/status-line.ts'
@@ -169,6 +184,9 @@ const DEFAULT_STREAM_RENDER_MS = 50
 // must never repaint the complete durable transcript while the model is idle
 // between events: that periodic work competes directly with raw-key input.
 const HOST_TELEMETRY_HEARTBEAT_MS = 30_000
+// The compaction offer is a suggestion, not a nag: repeat it only after the
+// context grew this much past the size that already produced one.
+const COMPACTION_OFFER_REGROWTH = 1.25
 
 /**
  * Recover a multiline clipboard write when the terminal host omitted bracketed-paste markers.
@@ -354,6 +372,10 @@ export class LocalTui implements TuiService {
   #activityDetail: ActivityDetailMode = 'standard'
   #checkUpdates = true
   #startupChangelog: StartupChangelogMode = 'summary'
+  #compactionThreshold: CompactionThresholdChoice = DEFAULT_COMPACTION_THRESHOLD_CHOICE
+  #compactionSteps: CompactionStepChoice = DEFAULT_COMPACTION_STEP_CHOICE
+  /** Context size that already produced an automatic offer; re-arms below the threshold. */
+  #compactionOfferTokens: number | undefined
   #statusBar: StatusBarConfig = defaultStatusBarConfig()
   #modelFavorites: ModelFavorites = {}
   #toolsExpanded = false
@@ -794,12 +816,48 @@ export class LocalTui implements TuiService {
           ...info.controls,
           ...(info.controls.plan === undefined ? {} : { plan: { ...info.controls.plan } }),
         }
+    this.#maybeOfferCompaction()
     if (this.#tty) {
       // SessionRuntime publishes aggregate stats after every transcript event.
       // A pending chunk repaint already owns the next frame, so fold footer
       // changes into it instead of defeating stream coalescing via setSession().
       if (this.#streamRenderTimer === null) this.#render()
     }
+  }
+
+  /** One compaction projection for the current context, or undefined without figures. */
+  #compactionForecast(): CompactionForecast | undefined {
+    const contextTokens = this.#sessionStats?.contextTokens
+    if (contextTokens === undefined) return undefined
+    return forecastCompaction({
+      contextTokens,
+      contextWindow: this.#sessionStats?.contextWindow,
+      stepsRemaining: compactionForecastSteps(this.#compactionSteps),
+    })
+  }
+
+  /**
+   * Suggest a compaction once the context crosses the configured threshold.
+   * The suggestion repeats only after the context grew {@link COMPACTION_OFFER_REGROWTH}
+   * past the size that already produced one, and re-arms after a compaction
+   * brings it back below the threshold.
+   */
+  #maybeOfferCompaction(): void {
+    const stats = this.#sessionStats
+    const threshold = compactionThresholdTokens(this.#compactionThreshold)
+    const contextTokens = stats?.contextTokens
+    if (contextTokens === undefined || threshold === undefined) return
+    if (!shouldOfferCompaction(contextTokens, threshold)) {
+      this.#compactionOfferTokens = undefined
+      return
+    }
+    if (this.#state.status !== 'idle') return
+    const offered = this.#compactionOfferTokens
+    if (offered !== undefined && contextTokens < offered * COMPACTION_OFFER_REGROWTH) return
+    const forecast = this.#compactionForecast()
+    if (forecast === undefined) return
+    this.#compactionOfferTokens = contextTokens
+    this.#notice(formatCompactionOffer(forecast, threshold))
   }
 
   /** Apply prefs loaded from the settings document (does not persist). */
@@ -813,6 +871,12 @@ export class LocalTui implements TuiService {
     this.#activityDetail = activityDetail
     this.#checkUpdates = prefs.checkUpdates ?? true
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
+    this.#compactionThreshold = isCompactionThreshold(prefs.compactionThreshold)
+      ? prefs.compactionThreshold
+      : DEFAULT_COMPACTION_THRESHOLD_CHOICE
+    this.#compactionSteps = isCompactionStep(prefs.compactionForecastSteps)
+      ? prefs.compactionForecastSteps
+      : DEFAULT_COMPACTION_STEP_CHOICE
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#toolsExpanded = prefs.expandTools
     this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
@@ -2175,6 +2239,8 @@ export class LocalTui implements TuiService {
       modelFavorites: Object.fromEntries(
         Object.entries(this.#modelFavorites).map(([provider, ids]) => [provider, [...ids]]),
       ),
+      compactionThreshold: this.#compactionThreshold,
+      compactionForecastSteps: this.#compactionSteps,
     }
   }
 
@@ -2188,6 +2254,12 @@ export class LocalTui implements TuiService {
     this.#activityDetail = activityDetail
     this.#checkUpdates = prefs.checkUpdates ?? true
     this.#startupChangelog = prefs.startupChangelog ?? 'summary'
+    this.#compactionThreshold = isCompactionThreshold(prefs.compactionThreshold)
+      ? prefs.compactionThreshold
+      : DEFAULT_COMPACTION_THRESHOLD_CHOICE
+    this.#compactionSteps = isCompactionStep(prefs.compactionForecastSteps)
+      ? prefs.compactionForecastSteps
+      : DEFAULT_COMPACTION_STEP_CHOICE
     this.#statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
     this.#modelFavorites = normalizeModelFavorites(prefs.modelFavorites)
     if (expandChanged) this.#toolsExpanded = prefs.expandTools
@@ -2839,20 +2911,17 @@ export class LocalTui implements TuiService {
       this.#render()
       return
     }
+    if (command.name === 'compact' && this.#inspected === undefined && this.#ownsHarnessCompact()) {
+      this.#runCompact(args)
+      return
+    }
     if (!BUILTIN_SLASH_COMMANDS.some((entry) => entry.name === command.name)) {
       if (this.#inspected !== undefined) {
         this.#notice('Return to the parent session to run /' + command.name + '.')
         this.#render()
         return
       }
-      const raw = '/' + name + (args === '' ? '' : ' ' + args)
-      const pending = this.#pending
-      if (pending !== null) {
-        this.#pending = null
-        pending.resolve({ text: raw, images: [] })
-      } else {
-        this.#queuedSubmissions.push({ text: raw, images: [] })
-      }
+      this.#forwardCommand('/' + name + (args === '' ? '' : ' ' + args))
       this.#render()
       return
     }
@@ -2969,6 +3038,71 @@ export class LocalTui implements TuiService {
     this.#ac = null
     this.#settings = createSettings(this.#prefs())
     this.#render()
+  }
+
+  /**
+   * The runtime entry for `/compact` is the Harness command, not a skill that
+   * happens to share the name; only the Harness one may carry the forecast.
+   */
+  #ownsHarnessCompact(): boolean {
+    return this.#runtimeCommands.some(command => command.name === 'compact' && command.kind !== 'skill')
+  }
+
+  /**
+   * Manual compaction with a break-even forecast. `/compact` still belongs to
+   * the Harness; this shows what the summarizing turn frees and costs first,
+   * and asks before spending a turn that cannot repay itself.
+   */
+  #runCompact(args: string): void {
+    if (args.trim() !== '') {
+      this.#notice('Usage: /compact')
+      this.#render()
+      return
+    }
+    const forecast = this.#compactionForecast()
+    if (forecast === undefined) {
+      this.#forwardCommand('/compact')
+      this.#render()
+      return
+    }
+    if (forecast.verdict === 'pays-off') {
+      this.#notice(formatCompactionForecast(forecast))
+      this.#forwardCommand('/compact')
+      this.#render()
+      return
+    }
+    void this.#confirmCompact(forecast).catch((error: unknown) => {
+      this.#notice(error instanceof Error ? error.message : String(error))
+      this.#render()
+    })
+  }
+
+  async #confirmCompact(forecast: CompactionForecast): Promise<void> {
+    const answer = await this.prompt({
+      title: 'Compaction',
+      question: 'This compaction is unlikely to pay off now. Compact anyway?',
+      detail: formatCompactionForecast(forecast),
+      options: [
+        { label: 'Compact now', value: 'compact' },
+        { label: 'Keep working', value: 'keep' },
+      ],
+      initialValue: 'keep',
+      allowCustom: false,
+      submitLabel: 'run',
+    })
+    if (answer === 'compact') this.#forwardCommand('/compact')
+    this.#render()
+  }
+
+  /** Hand one Harness-owned slash command to the runner exactly as typed. */
+  #forwardCommand(text: string): void {
+    const pending = this.#pending
+    if (pending !== null) {
+      this.#pending = null
+      pending.resolve({ text, images: [] })
+    } else {
+      this.#queuedSubmissions.push({ text, images: [] })
+    }
   }
 
   #notice(text: string): void {

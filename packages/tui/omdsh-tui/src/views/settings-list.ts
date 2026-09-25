@@ -6,6 +6,16 @@
 
 import type { KeyEvent } from '../input/keys.ts'
 import { ACTIVITY_DETAIL_DESCRIPTIONS, ACTIVITY_DETAIL_MODES, isActivityDetailMode, type ActivityDetailMode } from '../session/activity-detail.ts'
+import {
+  COMPACTION_STEP_CHOICES,
+  COMPACTION_THRESHOLD_CHOICES,
+  DEFAULT_COMPACTION_STEP_CHOICE,
+  DEFAULT_COMPACTION_THRESHOLD_CHOICE,
+  isCompactionStep,
+  isCompactionThreshold,
+  type CompactionStepChoice,
+  type CompactionThresholdChoice,
+} from '../session/compaction-forecast.ts'
 import { STARTUP_CHANGELOG_MODES, type StartupChangelogMode } from '../session/release-notes.ts'
 import type { ModelFavorites } from '../session/tui-settings.ts'
 import {
@@ -52,6 +62,10 @@ export interface TuiPrefs {
   activityDetail?: ActivityDetailMode
   checkUpdates?: boolean
   startupChangelog?: StartupChangelogMode
+  /** Offer a compaction once the prompt context crosses this token size. */
+  compactionThreshold?: CompactionThresholdChoice
+  /** Steps assumed still ahead when the compaction forecast is computed. */
+  compactionForecastSteps?: CompactionStepChoice
   statusBar?: StatusBarConfig
   /** Read-only migration input for settings written before status-line customization. */
   statusPreset?: StatusPreset
@@ -167,6 +181,23 @@ export function tuiSettingItems(prefs: TuiPrefs): SettingItem[] {
       values: STARTUP_CHANGELOG_VALUES,
     },
     {
+      id: 'compactionThreshold',
+      label: 'Compact at',
+      description: 'Offer compaction once the prompt context reaches this many tokens; off disables the offer',
+      value: prefs.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD_CHOICE,
+      displayValue: (prefs.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD_CHOICE) === 'off'
+        ? 'off'
+        : (prefs.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD_CHOICE).toUpperCase(),
+      values: COMPACTION_THRESHOLD_CHOICES,
+    },
+    {
+      id: 'compactionForecastSteps',
+      label: 'Steps ahead',
+      description: 'Steps assumed left in the task; the forecast compares freed context against one summarizing turn',
+      value: prefs.compactionForecastSteps ?? DEFAULT_COMPACTION_STEP_CHOICE,
+      values: COMPACTION_STEP_CHOICES,
+    },
+    {
       id: 'statusEnabled',
       label: 'Status line',
       description: 'Show the fixed two-line footer below the composer',
@@ -246,6 +277,12 @@ export function applySettingValue(prefs: TuiPrefs, id: string, value: string): T
   if (id === 'checkUpdates') return { ...prefs, checkUpdates: value === 'on' }
   if (id === 'startupChangelog' && STARTUP_CHANGELOG_MODES.includes(value as StartupChangelogMode)) {
     return { ...prefs, startupChangelog: value as StartupChangelogMode }
+  }
+  if (id === 'compactionThreshold' && isCompactionThreshold(value)) {
+    return { ...prefs, compactionThreshold: value }
+  }
+  if (id === 'compactionForecastSteps' && isCompactionStep(value)) {
+    return { ...prefs, compactionForecastSteps: value }
   }
   const statusBar = resolveStatusBarConfig(prefs.statusBar, prefs.statusPreset)
   if (id === 'statusEnabled') return { ...prefs, statusBar: { ...statusBar, enabled: value === 'on' } }
@@ -360,7 +397,7 @@ function toggleSelectedVisibility(state: SettingsState): SettingsState {
   return { selected: state.selected, prefs: { ...state.prefs, statusBar: toggleStatusItem(resolveStatusBarConfig(state.prefs.statusBar, state.prefs.statusPreset), item) } }
 }
 
-const GENERAL_SETTING_COUNT = 6
+const GENERAL_SETTING_COUNT = 8
 
 function moveSelected(state: SettingsState, next: number): SettingsState {
   const n = tuiSettingItems(state.prefs).length

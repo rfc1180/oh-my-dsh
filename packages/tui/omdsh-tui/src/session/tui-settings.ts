@@ -5,6 +5,14 @@
 
 import z from '@deepseek-ai/schemastery'
 import { ACTIVITY_DETAIL_MODES, type ActivityDetailMode } from './activity-detail.ts'
+import {
+  COMPACTION_STEP_CHOICES,
+  COMPACTION_THRESHOLD_CHOICES,
+  DEFAULT_COMPACTION_STEP_CHOICE,
+  DEFAULT_COMPACTION_THRESHOLD_CHOICE,
+  type CompactionStepChoice,
+  type CompactionThresholdChoice,
+} from './compaction-forecast.ts'
 import { STARTUP_CHANGELOG_MODES, type StartupChangelogMode } from './release-notes.ts'
 import {
   STATUS_COLOR_TOKENS,
@@ -56,6 +64,10 @@ export interface TuiSettings {
   activityDetail: ActivityDetailMode
   checkUpdates: boolean
   startupChangelog: StartupChangelogMode
+  /** Offer a compaction once the prompt context crosses this token size. */
+  compactionThreshold: CompactionThresholdChoice
+  /** Steps assumed still ahead when the compaction forecast is computed. */
+  compactionForecastSteps: CompactionStepChoice
   statusBar?: StatusBarConfig
   /** Legacy input retained so older settings documents can be migrated. */
   statusPreset?: StatusPreset
@@ -71,6 +83,8 @@ export const TuiSettingsSchema: z<TuiSettings> = z.object({
   activityDetail: z.union([...ACTIVITY_DETAIL_MODES]).default('standard'),
   checkUpdates: z.boolean().default(true),
   startupChangelog: z.union([...STARTUP_CHANGELOG_MODES]).default('summary'),
+  compactionThreshold: z.union([...COMPACTION_THRESHOLD_CHOICES]).default(DEFAULT_COMPACTION_THRESHOLD_CHOICE),
+  compactionForecastSteps: z.union([...COMPACTION_STEP_CHOICES]).default(DEFAULT_COMPACTION_STEP_CHOICE),
   statusBar: z.union([z.object({
     enabled: z.boolean().default(true),
     labels: z.union([...STATUS_LABEL_STYLES]).default('compact'),

@@ -26,6 +26,8 @@ describe('tuiSettingItems / applySettingValue', () => {
       'expandTools',
       'checkUpdates',
       'startupChangelog',
+      'compactionThreshold',
+      'compactionForecastSteps',
       'statusEnabled',
       'statusLabels',
       'statusItem:model',
@@ -52,11 +54,13 @@ describe('tuiSettingItems / applySettingValue', () => {
     expect(items[3]).toMatchObject({ label: 'Tool details', value: 'compact' })
     expect(items[4]).toMatchObject({ label: 'Update checks', value: 'on' })
     expect(items[5]).toMatchObject({ label: 'Release notes', value: 'summary' })
-    expect(items[6]?.value).toBe('on')
-    expect(items[6]?.label).toBe('Status line')
-    expect(items[7]?.value).toBe('compact')
-    expect(items[8]).toMatchObject({ label: '← Model', value: 'default', sample: 'deepseek' })
-    expect(items[12]).toMatchObject({ label: '← Context', value: 'default', sample: 'Ctx 1.6%' })
+    expect(items[6]).toMatchObject({ label: 'Compact at', value: '100k' })
+    expect(items[7]).toMatchObject({ label: 'Steps ahead', value: '10' })
+    expect(items[8]?.value).toBe('on')
+    expect(items[8]?.label).toBe('Status line')
+    expect(items[9]?.value).toBe('compact')
+    expect(items[10]).toMatchObject({ label: '← Model', value: 'default', sample: 'deepseek' })
+    expect(items[14]).toMatchObject({ label: '← Context', value: 'default', sample: 'Ctx 1.6%' })
     expect(applySettingValue(prefs, 'theme', 'light')).toEqual({ theme: 'light', colors: true, expandTools: false })
     expect(applySettingValue(prefs, 'theme', 'oled')).toEqual({ theme: 'oled', colors: true, expandTools: false })
     expect(applySettingValue(prefs, 'colors', 'off')).toEqual({ theme: 'dark', colors: false, expandTools: false })
@@ -84,6 +88,17 @@ describe('tuiSettingItems / applySettingValue', () => {
     expect(items.find(item => item.id === 'startupChangelog')).toMatchObject({ value: 'summary' })
     expect(applySettingValue(prefs, 'checkUpdates', 'off').checkUpdates).toBe(false)
     expect(applySettingValue(prefs, 'startupChangelog', 'expanded').startupChangelog).toBe('expanded')
+  })
+
+  it('exposes the compaction threshold and forecast horizon', () => {
+    const items = tuiSettingItems(prefs)
+    expect(items.find(item => item.id === 'compactionThreshold')).toMatchObject({ value: '100k' })
+    expect(items.find(item => item.id === 'compactionForecastSteps')).toMatchObject({ value: '10' })
+    expect(applySettingValue(prefs, 'compactionThreshold', '200k').compactionThreshold).toBe('200k')
+    expect(applySettingValue(prefs, 'compactionThreshold', 'off').compactionThreshold).toBe('off')
+    expect(applySettingValue(prefs, 'compactionForecastSteps', '30').compactionForecastSteps).toBe('30')
+    expect(applySettingValue(prefs, 'compactionThreshold', 'nope')).toEqual(prefs)
+    expect(applySettingValue(prefs, 'compactionForecastSteps', 'nope')).toEqual(prefs)
   })
 })
 
@@ -114,7 +129,7 @@ describe('applySettingsEvent', () => {
   })
 
   it('keeps up and down inside the active settings tab', () => {
-    const lastGeneral = createSettings(prefs, 'startupChangelog')
+    const lastGeneral = createSettings(prefs, 'compactionForecastSteps')
     const down = applySettingsEvent(lastGeneral, key('down'))
     expect(down).toEqual({ kind: 'update', state: lastGeneral })
     const firstStatus = createSettings(prefs, 'statusEnabled')
@@ -123,13 +138,13 @@ describe('applySettingsEvent', () => {
     const end = applySettingsEvent(firstStatus, key('end'))
     expect(end.kind === 'update' && end.state.selected).toBe(tuiSettingItems(prefs).length - 1)
     const home = applySettingsEvent(end.kind === 'update' ? end.state : firstStatus, key('home'))
-    expect(home.kind === 'update' && home.state.selected).toBe(6)
+    expect(home.kind === 'update' && home.state.selected).toBe(8)
   })
 
   it('uses tab to jump between General and Status line sections', () => {
     const open = createSettings(prefs, 'theme')
     const status = applySettingsEvent(open, key('tab'))
-    expect(status.kind === 'update' && status.state.selected).toBe(6)
+    expect(status.kind === 'update' && status.state.selected).toBe(8)
     const general = applySettingsEvent(status.kind === 'update' ? status.state : open, key('tab'))
     expect(general.kind === 'update' && general.state.selected).toBe(0)
   })
@@ -170,12 +185,12 @@ describe('applySettingsEvent', () => {
     expect(hidden.kind === 'apply' && hidden.state.prefs.statusBar?.groups).toEqual([
       'context', 'tokens', 'speed', 'durations', 'counts',
     ])
-    expect(hidden.kind === 'apply' && tuiSettingItems(hidden.state.prefs)[13]?.id).toBe('statusItem:cache')
+    expect(hidden.kind === 'apply' && tuiSettingItems(hidden.state.prefs)[15]?.id).toBe('statusItem:cache')
     const shown = applySettingsEvent(hidden.kind === 'apply' ? hidden.state : open, { type: 'text', value: ' ' })
     expect(shown.kind === 'apply' && shown.state.prefs.statusBar?.groups).toEqual([
       'context', 'cache', 'tokens', 'speed', 'durations', 'counts',
     ])
-    expect(shown.kind === 'apply' && shown.state.selected).toBe(13)
+    expect(shown.kind === 'apply' && shown.state.selected).toBe(15)
   })
 
   it('ignores unrelated keys and non-space text', () => {

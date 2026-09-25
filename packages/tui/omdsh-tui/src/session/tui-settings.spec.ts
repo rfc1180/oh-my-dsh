@@ -19,6 +19,8 @@ describe('TuiSettingsSchema', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      compactionThreshold: '100k',
+      compactionForecastSteps: '10',
       modelFavorites: {},
     })
     expect(validate({ theme: 'light', colors: false, expandTools: true })).toEqual({
@@ -28,6 +30,8 @@ describe('TuiSettingsSchema', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      compactionThreshold: '100k',
+      compactionForecastSteps: '10',
       modelFavorites: {},
     })
     expect(validate({ statusBar: { enabled: false, labels: 'full', groups: ['tokens', 'cache'] } })).toMatchObject({
@@ -70,6 +74,20 @@ describe('TuiSettingsSchema', () => {
       checkUpdates: false,
       startupChangelog: 'expanded',
     })
+  })
+
+  it('validates compaction threshold and forecast-horizon preferences', () => {
+    const validate = TuiSettingsSchema as unknown as (input: object) => {
+      compactionThreshold: string
+      compactionForecastSteps: string
+    }
+    expect(validate({ compactionThreshold: '200k', compactionForecastSteps: '20' })).toMatchObject({
+      compactionThreshold: '200k',
+      compactionForecastSteps: '20',
+    })
+    expect(validate({ compactionThreshold: 'off' }).compactionThreshold).toBe('off')
+    expect(() => validate({ compactionThreshold: '100K' })).toThrow()
+    expect(() => validate({ compactionForecastSteps: '7' })).toThrow()
   })
 
   it('keeps a legacy status preset available for runtime migration', () => {

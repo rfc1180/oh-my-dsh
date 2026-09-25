@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Project durable journals into a versioned semantic session-history model with explainable human/internal/subagent/legacy classification, safe interaction content, final-answer boundaries, and cursor-based catalog/history pages for native terminal consumers.
 - Bind a revocable `session.history.page.v2` source for supporting terminal hosts, restricted to the active session and exposing only direct user prompts and final assistant answers through opaque cursors.
 - Let `/model` open on per-provider favorite models configured under `omdsh-tui.modelFavorites` while its search field still filters the entire provider catalog, and window long compact pickers to ten rows so a large catalog stays responsive.
+- Forecast compaction economics before it runs: `/compact` prints what the summarizing turn frees and what that single turn costs, asks before spending a turn that cannot repay itself inside the estimated horizon, and the terminal offers the same forecast once the prompt context crosses a configurable threshold (`Compact at`) with a `Steps ahead` estimate under `/settings`; a completed compaction now shows `freed N tokens` next to its summary in Trajectory.
 
 ### Changed
 

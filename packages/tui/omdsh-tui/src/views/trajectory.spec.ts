@@ -221,6 +221,14 @@ describe('Trajectory projection', () => {
     expect(compacted.find(row => row.seq === 4)?.growthTokens).toBeUndefined()
   })
 
+  it('states the freed context next to a compaction summary', () => {
+    const rows = buildTrajectoryRows([
+      event('compaction/start', 0, 1, { compactionId: 'k1' }),
+      event('compaction/summary', 1, 2, { compactionId: 'k1', shadowedTokenCount: 96_000, summary: [{ type: 'text', text: 'kept the plan and open files' }] }),
+    ])
+    expect(rows.find(row => row.seq === 1)?.summary).toBe('freed 96K tokens · kept the plan and open files')
+  })
+
   it('keeps descendants directly below their durable parent', () => {
     const ordered = orderTrajectorySessions([
       { id: 'child', title: 'Child', parentSession: 'root', updatedAt: 30 },

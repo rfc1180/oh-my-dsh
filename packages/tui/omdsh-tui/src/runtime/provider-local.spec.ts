@@ -2367,6 +2367,8 @@ describe('LocalTui (tty)', () => {
       activityDetail: 'standard',
       checkUpdates: true,
       startupChangelog: 'summary',
+      compactionThreshold: '100k',
+      compactionForecastSteps: '10',
       modelFavorites: {},
       statusBar: {
         enabled: true,
