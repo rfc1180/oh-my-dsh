@@ -92,6 +92,76 @@ export function summarizeCost(events: readonly SessionEvent[]): CostSummary {
   }
 }
 
+/** One attributed source of fresh prompt tokens. */
+export interface CostSourceBucket {
+  /** Tool name, `prompt`, or `session start`. */
+  source: string
+  steps: number
+  /** Prompt tokens this source's steps sent without a cache hit. */
+  uncachedInputTokens: number
+  cacheWriteTokens: number
+  /** Uncached input plus cache writes: the fresh tokens this source put into the conversation. */
+  freshTokens: number
+}
+
+function toolName(event: SessionEvent): string | undefined {
+  if (event.type !== 'tool/call') return undefined
+  const data = event.data as { name?: unknown } | undefined
+  return typeof data?.name === 'string' && data.name !== '' ? data.name : undefined
+}
+
+/**
+ * Attribute each model step's fresh prompt tokens to the activity that preceded
+ * it: the last tool call, a new user prompt, or the session start. This is the
+ * "where does the bill leak" view — reading files, shell, searches, MCP, or the
+ * fixed prefix — and it is deliberately approximate: a step's uncached input is
+ * credited whole to its most recent source.
+ * @param events - the conversation's durable events.
+ * @returns buckets ordered by fresh tokens, largest first.
+ */
+export function summarizeCostBySource(events: readonly SessionEvent[]): readonly CostSourceBucket[] {
+  const buckets = new Map<string, CostSourceBucket>()
+  let pending: string | undefined
+  for (const event of events) {
+    const tool = toolName(event)
+    if (tool !== undefined) {
+      pending = tool
+      continue
+    }
+    if (event.type === 'user/message') {
+      pending = 'prompt'
+      continue
+    }
+    const step = stepCost(event)
+    if (step === undefined) continue
+    const source = pending ?? 'session start'
+    pending = undefined
+    const bucket = buckets.get(source) ?? { source, steps: 0, uncachedInputTokens: 0, cacheWriteTokens: 0, freshTokens: 0 }
+    bucket.steps += 1
+    bucket.uncachedInputTokens += step.uncachedInputTokens
+    bucket.cacheWriteTokens += step.cacheWriteTokens
+    bucket.freshTokens = bucket.uncachedInputTokens + bucket.cacheWriteTokens
+    buckets.set(source, bucket)
+  }
+  return [...buckets.values()].sort((left, right) => right.freshTokens - left.freshTokens || left.source.localeCompare(right.source))
+}
+
+/** Compact source table for `/cost sources`. */
+export function formatCostSources(buckets: readonly CostSourceBucket[]): string {
+  if (buckets.length === 0) return 'No model steps with usage in this session yet.'
+  const header = ['source', 'steps', 'uncached', 'write', 'fresh']
+  const rows = buckets.map(bucket => [
+    bucket.source,
+    String(bucket.steps),
+    formatTokens(bucket.uncachedInputTokens),
+    formatTokens(bucket.cacheWriteTokens),
+    formatTokens(bucket.freshTokens),
+  ])
+  const widths = header.map((cell, column) => Math.max(cell.length, ...rows.map(row => (row[column] ?? '').length)))
+  const line = (cells: readonly string[]): string => cells.map((cell, column) => column === 0 ? cell.padEnd(widths[column] ?? 0) : cell.padStart(widths[column] ?? 0)).join('  ')
+  return [line(header), ...rows.map(row => line(row))].join('\n')
+}
+
 /** Compact `/cost` table: one row per model step, then the session totals. */
 export function formatCostSummary(summary: CostSummary): string {
   if (summary.steps.length === 0) return 'No model steps with usage in this session yet.'
