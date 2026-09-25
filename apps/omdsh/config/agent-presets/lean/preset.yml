@@ -1,0 +1,3 @@
+name: Lean
+description: Standard coding agent with the provider-specific subagent tools removed; keeps the generic subagent, its controls, and every base tool.
+order: 5

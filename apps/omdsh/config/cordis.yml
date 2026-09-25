@@ -162,6 +162,11 @@
       dshHome: !!js process.env.OMDSH_HOME || undefined
       skills:
         enabled: true
+        tool:
+          # Every session start carries the whole skill catalog. 150 characters
+          # keeps each summary useful while trimming the padded copy that made
+          # the default 500 the largest avoidable part of the fixed prefix.
+          catalogDescriptionMaxLength: 150
       goals:
         domain: {}
         tool: {}

@@ -1,0 +1,24 @@
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+# The provider-specific subagent tools are the largest optional part of the
+# fixed tool schemas (about 11K of 40K characters in a full session). Deny them
+# by name so a session that does not delegate to external providers pays for
+# fewer schemas; `subagent`, `list_agents`, `send_message`, `interrupt_agent`,
+# and every base tool stay visible because deny never shrinks the rest.
+- id: profile
+  name: '@agi-fans/dsh-tui/agent-profile'
+  config:
+    tools:
+      deny:
+        - subagent_claude_code
+        - subagent_codex
+        - subagent_cursor
+        - subagent_devin
+        - subagent_fork
+        - subagent_gpt_pro
+        - subagent_kimi
+        - subagent_model
