@@ -9,5 +9,6 @@
       - Use the AST index for "who calls this" and "what breaks"; text search is misleading there.
       - Run heavy exploration in a subagent and keep only its conclusion in this conversation.
       - Never paste large tool output into the conversation: read a range, take a head or tail, or accept the preview the read tool returns.
+      - Before reading a file you already read in this project, consult the document memo (`surf-doc-memo consult <path>`); after reading a large file, save a memo with `surf-doc-memo put`.
       - Keep the route and the plan: do not switch provider or model mid-task, and do not repeat an action that just failed the same way.
       - Compact when the conversation has grown and the task still has steps ahead, not at the end.
