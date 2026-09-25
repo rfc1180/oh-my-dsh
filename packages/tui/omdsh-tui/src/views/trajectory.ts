@@ -16,6 +16,7 @@ import type {
 import type { Frame } from '../chrome/renderer.ts'
 import { BOX, SPINNER, SYMBOL, type Theme } from '../chrome/theme.ts'
 import { padToWidth, truncateToWidth, visibleWidth, wrapText } from '../chrome/width.ts'
+import { missedCacheTokens } from '../session/cache-health.ts'
 import type { KeyEvent } from '../input/keys.ts'
 
 export type TrajectoryFocus = 'sessions' | 'timeline' | 'details'
@@ -45,6 +46,8 @@ export interface TrajectoryEventRow {
   readonly growthTokens?: number | undefined
   /** `read bridge.go` — the tool activity preceding the step that explained the growth. */
   readonly growthSource?: string | undefined
+  /** Prompt tokens the step paid for again although the previous prompt was reusable. */
+  readonly cacheMissTokens?: number | undefined
   readonly status: 'unknown' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted'
   readonly durationMs?: number | undefined
   readonly sourceSeqs: readonly number[]
@@ -414,17 +417,25 @@ function timingKey(...parts: unknown[]): string {
  * step, so a prompt, turn boundary, resume seed, or compaction clears it
  * instead of misattributing later growth to an old result.
  */
-function recordContextGrowth(usage: unknown, timings: Timings): Pick<TrajectoryEventRow, 'growthTokens' | 'growthSource'> {
+function recordStepUsage(usage: unknown, timings: Timings): Pick<TrajectoryEventRow, 'growthTokens' | 'growthSource' | 'cacheMissTokens'> {
   const current = contextSize(usage)
   if (current === undefined) return {}
   const previous = timings.lastContextTokens
   const source = timings.lastToolHint
+  const raw = record(usage)
+  const cached = number(raw.cacheReadTokens) ?? 0
+  const promptTokens = (number(raw.inputTokens) ?? 0) + cached + (number(raw.cacheWriteTokens) ?? 0)
+  // The step's own prompt decides the cache outcome; compare it with the prompt
+  // the provider could have reused from the previous step before overwriting it.
+  const missed = missedCacheTokens({ promptTokens, cachedTokens: cached, previousPromptTokens: previous })
   timings.lastContextTokens = current
   timings.lastToolHint = undefined
-  if (previous === undefined || source === undefined || current <= previous) return {}
-  const growth = current - previous
-  if (growth < CONTEXT_GROWTH_MIN_TOKENS || growth < previous * CONTEXT_GROWTH_MIN_RATIO) return {}
-  return { growthTokens: growth, growthSource: source }
+  const annotate = previous !== undefined && source !== undefined && current > previous
+    && current - previous >= CONTEXT_GROWTH_MIN_TOKENS && current - previous >= previous * CONTEXT_GROWTH_MIN_RATIO
+  return {
+    ...(annotate ? { growthTokens: current - previous, growthSource: source } : {}),
+    ...(missed === undefined ? {} : { cacheMissTokens: missed }),
+  }
 }
 
 function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEventRow, 'event' | 'searchText'> | undefined {
@@ -479,8 +490,10 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
       const source = record(message.source)
       const route = [source.provider, source.model].map(text).filter(Boolean).join('/')
       const usage = usageSummary(data.usage)
+      const health = recordStepUsage(data.usage, timings)
+      const cold = health.cacheMissTokens === undefined ? undefined : `cold:${tokenCount(health.cacheMissTokens)}`
       const body = contentText(message.content)
-      return { ...base, category: failed ? 'error' : 'message', tone: failed ? 'warning' : 'normal', glyph: failed ? SYMBOL.warning : '●', label: 'Assistant', summary: [route, usage, body].filter(Boolean).join(' · '), defaultVisible: true, ...recordContextGrowth(data.usage, timings) }
+      return { ...base, category: failed ? 'error' : 'message', tone: failed ? 'warning' : 'normal', glyph: failed ? SYMBOL.warning : '●', label: 'Assistant', summary: [route, usage, cold, body].filter(Boolean).join(' · '), defaultVisible: true, ...health }
     }
     case 'tool/call': {
       const callId = text(data.callId)
@@ -847,6 +860,7 @@ function repeatSignature(row: TrajectoryEventRow): string {
     summary: row.summary,
     growthTokens: row.growthTokens,
     growthSource: row.growthSource,
+    cacheMissTokens: row.cacheMissTokens,
     durationMs: row.durationMs,
     diagnostic: row.diagnostic,
     error: row.error,
@@ -1303,6 +1317,9 @@ function detailRows(state: TrajectoryState, theme: Theme, width: number, height:
         row.growthTokens === undefined || row.growthSource === undefined
           ? undefined
           : `Context growth: +${tokenCount(row.growthTokens)} tokens ← ${row.growthSource}`,
+        row.cacheMissTokens === undefined
+          ? undefined
+          : `Cache: ${tokenCount(row.cacheMissTokens)} reusable tokens charged without a cache hit`,
         row.change === undefined ? undefined : `Change: ${row.change}`,
         row.filePaths.length === 0 ? undefined : `Files: ${row.filePaths.join(', ')}`,
         row.omittedChars === 0 ? undefined : `Excerpt: ${row.omittedChars} characters omitted from the row`,

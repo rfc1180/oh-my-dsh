@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Let `/model` open on per-provider favorite models configured under `omdsh-tui.modelFavorites` while its search field still filters the entire provider catalog, and window long compact pickers to ten rows so a large catalog stays responsive.
 - Forecast compaction economics before it runs: `/compact` prints what the summarizing turn frees and what that single turn costs, asks before spending a turn that cannot repay itself inside the estimated horizon, and the terminal offers the same forecast once the prompt context crosses a configurable threshold (`Compact at`) with a `Steps ahead` estimate under `/settings`; a completed compaction now shows `freed N tokens` next to its summary in Trajectory.
 - Trim the fixed session start payload: the skill catalog now renders 150-character summaries instead of the 500-character default, and a new `Lean` agent preset denies the eight provider-specific `subagent*` tools so a session that never delegates to an external provider still keeps the generic `subagent`, its `list_agents`/`send_message`/`interrupt_agent` controls, and every base tool while paying for roughly 11K fewer tool-schema characters.
+- Flag a lost prompt cache in Trajectory: an assistant step that re-read at least 20K reusable tokens (half the reusable prefix) without a cache hit now shows `cold:150K` in its row and the exact figure in Details, so the most expensive single step in a session stops looking like an ordinary one.
 
 ### Changed
 

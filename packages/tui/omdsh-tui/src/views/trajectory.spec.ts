@@ -221,6 +221,16 @@ describe('Trajectory projection', () => {
     expect(compacted.find(row => row.seq === 4)?.growthTokens).toBeUndefined()
   })
 
+  it('flags a step that re-read a large reusable prompt without a cache hit', () => {
+    const rows = buildTrajectoryRows([
+      event('assistant/message', 0, 1, { usage: { inputTokens: 100, outputTokens: 200, cacheReadTokens: 150_000 } }),
+      event('assistant/message', 1, 2, { usage: { inputTokens: 150_800, outputTokens: 200, cacheReadTokens: 0 } }),
+    ])
+    expect(rows.find(row => row.seq === 0)?.cacheMissTokens).toBeUndefined()
+    expect(rows.find(row => row.seq === 1)?.cacheMissTokens).toBe(150_300)
+    expect(rows.find(row => row.seq === 1)?.summary).toContain('cold:150K')
+  })
+
   it('states the freed context next to a compaction summary', () => {
     const rows = buildTrajectoryRows([
       event('compaction/start', 0, 1, { compactionId: 'k1' }),
