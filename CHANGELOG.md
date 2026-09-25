@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Trim the fixed session start payload: the skill catalog now renders 150-character summaries instead of the 500-character default, and a new `Lean` agent preset denies the eight provider-specific `subagent*` tools so a session that never delegates to an external provider still keeps the generic `subagent`, its `list_agents`/`send_message`/`interrupt_agent` controls, and every base tool while paying for roughly 11K fewer tool-schema characters.
 - Flag a lost prompt cache in Trajectory: an assistant step that re-read at least 20K reusable tokens (half the reusable prefix) without a cache hit now shows `cold:150K` in its row and the exact figure in Details, so the most expensive single step in a session stops looking like an ordinary one.
 - Warn before a model or provider switch that drops the prompt cache: `/model` now states how many tokens the new route re-reads at full price and asks before applying the switch, because a prompt cache belongs to one model.
+- Show the session's token cost without leaving the terminal: `/cost` prints one row per model step (uncached, cache read, cache write, output, context) plus session totals, the peak context, and the cache-hit share.
 
 ### Changed
 

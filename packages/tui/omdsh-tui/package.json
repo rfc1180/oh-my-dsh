@@ -83,6 +83,10 @@
       "types": "./lib/commands/integrations.d.ts",
       "default": "./lib/commands/integrations.js"
     },
+    "./command-cost": {
+      "types": "./lib/commands/cost.d.ts",
+      "default": "./lib/commands/cost.js"
+    },
     "./startup-notices": {
       "types": "./lib/runtime/startup-notices.d.ts",
       "default": "./lib/runtime/startup-notices.js"
