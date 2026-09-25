@@ -41,6 +41,13 @@ describe('shipped agent presets', () => {
     }
   })
 
+  it('keeps the standard persona carrying the cost-discipline rules', () => {
+    const composition = readFileSync(join(SHIPPED_PRESET_ROOT, 'standard', COMPOSITION_FILE), 'utf8')
+    for (const rule of ['termdock-ast', 'subagent', 'head or tail', 'do not switch provider or model', 'Compact when']) {
+      expect(composition).toContain(rule)
+    }
+  })
+
   it('pins the shipped skill catalog description budget used to trim the start payload', () => {
     const cordis = readFileSync(join(SHIPPED_PRESET_ROOT, '..', 'cordis.yml'), 'utf8')
     expect(cordis).toMatch(/catalogDescriptionMaxLength:\s*150/u)
