@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Show the session's token cost without leaving the terminal: `/cost` prints one row per model step (uncached, cache read, cache write, output, context) plus session totals, the peak context, and the cache-hit share, and `/cost sources` attributes fresh prompt tokens to the tool, prompt, or session start that produced them.
 - Give the standard agent a cost-discipline persona: locate with the code map before reading whole files, use the AST index for callers, run heavy exploration in a subagent, never paste large tool output into the conversation, keep one model route for the whole task, and compact while steps remain.
 - Compact without asking when the user opts in: the new `Compact automatically` row under `/settings` runs the compaction as soon as the context crosses the threshold and the forecast pays off, instead of only offering it.
+- Watch the fixed start in Trajectory: every request carries a fingerprint of the system prompt and tool schemas, so a change that restarts the prompt cache is flagged instead of silently costing the whole conversation.
+- Extend the document-memo rule to project files: the standard persona now asks the agent to consult `surf-doc-memo` before re-reading a file and to save a memo after a large read, which targets the 38.5% share of repeated reads.
 
 ### Changed
 

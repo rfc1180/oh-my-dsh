@@ -405,6 +405,19 @@ interface Timings {
   lastContextTokens: number | undefined
   /** Identity of the tool activity that ran since the previous assistant step. */
   lastToolHint: string | undefined
+  /** Fingerprint of the fixed start (system prompt + tool schemas) of the previous request. */
+  prefixHash: string | undefined
+  /** Requests with a captured fixed start, for the stability line. */
+  prefixRequests: number
+}
+
+/** Cheap stable fingerprint: the fixed start only needs equality, not a digest. */
+function hashText(value: string): string {
+  let hash = 5_381
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) + hash + value.charCodeAt(index)) | 0
+  }
+  return hash.toString(36)
 }
 
 function timingKey(...parts: unknown[]): string {
@@ -506,6 +519,19 @@ function eventProjection(event: EventLike, timings: Timings): Omit<TrajectoryEve
       const took = duration(event.time - (timings.calls.get(result.callId) ?? event.time))
       return { ...base, category: result.failed ? 'error' : 'tool', tone: result.failed ? 'error' : 'success', glyph: result.failed ? SYMBOL.error : SYMBOL.success, label: 'Result', summary: [result.callId, took, result.output].filter(Boolean).join(' · '), defaultVisible: true }
     }
+    case 'request/header': {
+      // The fixed start is what a prompt cache reuses; a change there restarts it
+      // everywhere after this request. Watching it costs one hash per request.
+      const header = record(data.header)
+      const fingerprint = hashText(JSON.stringify([header.system ?? '', header.tools ?? []]))
+      const previous = timings.prefixHash
+      timings.prefixHash = fingerprint
+      timings.prefixRequests += 1
+      if (previous !== undefined && previous !== fingerprint) {
+        return { ...base, category: 'model', tone: 'warning', glyph: SYMBOL.warning, label: 'Prefix', summary: 'fixed start changed — the prompt cache restarts from this request', defaultVisible: true }
+      }
+      return { ...base, category: 'model', tone: 'muted', glyph: '▤', label: 'Prefix', summary: previous === undefined ? 'fixed start captured' : `unchanged · ${timings.prefixRequests} requests`, defaultVisible: false }
+    }
     case 'request/context':
       return { ...base, category: 'model', tone: 'muted', glyph: '◌', label: 'Route', summary: [data.provider, data.model].map(text).filter(Boolean).join(' / '), defaultVisible: true }
     case 'todo/write': {
@@ -571,6 +597,8 @@ function buildRawTrajectoryRows(events: readonly SessionEvent[]): TrajectoryEven
     compactions: new Map(),
     lastContextTokens: undefined,
     lastToolHint: undefined,
+    prefixHash: undefined,
+    prefixRequests: 0,
   }
   const rows: TrajectoryEventRow[] = []
   const ordered = [...events].sort((left, right) => (left as EventLike).seq - (right as EventLike).seq)

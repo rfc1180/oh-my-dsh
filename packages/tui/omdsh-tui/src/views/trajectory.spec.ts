@@ -231,6 +231,19 @@ describe('Trajectory projection', () => {
     expect(rows.find(row => row.seq === 1)?.summary).toContain('cold:150K')
   })
 
+  it('watches the fixed start and flags a change', () => {
+    const header = (system: string) => ({ header: { system, tools: [{ name: 'bash' }] } })
+    const rows = buildTrajectoryRows([
+      event('request/header', 0, 1, header('prompt')),
+      event('request/header', 1, 2, header('prompt')),
+      event('request/header', 2, 3, header('prompt with runtime context')),
+    ])
+    expect(rows.find(row => row.seq === 0)?.summary).toBe('fixed start captured')
+    expect(rows.find(row => row.seq === 1)?.summary).toBe('unchanged · 2 requests')
+    expect(rows.find(row => row.seq === 2)?.summary).toContain('fixed start changed')
+    expect(rows.find(row => row.seq === 2)?.tone).toBe('warning')
+  })
+
   it('states the freed context next to a compaction summary', () => {
     const rows = buildTrajectoryRows([
       event('compaction/start', 0, 1, { compactionId: 'k1' }),
