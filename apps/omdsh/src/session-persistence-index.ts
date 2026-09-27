@@ -17,11 +17,13 @@ interface AcceleratedPrototype extends IndexedPersistence {
   list: (signal?: AbortSignal) => Promise<SessionHeader[]>
   inspect: (id: string, signal?: AbortSignal) => Promise<{ meta: SessionHeader; events: SessionEvent[] }>
   listSnapshots: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>
+  omdshCachedRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshSemanticSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedSemanticCatalog>
   omdshHydrateSessionCatalog?: (signal?: AbortSignal) => Promise<IndexedRecentSession[]>
   omdshViewportTail?: (id: string, signal?: AbortSignal) => Promise<IndexedViewportTail | undefined>
+  omdshRefreshCachedViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
   /** Versioned semantic DTO source for non-TypeScript production consumers. */
   omdshProjectSessionHistory?: (id: string, signal?: AbortSignal) => Promise<SessionHistoryProjectionV1>
@@ -86,6 +88,9 @@ export function installSessionPersistenceIndex(): void {
   prototype.list = async function (signal) {
     return (await this.listSnapshots(signal)).map(snapshot => snapshot.header)
   }
+  prototype.omdshCachedRecentSessions = function (limit, signal) {
+    return indexFor(this).cachedRecent(limit, signal)
+  }
   prototype.omdshRecentSessions = function (limit, signal) {
     return indexFor(this).recent(candidate => listSnapshots.call(this, candidate), limit, signal)
   }
@@ -100,6 +105,9 @@ export function installSessionPersistenceIndex(): void {
   }
   prototype.omdshViewportTail = function (id, signal) {
     return indexFor(this).viewportTail(id, signal)
+  }
+  prototype.omdshRefreshCachedViewportTail = function (id, knownNextSeq, signal) {
+    return indexFor(this).refreshCachedViewportTail(id, signal, knownNextSeq)
   }
   prototype.omdshRefreshViewportTail = function (id, knownNextSeq, signal) {
     return indexFor(this).refreshViewportTail(id, candidate => listSnapshots.call(this, candidate), signal, knownNextSeq)

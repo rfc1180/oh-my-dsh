@@ -62,6 +62,25 @@ describe('DurableSessionIndex', () => {
     expect(item.fallback).toHaveBeenCalledTimes(1)
   })
 
+  it('reads startup hints from the persisted cache without validating changed project directories', async () => {
+    const item = await fixture()
+    const first = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await first.recent(item.fallback, 8)
+    const addedPath = join(item.root, 'project', 'session-two', 'session.jsonl')
+    await mkdir(dirname(addedPath), { recursive: true })
+    await writeFile(addedPath, 'journal-two')
+
+    const reopened = new DurableSessionIndex(item.root, 'none', item.persistence)
+    await expect(reopened.cachedRecent(8)).resolves.toEqual([expect.objectContaining({
+      id: 'session-one', title: 'First question', eventCount: 2,
+    })])
+    expect(item.fallback).toHaveBeenCalledOnce()
+    expect(item.reads).toEqual([0])
+
+    await reopened.recent(item.fallback, 8)
+    expect(item.fallback).toHaveBeenCalledTimes(2)
+  })
+
   it('returns the complete cached catalog without reopening journals', async () => {
     const item = await fixture()
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
@@ -98,6 +117,16 @@ describe('DurableSessionIndex', () => {
       })],
       stale: false,
     })
+    expect(item.reads).toEqual([])
+  })
+
+  it('does not discover the session store when startup has no persisted viewport cache', async () => {
+    const item = await fixture()
+    const index = new DurableSessionIndex(item.root, 'none', item.persistence)
+
+    await index.refreshCachedViewportTail(item.header.id)
+
+    expect(item.fallback).not.toHaveBeenCalled()
     expect(item.reads).toEqual([])
   })
 
@@ -156,7 +185,7 @@ describe('DurableSessionIndex', () => {
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
     await index.refreshViewportTail(item.header.id, item.fallback, undefined, 2_000)
 
-    expect(item.reads).toEqual([976])
+    expect(item.reads).toEqual([0])
     await expect(index.viewportTail(item.header.id)).resolves.toMatchObject({
       checkpointSeq: 976,
       eventCount: 2_000,
@@ -165,7 +194,7 @@ describe('DurableSessionIndex', () => {
     })
   })
 
-  it('keeps a bounded partial tail for an active turn with 1500 streaming chunks', async () => {
+  it('keeps the whole tail for an active turn with 1500 streaming chunks', async () => {
     const item = await fixture()
     item.events.splice(0, item.events.length,
       { seq: 0, time: 1, type: 'turn/start', data: { turn: 1 } } as SessionEvent,
@@ -183,15 +212,13 @@ describe('DurableSessionIndex', () => {
     await index.refreshViewportTail(item.header.id, item.fallback, undefined, 1_502)
 
     const tail = await index.viewportTail(item.header.id)
-    expect(item.reads).toEqual([478])
+    expect(item.reads).toEqual([0])
     expect(tail).toMatchObject({
-      checkpointSeq: 478,
+      checkpointSeq: 0,
       eventCount: 1_502,
-      partial: true,
-      omittedEvents: 478,
     })
-    expect(tail?.events).toHaveLength(1_024)
-    expect(tail?.events[0]?.type).toBe('assistant/chunk')
+    expect(tail?.events).toHaveLength(1_502)
+    expect(tail?.events[0]?.type).toBe('turn/start')
     expect(tail?.events.at(-1)?.seq).toBe(1_501)
   })
 
@@ -201,7 +228,7 @@ describe('DurableSessionIndex', () => {
       seq,
       time: seq + 1,
       type: 'test/event',
-      data: { payload: 'x'.repeat(100_000) },
+      data: { payload: 'x'.repeat(1_000_000) },
     }) as SessionEvent))
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
     await index.refreshViewportTail(item.header.id, item.fallback, undefined, 20)
@@ -210,7 +237,7 @@ describe('DurableSessionIndex', () => {
     expect(tail).toBeDefined()
     expect(tail!.events.length).toBeGreaterThan(0)
     expect(tail!.events.length).toBeLessThan(20)
-    expect(Buffer.byteLength(JSON.stringify(tail!.events), 'utf8')).toBeLessThan(512 * 1_024)
+    expect(Buffer.byteLength(JSON.stringify(tail!.events), 'utf8')).toBeLessThan(8 * 1_024 * 1_024)
   })
 
   it('does not persist a single event larger than the viewport byte budget', async () => {
@@ -219,7 +246,7 @@ describe('DurableSessionIndex', () => {
       seq: 0,
       time: 1,
       type: 'test/event',
-      data: { payload: 'x'.repeat(600 * 1_024) },
+      data: { payload: 'x'.repeat(9 * 1_024 * 1_024) },
     } as SessionEvent)
     const index = new DurableSessionIndex(item.root, 'none', item.persistence)
     await index.refreshViewportTail(item.header.id, item.fallback, undefined, 1)
