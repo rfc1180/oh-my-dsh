@@ -13,8 +13,17 @@ export interface SessionPersistenceSnapshot {
 const INDEX_SCHEMA = 1
 const INDEX_FILENAME = '.omdsh-session-index-v1.json'
 const VIEWPORT_SCHEMA = 1
-const VIEWPORT_EVENT_LIMIT = 1_024
-const VIEWPORT_BYTE_LIMIT = 512 * 1_024
+// The viewport is the fast first paint: a suffix of the journal, taken from the end back,
+// shown while the rest is still loading. Its byte budget is what the reader sees
+// immediately, so it must cover a long conversation instead of a fraction of one — at the
+// original 512 KiB an ordinary session arrived truncated and said so itself
+// ("history truncated (7610 earlier events omitted)"). 8 MiB covers a long dialogue while
+// keeping the first paint bounded; the event cap is a backstop for pathological journals
+// with many tiny events, and it is far above what the byte budget admits in practice.
+// Everything older than the window is loaded on demand without a bound, so the transcript
+// is not limited by this number — only its first paint is.
+const VIEWPORT_EVENT_LIMIT = 200_000
+const VIEWPORT_BYTE_LIMIT = 8 * 1_024 * 1_024
 const STATUS_VALUES = new Set(['done', 'failed', 'blocked', 'interrupted'])
 
 export interface IndexedRecentSession {
@@ -353,6 +362,24 @@ export class DurableSessionIndex {
     return snapshots
   }
 
+  /** Read the last persisted human-session summaries without checking or scanning the session store. */
+  async cachedRecent(limit: number, signal?: AbortSignal): Promise<IndexedRecentSession[]> {
+    signal?.throwIfAborted()
+    const index = await this.#load()
+    if (index === undefined) return []
+    const rows: IndexedRecentSession[] = []
+    for (const entry of Object.values(index.entries)
+      .filter(candidate => candidate.header.origin !== 'subagent')
+      .sort((left, right) => right.header.createdAt - left.header.createdAt)) {
+      signal?.throwIfAborted()
+      if (entry.checkpoint === undefined) continue
+      const projected = projectRecent(entry.header, entry.checkpoint.projection)
+      if (projected !== undefined) rows.push(projected)
+      if (rows.length >= limit) break
+    }
+    return rows
+  }
+
   /** Read checkpoint-classified human sessions without opening journals or inventing placeholders. */
   async catalog(
     fallback: (signal?: AbortSignal) => Promise<SessionPersistenceSnapshot[]>,
@@ -489,6 +516,17 @@ export class DurableSessionIndex {
     }
   }
 
+  /** Refresh one display-only tail only when its session is already present in the persisted cache. */
+  async refreshCachedViewportTail(
+    id: string,
+    signal?: AbortSignal,
+    knownNextSeq?: number,
+  ): Promise<void> {
+    const index = await this.#load()
+    if (index === undefined) return
+    await this.#refreshViewportTailIn(index, id, signal, knownNextSeq)
+  }
+
   /** Refresh one display-only tail from rc.8's validated physical read after Agent hydration. */
   async refreshViewportTail(
     id: string,
@@ -497,6 +535,15 @@ export class DurableSessionIndex {
     knownNextSeq?: number,
   ): Promise<void> {
     const index = await this.#currentIndex(fallback, signal)
+    await this.#refreshViewportTailIn(index, id, signal, knownNextSeq)
+  }
+
+  async #refreshViewportTailIn(
+    index: PersistedIndex,
+    id: string,
+    signal?: AbortSignal,
+    knownNextSeq?: number,
+  ): Promise<void> {
     const entry = index.entries[id]
     if (entry === undefined) return
     const boundedNextSeq = Number.isSafeInteger(knownNextSeq) && Number(knownNextSeq) >= 0
