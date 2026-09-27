@@ -467,6 +467,29 @@ describe('SessionRuntime.refreshRecent', () => {
     await ctx.fiber.dispose()
   })
 
+  it('loads startup hints from cache without invoking strict recent discovery', async () => {
+    const ctx = new Context()
+    const cached = vi.fn(async () => [{ id: 'session-one', title: 'Cached', createdAt: 1, updatedAt: 2, eventCount: 3 }])
+    const indexed = vi.fn()
+    const list = vi.fn()
+    ctx.provide('sessionPersistence', {
+      omdshCachedRecentSessions: cached,
+      omdshRecentSessions: indexed,
+      list,
+      inspect: vi.fn(),
+    } as never)
+    const runtime = new SessionRuntime(ctx, stubTui())
+
+    await runtime.loadCachedRecent()
+
+    expect(runtime.recentSessions).toEqual([{ id: 'session-one', title: 'Cached', createdAt: 1, updatedAt: 2, eventCount: 3 }])
+    expect(cached).toHaveBeenCalledWith(8)
+    expect(indexed).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
+    await runtime.dispose()
+    await ctx.fiber.dispose()
+  })
+
   it('loads the complete indexed catalog without inspecting session logs', async () => {
     const ctx = new Context()
     const catalog = Array.from({ length: 12 }, (_, index) => ({
@@ -794,6 +817,47 @@ describe('SessionRuntime.createDetachedFork', () => {
     expect(new Set(seen)).toHaveLength(205)
     await fixture.runtime.dispose()
   })
+
+  it('pages every interaction even when journal seq is not monotonic across the projection', async () => {
+    // The projection promises journal order, not ascending `seq`: a steering event or a
+    // re-emitted journal entry can carry a seq lower than one already projected. A cursor
+    // derived from `seq` then opens the next window inside the previous one and silently
+    // drops every interaction that falls between the two boundaries.
+    const fixture = detachedForkRuntime()
+    const seqs = [1, 9, 3, 14, 5, 20, 7]
+    fixture.sessionPersistence.omdshProjectSessionHistory.mockImplementation(async (id: string) => ({
+      version: 1 as const,
+      sessionId: id,
+      title: id,
+      createdAt: 1,
+      updatedAt: 20,
+      classification: { bucket: 'human' as const },
+      interactions: seqs.map(seq => ({
+        id: `event:${seq}`,
+        input: {
+          kind: 'input' as const,
+          content: { format: 'markdown' as const, text: `prompt ${seq}` },
+          ref: { seq, time: seq, type: 'user/message' },
+        },
+        outcome: { kind: 'completed' as const },
+        technicalTrace: [],
+      })),
+    }))
+    await fixture.runtime.start('parent-session')
+    const source = fixture.runtime.sessionManagerSource(fixture.parent)
+    const seen: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await source.historyPage?.({ id: 'parent-session', cursor, limit: 3 })
+      expect(page).toBeDefined()
+      seen.unshift(...page!.interactions.map(row => row.id))
+      cursor = page!.previousCursor
+    } while (cursor !== undefined)
+
+    expect(seen).toEqual(seqs.map(seq => `event:${seq}`))
+    expect(new Set(seen)).toHaveLength(seqs.length)
+    await fixture.runtime.dispose()
+  })
 })
 
 describe('SessionRuntime startup', () => {
@@ -880,9 +944,10 @@ describe('SessionRuntime startup', () => {
         omdshViewportTail: vi.fn(async () => ({
           id: 'durable-target', revision: 'r1', checkpointSeq: 0, eventCount: 1, events: session.events,
         })),
-        omdshRefreshViewportTail: vi.fn(async () => {}),
-        list: () => recent,
-        inspect: async () => ({ events: session.events }),
+        omdshRefreshCachedViewportTail: vi.fn(async () => {}),
+        omdshCachedRecentSessions: () => recent,
+        list: vi.fn(),
+        inspect: vi.fn(),
       },
     }
     const ctx = {
@@ -908,7 +973,7 @@ describe('SessionRuntime startup', () => {
       request: expect.any(Function),
     }))
 
-    resolveRecent([{ id: SessionId('recent'), createdAt: 2, origin: 'user' }])
+    resolveRecent([{ id: SessionId('recent'), title: 'Cached recent session', createdAt: 2, updatedAt: 3, eventCount: 4 }])
     resolveModel({ context: { contextWindow: 128_000 }, reasoning: { defaultEffort: ReasoningEffortId('high') } })
     resolveSkills([{
       name: 'review', description: 'Review code', source: 'project-dsh', provider: 'filesystem',
@@ -921,7 +986,7 @@ describe('SessionRuntime startup', () => {
       { name: 'help', description: 'help' },
       { name: 'review', description: 'Review code', kind: 'skill' },
     ])
-    expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'target transcript', createdAt: 2, updatedAt: 2, eventCount: 2 }])
+    expect(setSession.mock.calls.at(-1)?.[0].recent).toEqual([{ id: SessionId('recent'), title: 'Cached recent session', createdAt: 2, updatedAt: 3, eventCount: 4 }])
     await runtime.dispose()
     expect(setActiveTranscriptSource).toHaveBeenLastCalledWith()
   })

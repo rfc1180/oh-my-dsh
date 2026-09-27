@@ -791,6 +791,7 @@ interface ViewportPersistenceExtension {
     partial?: boolean
     omittedEvents?: number
   } | undefined>
+  omdshRefreshCachedViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
   omdshRefreshViewportTail?: (id: string, knownNextSeq?: number, signal?: AbortSignal) => Promise<void>
 }
 
@@ -880,7 +881,6 @@ export class SessionRuntime {
           } else {
             this.#presentation.sessionInfoChanged()
           }
-          if (event.type === 'session/title') void this.refreshRecent()
           return
         }
         this.#noteSubagentEvent(session, event)
@@ -1417,6 +1417,22 @@ export class SessionRuntime {
     return outcome
   }
 
+  async loadCachedRecent(expected: ActiveSession | undefined = this.#active): Promise<void> {
+    const persistence = this.#ctx.get('sessionPersistence')
+    const accelerated = persistence as typeof persistence & {
+      omdshCachedRecentSessions?: (limit: number, signal?: AbortSignal) => Promise<TuiRecentSession[]>
+    }
+    let rows: TuiRecentSession[] = []
+    try {
+      rows = await accelerated?.omdshCachedRecentSessions?.(8) ?? []
+    } catch {
+      // Startup hints are optional. Never fall back to a store scan before input activates.
+    }
+    if (expected !== this.#active) return
+    this.#recent = rows
+    this.#pushSessionInfo()
+  }
+
   async refreshRecent(expected: ActiveSession | undefined = this.#active): Promise<void> {
     await this.#refreshSessions(8, expected)
   }
@@ -1448,10 +1464,17 @@ export class SessionRuntime {
     let rows: readonly TuiRecentSession[] = []
     const catalogCursor = (request: TuiSessionCatalogRequest, id: string): string =>
       `catalog-v1:${request.scope}:${request.sortField}:${request.sortDirection}:${encodeURIComponent(request.query ?? '')}:${encodeURIComponent(id)}`
-    const historyCursors = new Map<string, { readonly id: string; readonly beforeSeq: number }>()
-    const historyCursor = (id: string, beforeSeq: number): string => {
+    // A page cursor addresses a POSITION in the projected interaction array, never a raw `seq`.
+    // `interactions` is built in journal order, but nothing in the projection guarantees that
+    // `input.ref.seq` is strictly monotonic across that array (a steering event, a re-emitted
+    // journal or a repeated turn id can break it). Deriving the next cursor from `seq` then takes
+    // the window boundary from a value that is not the oldest one served, and every interaction
+    // between the two boundaries disappears without any error: `hasMore` stays true, the phase
+    // stays Ready and the transcript silently loses its middle.
+    const historyCursors = new Map<string, { readonly id: string; readonly beforeIndex: number }>()
+    const historyCursor = (id: string, beforeIndex: number): string => {
       const cursor = randomUUID()
-      historyCursors.set(cursor, { id, beforeSeq })
+      historyCursors.set(cursor, { id, beforeIndex })
       const oldest = historyCursors.size > 512 ? historyCursors.keys().next().value : undefined
       if (oldest !== undefined) historyCursors.delete(oldest)
       return cursor
@@ -1544,12 +1567,12 @@ export class SessionRuntime {
       signal?.throwIfAborted()
       const projection = await project.call(persistence, request.id, signal)
       signal?.throwIfAborted()
-      const beforeSeq = cursor?.beforeSeq ?? Number.MAX_SAFE_INTEGER
-      const eligible = projection.interactions.filter(interaction => interaction.input.ref.seq < beforeSeq)
+      const beforeIndex = cursor?.beforeIndex ?? projection.interactions.length
       const limit = Math.max(1, Math.min(request.limit ?? 20, 100))
-      const interactions = eligible.slice(-limit)
-      const first = interactions[0]
-      const hasMore = first !== undefined && eligible.some(interaction => interaction.input.ref.seq < first.input.ref.seq)
+      const end = Math.max(0, Math.min(beforeIndex, projection.interactions.length))
+      const start = Math.max(0, end - limit)
+      const interactions = projection.interactions.slice(start, end)
+      const hasMore = start > 0
       return {
         schemaVersion: 1,
         sessionId: projection.sessionId,
@@ -1560,7 +1583,7 @@ export class SessionRuntime {
           technical: projection.interactions.reduce((total, interaction) => total + interaction.technicalTrace.length, 0),
         },
         interactions,
-        ...(hasMore && first !== undefined ? { previousCursor: historyCursor(request.id, first.input.ref.seq) } : {}),
+        ...(hasMore ? { previousCursor: historyCursor(request.id, start) } : {}),
         hasMore,
       }
     }
@@ -1814,10 +1837,10 @@ export class SessionRuntime {
     const events = active.handle.agent.session.events
     const knownNextSeq = (events.at(-1)?.seq ?? -1) + 1
     const tasks = [
-      this.refreshRecent(active).finally(() => { milestone?.('recentReady') }),
+      this.loadCachedRecent(active).finally(() => { milestone?.('recentReady') }),
       this.#hydrateModel(active).finally(() => { milestone?.('modelReady') }),
       this.#refreshSkills(undefined, active).finally(() => { milestone?.('skillsReady') }),
-      persistence?.omdshRefreshViewportTail?.(active.handle.agent.id, knownNextSeq) ?? Promise.resolve(),
+      persistence?.omdshRefreshCachedViewportTail?.(active.handle.agent.id, knownNextSeq) ?? Promise.resolve(),
     ]
     const hydration = Promise.allSettled(tasks).then(() => undefined)
     this.#hydrations.add(hydration)

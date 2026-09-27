@@ -169,7 +169,6 @@ export function classifySessionV1(header: SessionHeader, events: readonly Sessio
 
 /** Pure deterministic raw-journal to semantic DTO projection. */
 export function projectSessionHistoryV1(header: SessionHeader, events: readonly SessionEvent[]): SessionHistoryProjectionV1 {
-  const localFromSeq = header.seedLength ?? 0
   const classification = classifySessionV1(header, events)
   const interactions: Array<{
     id: string
@@ -191,7 +190,7 @@ export function projectSessionHistoryV1(header: SessionHeader, events: readonly 
       rows.push(event)
       assistantsByTurn.set(event.data.turn, rows)
     }
-    if (directHuman(event, localFromSeq)) {
+    if (directHuman(event, 0)) {
       const content = eventContent(event)
       if (content !== undefined) {
         const turn = openTurn
@@ -249,7 +248,7 @@ export function projectSessionHistoryV1(header: SessionHeader, events: readonly 
     }
   }
 
-  const localHuman = events.filter(event => directHuman(event, localFromSeq)).map(eventContent)
+  const localHuman = events.filter(event => directHuman(event, 0)).map(eventContent)
     .filter((content): content is SafeHistoryContentV1 => content !== undefined)
   const explicitTitle = events.reduce<string | undefined>((title, event) => event.type === 'session/title' ? event.data.title : title, undefined)
   const label = (content: SafeHistoryContentV1 | undefined): string | undefined => content?.text
