@@ -213,6 +213,30 @@ export function projectSessionHistoryV1(header: SessionHeader, events: readonly 
       const target = openTurn === undefined ? interactions.at(-1) : interactions[latestByTurn.get(openTurn) ?? -1]
       if (target !== undefined && event.seq >= target.inputSeq) target.technicalTrace.push(eventRef(event))
     }
+    // A command's answer is part of what the reader saw: the terminal renders
+    // `command/done.text` as a notice block, and a rebuild sources the screen from this
+    // projection. Leaving it out meant every resize or expand wiped the answer off the
+    // transcript while the stream still held it. Keep it as an interaction of its own.
+    // `command/done` is a known durable event type but is not part of the typed
+    // SessionEvent union, so its payload is read structurally rather than by narrowing.
+    const rawEvent = event as { type: string; seq: number; data?: { text?: unknown } }
+    if (rawEvent.type === 'command/done') {
+      const output = typeof rawEvent.data?.text === 'string' ? rawEvent.data.text : ''
+      if (output !== '') {
+        interactions.push({
+          id: `command:${rawEvent.seq}`,
+          ...(openTurn === undefined ? {} : { turn: openTurn }),
+          input: {
+            kind: 'input',
+            content: { format: 'markdown', text: output },
+            ref: eventRef(event),
+          },
+          outcome: { kind: 'completed' },
+          technicalTrace: [],
+          inputSeq: rawEvent.seq,
+        })
+      }
+    }
     if (event.type === 'turn/end') {
       const index = latestByTurn.get(event.data.turn)
       const interaction = index === undefined ? undefined : interactions[index]

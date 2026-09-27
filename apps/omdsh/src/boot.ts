@@ -12,6 +12,8 @@ import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import { NAME, prepareLaunchEnvironment } from './composition.ts'
 import { composeLaunch } from './profile.ts'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
+import { resolveSessionJournal } from './session-journal-path.ts'
+import { applyRestoredModel, readSessionModel } from './session-model-restore.ts'
 import { installRc7ZstdSessionCompatibility } from './session-persistence-compat.ts'
 import { installSessionPersistenceIndex } from './session-persistence-index.ts'
 
@@ -41,6 +43,13 @@ export async function runOmdsh(
   process.on('SIGTERM', () => { interrupt(0) })
   process.on('SIGINT', () => { interrupt(130) })
   installFailLoud(NAME, process, async () => { await app.current?.fiber.dispose() })
+  // A resumed conversation keeps the model it was having. The journal records it on every
+  // model call, so read the newest one back before the environment snapshot is composed;
+  // otherwise the launch falls through to the ambient setting and every resumed session
+  // comes back on whatever model happens to be configured now.
+  if (resume !== undefined) {
+    applyRestoredModel(readSessionModel(await resolveSessionJournal(resume)))
+  }
   const environment = prepareLaunchEnvironment()
   const composed = composeLaunch()
   const ctx = await boot(NAME, composed.rootConfig, structuredClone(composed.patches), (hostCtx) => {
